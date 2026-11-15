@@ -197,6 +197,8 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
         data["worktrees"] = [x.removeprefix("worktree ") for x in raw.split("\0") if x.startswith("worktree ")]
         local = _read_git(path, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads").splitlines()
         origin = _read_git(path, "remote", "get-url", "origin").strip()
+        local_origin = origin.startswith(("/", "./", "../", "file:", "~", "\\\\")) or ("://" not in origin and ":" not in origin)
+        data["origin_is_local"] = local_origin
         if check_remote:
             cache = {} if remote_cache is None else remote_cache
             if origin not in cache:
@@ -234,7 +236,7 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
                 continue
             target = "unknown_branches" if missing else "unpushed_branches"
             data[target].append({"ref": ref, "sha": sha})
-        data["remote_verified"] = check_remote and not data["unknown_branches"]
+        data["remote_verified"] = check_remote and not local_origin and not data["unknown_branches"]
         data["remote_tip_count"] = len(tips)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         data["errors"].append(str(error))
@@ -315,8 +317,11 @@ def _lake_guard(path, remote_cache=None):
                                  "--", "*.lean", "*.py", "*.md")
             if fact["errors"] or fact.get("dirty_count") or ignored_source.returncode or ignored_source.stdout:
                 errors.append(f"modified/ignored/unknown dependency source: {root}")
-            if common["errors"] or common.get("stash_count") or common["unpushed_branches"] or common["unknown_branches"]:
+            if (common["errors"] or common.get("stash_count") or not common["remote_verified"] or
+                    common["unpushed_branches"] or common["unknown_branches"]):
                 errors.append(f"unharvested/unknown dependency Git data: {root}")
+            if not fact.get("linked_worktree") and any(Path(p) != root for p in common.get("worktrees", [])):
+                errors.append(f"dependency common-dir serves other worktrees: {root}")
             dirs[:] = []
         else:
             # build outputs are derived; source outside a Git package is not.

@@ -282,7 +282,7 @@ def test_remote_ancestry_and_missing_objects_are_distinguished(monkeypatch, miss
         if args[:2] == ('stash', 'list'): return ''
         if args[:2] == ('worktree', 'list'): return 'worktree /r/a\0HEAD ' + local + '\0'
         if args[0] == 'for-each-ref': return local + ' refs/heads/main\n'
-        if args[:2] == ('remote', 'get-url'): return 'origin-url\n'
+        if args[:2] == ('remote', 'get-url'): return 'https://example.com/org/repo.git\n'
         if args[:2] == ('rev-parse', '--is-shallow-repository'): return 'false\n'
         raise AssertionError(args)
     def git(path, *args, **kwargs):
@@ -299,13 +299,14 @@ def test_remote_ancestry_and_missing_objects_are_distinguished(monkeypatch, miss
     assert result['remote_verified'] is (not missing)
 
 
-def test_remote_ancestor_makes_local_branch_reachable(monkeypatch):
+@pytest.mark.parametrize('origin', ['https://example.com/org/repo.git', '/local/source'])
+def test_remote_ancestor_makes_local_branch_reachable(monkeypatch, origin):
     local, remote = 'a' * 40, 'b' * 40
     def read(path, *args):
         if args[:2] == ('stash', 'list'): return ''
         if args[:2] == ('worktree', 'list'): return 'worktree /r/a\0HEAD ' + local + '\0'
         if args[0] == 'for-each-ref': return local + ' refs/heads/main\n'
-        if args[:2] == ('remote', 'get-url'): return 'origin-url\n'
+        if args[:2] == ('remote', 'get-url'): return origin + '\n'
         if args[:2] == ('rev-parse', '--is-shallow-repository'): return 'false\n'
         raise AssertionError(args)
     def git(path, *args, **kwargs):
@@ -317,5 +318,5 @@ def test_remote_ancestor_makes_local_branch_reachable(monkeypatch):
     monkeypatch.setattr(inventory, '_read_git', read)
     monkeypatch.setattr(inventory, 'git', git)
     result = inventory.common_facts('/r/a', check_remote=True)
-    assert result['remote_verified']
+    assert result['remote_verified'] is (origin.startswith('https:'))
     assert not result['unknown_branches'] and not result['unpushed_branches']
