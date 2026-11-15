@@ -156,7 +156,11 @@ def checkout_facts(path, *, inspect_ignored=False, semantic=None):
         common = _read_git(path, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
         row["common_dir"] = common
         row["linked_worktree"] = Path(row["git_dir"]) != Path(common)
-        status = _read_git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all").split("\0")
+        flags = _read_git(path, "ls-files", "-v", "-z").split("\0")
+        if any(item and (item[0].islower() or item[0] == "S") for item in flags):
+            row["errors"].append("assume-unchanged/skip-worktree files require manual inspection")
+        status = _read_git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                           "--ignore-submodules=none").split("\0")
         states = []
         skip = False
         for item in status:
@@ -274,7 +278,7 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
         if row["hot"]:
             row["protection"].append(f"activity within {hot_hours:g} hours")
         path = Path(row["path"])
-        if any(_related(path, Path(p).absolute()) for p in protect):
+        if any(_related(path.resolve(), Path(p).expanduser().resolve()) for p in protect):
             row["protection"].append("explicitly protected by operator")
         row["active_processes"] = [p for p in active if p["cwd"] is None or _related(path, Path(p["cwd"])) or
                                    any(str(path) in a for a in p["command"][1:])]
@@ -315,7 +319,7 @@ def _lake_guard(path, remote_cache=None):
             common = common_facts(root, check_remote=True, remote_cache=remote_cache)
             try:
                 ignored_source = git(root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
-                                     "--", "*.lean", "*.py", "*.md")
+                                     "--", ".", ":(exclude).lake")
                 if fact["errors"] or fact.get("dirty_count") or ignored_source.returncode or ignored_source.stdout:
                     errors.append(f"modified/ignored/unknown dependency source: {root}")
             except (OSError, subprocess.SubprocessError) as error:
@@ -325,23 +329,36 @@ def _lake_guard(path, remote_cache=None):
                 errors.append(f"unharvested/unknown dependency Git data: {root}")
             if not fact.get("linked_worktree") and any(Path(p) != root for p in common.get("worktrees", [])):
                 errors.append(f"dependency common-dir serves other worktrees: {root}")
+            nested, _, discovery_errors, skipped = discover([root])
+            if discovery_errors or skipped or any(Path(p) != root for p in nested):
+                errors.append(f"nested/shared/unknown dependency content: {root}")
+            nested_lake = root / ".lake"
+            if nested_lake.is_dir() and not nested_lake.is_symlink():
+                errors.extend(_lake_guard(nested_lake, remote_cache=remote_cache))
             dirs[:] = []
         else:
-            # build outputs are derived; source outside a Git package is not.
-            if any(f.endswith((".lean", ".py", ".md")) for f in files) and "build" not in root.relative_to(path).parts:
-                errors.append(f"unclassified source inside Lake: {root}")
-            dirs[:] = [d for d in dirs if d not in {".git", "build"} and not (root / d).is_symlink()]
+            # Only the Lake root's build directory and compiled configuration
+            # are known derived outputs. A suffix or an arbitrary "build"
+            # directory elsewhere does not establish that data is disposable.
+            allowed = {"lakefile.olean", "lakefile.ilean", "lakefile.olean.trace"} if root == path else set()
+            if set(files) - allowed:
+                errors.append(f"unclassified content inside Lake: {root}")
+            dirs[:] = [d for d in dirs if d != ".git" and not (root == path and d == "build")
+                       and not (root / d).is_symlink()]
     return errors
 
 
 def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), check_remote=False):
     """Re-observe the exact selected list; refuse the whole batch before any move."""
+    if mode not in {"caches", "checkouts"}:
+        raise ValueError("mode must be caches or checkouts")
     selected = [Path(p).expanduser().absolute() for p in checkouts]
-    if not selected or len(set(selected)) != len(selected):
-        raise ValueError("select distinct explicit checkout paths")
     for p in selected:
         if any(parent.is_symlink() for parent in (p, *p.parents)):
             raise ValueError(f"symlinked checkout path: {p}")
+    selected = [Path(os.path.abspath(p)) for p in selected]
+    if not selected or len(set(selected)) != len(selected):
+        raise ValueError("select distinct explicit checkout paths")
     targets = [p / ".lake" if mode == "caches" else p for p in selected]
     if any(_related(a, b) for i, a in enumerate(targets) for b in targets[i + 1:]):
         raise ValueError("overlapping targets must be reviewed separately")
@@ -355,7 +372,7 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
             reasons.append("hot checkout (<24h or configured protection window)")
         if not math.isfinite(hot_hours) or hot_hours < 24:
             reasons.append("hot-hours must be finite and at least 24")
-        if any(_related(path, Path(p).absolute()) for p in protect):
+        if any(_related(path, Path(p).expanduser().resolve()) for p in protect):
             reasons.append("explicitly protected by operator")
         if any(p["cwd"] is None or _related(path, Path(p["cwd"])) or
                any(str(path) in a for a in p["command"][1:]) for p in active):
@@ -374,15 +391,18 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
             if fact.get("ignored_count"):
                 reasons.append("ignored files require agent harvest review")
             # Never silently include nested independent repositories/research directories.
-            nested, markers, errors, _ = discover([path])
-            if errors or any(Path(p) != path for p in nested):
+            nested, markers, errors, skipped = discover([path])
+            if errors or skipped or any(Path(p) != path for p in nested):
                 reasons.append("nested checkout or incomplete discovery; review separately")
         elif target.is_dir() and not target.is_symlink() and not reasons:
+            if _read_git(path, "ls-files", "-z", "--", ".lake"):
+                reasons.append("tracked Lake content requires harvest review")
             reasons.extend(_lake_guard(target, remote_cache=remote_cache))
-        if target.is_symlink() or not target.exists():
+        if target.is_symlink() or not target.is_dir():
             reasons.append("missing or shared/symlinked target")
         row = {"path": str(target), "checkout": str(path), "reasons": reasons,
-               "head": fact.get("head"), "common_dir": fact.get("common_dir")}
+               "head": fact.get("head"), "common_dir": fact.get("common_dir"),
+               "checkout_identity": fact.get("identity")}
         try:
             row["identity"] = _identity(target)
             row.update(system_trash.measure(target))
@@ -399,26 +419,42 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
         if any(not row["eligible"] for row in rows):
             result["error"] = "batch refused: protected or unverified targets; nothing moved"
             return result
-        for row in rows:
-            if _identity(Path(row["path"])) != row["identity"]:
-                result["error"] = "target changed since preflight; stopped"
-                return result
+        def recheck(row):
+            try:
+                unchanged = _identity(Path(row["path"])) == row["identity"]
+            except OSError as error:
+                raise ValueError(f"target unavailable since preflight: {error}") from error
+            if not unchanged:
+                raise ValueError("target changed since preflight; stopped")
             current = checkout_facts(row["checkout"], inspect_ignored=mode == "checkouts")
             live, live_errors = processes()
+            checkout = Path(row["checkout"])
             if (current["errors"] or current.get("head") != row["head"] or current.get("dirty_count") or
+                    current.get("identity") != row["checkout_identity"] or
+                    current.get("common_dir") != row["common_dir"] or
+                    any(p.is_symlink() for p in (checkout, *checkout.parents)) or
                     time.time() - current.get("last_activity", time.time()) < hot_hours * 3600 or live_errors or
                     any(p["cwd"] is None or _related(Path(row["checkout"]), Path(p["cwd"])) or
                         any(row["checkout"] in a for a in p["command"][1:]) for p in live)):
-                result["error"] = "checkout/process state changed since preflight; stopped"
-                return result
+                raise ValueError("checkout/process state changed since preflight; stopped")
             group = common_facts(row["checkout"], check_remote=check_remote or mode == "checkouts")
             if (group["errors"] or group.get("stash_count") or
                     (mode == "checkouts" and (current.get("ignored_count") or not group["remote_verified"] or
-                                             group["unpushed_branches"] or group["unknown_branches"])) or
-                    (mode == "caches" and _lake_guard(Path(row["path"])))):
-                result["error"] = "source/common-dir state changed since preflight; stopped"
-                return result
+                                             group["unpushed_branches"] or group["unknown_branches"] or
+                                             (not current.get("linked_worktree") and
+                                              any(Path(p) != checkout for p in group.get("worktrees", []))))) or
+                    (mode == "caches" and (_read_git(checkout, "ls-files", "-z", "--", ".lake") or
+                                           _lake_guard(Path(row["path"]))))):
+                raise ValueError("source/common-dir state changed since preflight; stopped")
+            if mode == "checkouts":
+                nested, _, errors, skipped = discover([checkout])
+                if errors or skipped or any(Path(p) != checkout for p in nested):
+                    raise ValueError("nested checkout/discovery changed since preflight; stopped")
+            if _identity(Path(row["path"])) != row["identity"]:
+                raise ValueError("target changed during recheck; stopped")
+        for row in rows:
             try:
+                recheck(row)
                 receipts.append(system_trash.trash(Path(row["path"])))
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 result["error"] = str(error)

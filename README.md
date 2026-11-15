@@ -230,7 +230,9 @@ Lake/Lean 与研究目录标记，并按 `common-dir` 汇总全部分支、stash
 遇保护项整批拒绝，后端途中失败保留已成功项的回执并停止；仍需操作者协调写者，
 无法排除检查后新进程启动的竞态。工具不保存批准，也不自动恢复或清空回收站。
 Linux 优先 gio 本地 VFS，明确不支持时停止；缺 gio 可用 trash-put。macOS 使用
-`/usr/bin/trash` 或 Finder，Windows 使用显式 `SendToRecycleBin`。无可用官方后端
+`/usr/bin/trash` 或 Finder。Windows 暂不支持自动回收：.NET `SendToRecycleBin`
+在非交互环境下会永久删除，交互 Shell 也只尽力回收，因此工具拒绝执行并请用户手动使用原生回收站。
+无可用官方后端
 或后端拒绝时停下询问用户，没有自制目录或永久删除兜底。同盘回收通常保留物理块，
 大小和回执均不代表已经释放磁盘空间；共享 extents/硬链接也不能重复计算为可释放量。
 

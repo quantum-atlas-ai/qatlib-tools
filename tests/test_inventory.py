@@ -105,7 +105,8 @@ def test_git_observation_disables_locks_fetch_and_prompts(monkeypatch):
     assert run.call_args.args[0][-1] == 'status'
 
 
-def test_checkout_status_counts_rename_once_and_untracked(monkeypatch):
+@pytest.mark.parametrize('flag', ['H', 'h', 'S', 's'])
+def test_checkout_status_counts_rename_once_and_untracked(monkeypatch, flag):
     sha = 'a' * 40
     def read(path, *args):
         values = {
@@ -114,7 +115,8 @@ def test_checkout_status_counts_rename_once_and_untracked(monkeypatch):
             ('branch', '--show-current'): 'topic',
             ('rev-parse', '--absolute-git-dir'): '/common/worktrees/a',
             ('rev-parse', '--path-format=absolute', '--git-common-dir'): '/common',
-            ('status', '--porcelain=v1', '-z', '--untracked-files=all'): 'R  new\0old\0?? untracked\0',
+            ('ls-files', '-v', '-z'): flag + ' tracked\0',
+            ('status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'): 'R  new\0old\0?? untracked\0',
             ('ls-files', '--others', '--ignored', '--exclude-standard', '-z'): 'ignored\0',
             ('log', '-1', '--format=%ct'): '1',
         }
@@ -127,7 +129,7 @@ def test_checkout_status_counts_rename_once_and_untracked(monkeypatch):
                                                                   st_mtime_ns=3, st_ctime_ns=4,
                                                                   st_mtime=1))
     result = inventory.checkout_facts('/r/a', inspect_ignored=True)
-    assert not result['errors']
+    assert bool(result['errors']) is (flag != 'H')
     assert result['dirty_count'] == 2
     assert result['untracked_count'] == 1
     assert result['ignored_count'] == 1
@@ -157,6 +159,7 @@ def mock_cleanup(monkeypatch, *, facts=None, groups=None, active=None):
     monkeypatch.setattr(inventory, 'common_facts', groups or (lambda *a, **k: group()))
     monkeypatch.setattr(inventory, 'processes', lambda: (active or [], []))
     monkeypatch.setattr(inventory, '_lake_guard', lambda path, **kwargs: [])
+    monkeypatch.setattr(inventory, '_read_git', lambda *a: '')
     monkeypatch.setattr(inventory, '_identity', lambda path: [1, 2, 3, 4])
     monkeypatch.setattr(inventory, 'discover', lambda roots: ([str(roots[0])], [], [], []))
     monkeypatch.setattr(inventory.system_trash, 'measure', lambda path: {'apparent_bytes': 5, 'allocated_bytes': 8})
@@ -173,6 +176,8 @@ def lake_dependency(monkeypatch, *, common=None, git_result=None):
     monkeypatch.setattr(inventory, 'checkout_facts', lambda path: fact(path))
     monkeypatch.setattr(inventory, 'common_facts', lambda *a, **k: common or group())
     monkeypatch.setattr(inventory, 'git', git_result or Mock(return_value=SimpleNamespace(returncode=0, stdout='', stderr='')))
+    monkeypatch.setattr(inventory, 'discover', lambda *a: ([str(root)], [], [], []))
+    monkeypatch.setattr(Path, 'is_dir', lambda self: False)
     return root
 
 
@@ -193,6 +198,63 @@ def test_lake_dependency_common_dir_serving_worktree_is_protected(monkeypatch):
 def test_lake_dependency_verified_cold_source_is_allowed(monkeypatch):
     lake_dependency(monkeypatch)
     assert inventory._lake_guard(Path('/r/a/.lake')) == []
+
+
+def test_lake_dependency_checks_all_ignored_content(monkeypatch):
+    command = Mock(return_value=SimpleNamespace(returncode=0, stdout='private-results.csv\0', stderr=''))
+    lake_dependency(monkeypatch, git_result=command)
+    assert inventory._lake_guard(Path('/r/a/.lake'))
+    assert command.call_args.args[-2:] == ('.', ':(exclude).lake')
+
+
+@pytest.mark.parametrize(('directory', 'files'), [
+    ('/r/a/.lake', ['results.csv']),
+    ('/r/a/.lake/notes/build', ['data.bin']),
+])
+def test_unclassified_lake_data_is_protected(monkeypatch, directory, files):
+    monkeypatch.setattr(inventory.os, 'walk', lambda *a, **k: iter([(directory, [], files)]))
+    monkeypatch.setattr(Path, 'is_symlink', lambda self: False)
+    assert inventory._lake_guard(Path('/r/a/.lake'))
+
+
+def test_tracked_lake_content_is_protected(monkeypatch):
+    moved = mock_cleanup(monkeypatch)
+    monkeypatch.setattr(inventory, '_read_git', lambda *a: '.lake/data.bin\0')
+    result = inventory.clean(['/r/a'], apply=True)
+    assert 'tracked Lake' in ' '.join(result['targets'][0]['reasons'])
+    moved.assert_not_called()
+
+
+def test_unknown_cleanup_mode_is_refused(monkeypatch):
+    moved = mock_cleanup(monkeypatch)
+    with pytest.raises(ValueError, match='mode must be'):
+        inventory.clean(['/r/a'], mode='cache', apply=True)
+    moved.assert_not_called()
+
+
+def test_aliased_targets_are_refused(monkeypatch):
+    moved = mock_cleanup(monkeypatch)
+    with pytest.raises(ValueError, match='distinct'):
+        inventory.clean(['/r/a', '/r/other/../a'], apply=True)
+    moved.assert_not_called()
+
+
+def test_new_worktree_registration_blocks_apply(monkeypatch):
+    calls = Mock(side_effect=[group(), group(worktrees=['/r/a', '/new/worktree'])])
+    moved = mock_cleanup(monkeypatch, groups=calls)
+    result = inventory.clean(['/r/a'], mode='checkouts', apply=True)
+    assert 'common-dir state changed' in result['error']
+    moved.assert_not_called()
+
+
+def test_partial_receipts_survive_disappearing_target(monkeypatch):
+    moved = mock_cleanup(monkeypatch)
+    monkeypatch.setattr(inventory, '_identity', Mock(side_effect=[
+        [1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4], FileNotFoundError('gone')]))
+    result = inventory.clean(['/r/a', '/r/b'], apply=True)
+    assert len(result['receipts']) == 1
+    assert 'target unavailable' in result['error']
+    assert moved.call_count == 1
 
 
 def test_hot_cache_preview_skips_deep_dependency_inspection(monkeypatch):

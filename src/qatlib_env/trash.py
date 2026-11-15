@@ -1,7 +1,6 @@
 """System Trash adapters. No permanent-deletion fallback is provided."""
 from __future__ import annotations
 
-import base64
 import os
 from pathlib import Path
 import platform
@@ -19,6 +18,11 @@ def _failure(message: str) -> TrashError:
     return TrashError(f"{message}; stop and ask the user how to proceed")
 
 
+def _identity(path):
+    info = Path(path).lstat()
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns
+
+
 def measure(path: Path) -> dict:
     """Count apparent and allocated bytes without following symbolic links.
 
@@ -30,9 +34,12 @@ def measure(path: Path) -> dict:
     apparent = allocated = 0
     allocation_known = True
     stack = [Path(path)]
+    device = stack[0].lstat().st_dev
     while stack:
         item = stack.pop()
         info = item.lstat()
+        if info.st_dev != device:
+            raise _failure(f"nested filesystem requires separate review: {item}")
         key = (info.st_dev, info.st_ino)
         if info.st_nlink > 1 and key in seen:
             continue
@@ -78,9 +85,9 @@ def probe(path: Path, env=None) -> dict:
     if system == "Linux":
         gio = shutil.which("gio", path=environment.get("PATH"))
         if gio:
-            output = _run([gio, "info", "-a", "access::can-trash", "--", str(path)], env=environment)
-            found = re.search(r"^\s*access::can-trash:\s*(TRUE|FALSE)\s*$", output, re.MULTILINE)
-            if not found or found.group(1) != "TRUE":
+            output = _run([gio, "info", "--nofollow-symlinks", "-a", "access::can-trash", "--", str(path)], env=environment)
+            found = re.findall(r"^\s*access::can-trash:\s*(TRUE|FALSE)\s*$", output, re.MULTILINE)
+            if found != ["TRUE"]:
                 raise _failure(f"gio reports Trash unsupported or unknown for {path}")
             backend, executable, capability = "gio", gio, True
         else:
@@ -97,16 +104,12 @@ def probe(path: Path, env=None) -> dict:
                 raise _failure("macOS native Trash requires /usr/bin/trash or Finder and osascript")
             backend = "macos-finder"
     elif system == "Windows":
-        if str(path).startswith(("\\\\", "//")):
-            raise _failure("Windows network paths are not supported by the Recycle Bin adapter")
-        attributes = getattr(path.lstat(), "st_file_attributes", 0)
-        if path.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
-            raise _failure("Windows reparse/symlink targets require manual review")
-        executable = (shutil.which("powershell.exe", path=environment.get("PATH")) or
-                      shutil.which("pwsh.exe", path=environment.get("PATH")))
-        if not executable:
-            raise _failure("PowerShell is required for the Windows Recycle Bin")
-        backend = "windows-recycle-bin"
+        # VisualBasic FileSystem ignores SendToRecycleBin when UserInteractive
+        # is false. Its interactive Shell path also only requests FOF_ALLOWUNDO
+        # (best effort). Neither path guarantees recoverability. Do not expose
+        # it as an automatic Trash backend, even if PowerShell is available.
+        raise _failure("automatic Windows recycling is unavailable: .NET SendToRecycleBin "
+                       "can permanently delete; use the native Recycle Bin manually")
     else:
         raise _failure(f"no system Trash backend for {system}")
     return {"original_path": str(path), "backend": backend, "supported": True,
@@ -116,6 +119,7 @@ def probe(path: Path, env=None) -> dict:
 
 def trash(path: Path, env=None) -> dict:
     """Move one path to the system Trash and return an auditable receipt."""
+    original = _identity(path)
     details = probe(path, env)
     path = Path(details["original_path"])
     sizes = measure(path)
@@ -132,21 +136,9 @@ def trash(path: Path, env=None) -> dict:
         script = 'on run argv\n tell application "Finder" to delete POSIX file (item 1 of argv)\nend run'
         command = [executable, "-e", script, str(path)]
     else:
-        # Encode the path as data and the entire script as UTF-16LE; shell
-        # metacharacters and quote characters cannot become PowerShell syntax.
-        encoded_path = base64.b64encode(str(path).encode("utf-8")).decode("ascii")
-        method = "DeleteDirectory" if path.is_dir() else "DeleteFile"
-        script = (
-            "$ErrorActionPreference='Stop'; "
-            "Add-Type -AssemblyName Microsoft.VisualBasic; "
-            f"$p=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_path}')); "
-            f"[Microsoft.VisualBasic.FileIO.FileSystem]::{method}($p, "
-            "[Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, "
-            "[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin, "
-            "[Microsoft.VisualBasic.FileIO.UICancelOption]::ThrowException)"
-        )
-        encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-        command = [executable, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script]
+        raise _failure(f"unknown system Trash backend: {backend}")
+    if original != _identity(path):
+        raise _failure(f"Trash target changed during capability/size inspection: {path}")
     _run(command, env=environment)
     return {"original_path": str(path), "backend": backend, **sizes,
             "physical_space_note": "Moving to Trash may retain blocks on the same filesystem; no physical space freed is assumed."}
