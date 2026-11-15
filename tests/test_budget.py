@@ -300,6 +300,7 @@ def test_failed_process_callback_reaps_started_child():
 def test_explicit_full_gate_keeps_limits_for_a_small_target(project):
     with patch.object(workspace, "command_runtime_environment", side_effect=lambda p, e, a: e), \
          patch("qatlib_env.backends.linux.systemd_available", return_value=False), \
+         patch("qatlib_env.backends.linux.enclosing_cgroup_limits", return_value=None), \
          patch.object(workspace.supervisor, "run") as child:
         assert workspace.cli_main(["--project", str(project), "run", "--no-prepare", "--full-gate",
                                    "--allow-local-heavy", "--", "lake", "build", "Consumer.Leaf"]) == 1
