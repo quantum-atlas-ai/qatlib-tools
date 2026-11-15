@@ -27,7 +27,7 @@ ENV_FIELDS = {
     "repository": ("QATLIB_REPOSITORY",), "workflow": ("QATLIB_WORKFLOW",),
     "cloud_platform": ("QATLIB_CLOUD_PLATFORM",), "library": ("QATLIB_LIBRARY",),
     "tests": ("QATLIB_TEST_TARGET",),
-    "jobs": ("QATLAS_JOBS", "LEAN_NUM_THREADS"), "lean_threads": ("QATLAS_LEAN_THREADS",),
+    "jobs": ("QATLAS_JOBS",), "lean_threads": ("QATLAS_LEAN_THREADS", "LEAN_NUM_THREADS"),
     "memory_budget": ("QATLAS_MEMORY_BUDGET",), "heavy_jobs": ("QATLAS_HEAVY_JOBS",),
     "heavy_patterns": ("QATLAS_HEAVY_PATTERNS",), "module_timeout": ("QATLAS_MODULE_TIMEOUT",),
     "stage_timeout": ("QATLAS_STAGE_TIMEOUT",),

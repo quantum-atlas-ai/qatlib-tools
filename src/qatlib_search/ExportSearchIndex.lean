@@ -47,6 +47,7 @@ def kindOf (env : Environment) (n : Name) : ConstantInfo → String
   | .inductInfo _ => if isStructure env n then "structure" else "inductive"
   | .ctorInfo _ => "ctor" | .recInfo _ => "rec" | .quotInfo _ => "quot"
 
+/-- Filter generated declarations. Keep the list literal on
 the `:=` line: with the full tracked import set, `QuantumInfo.ClassicalInfo.Prob`'s `[ _ ↔ _ ]`
 notation hijacks a line-initial `[` following a `let :=` value. -/
 def isNoise (n : Name) : Bool :=

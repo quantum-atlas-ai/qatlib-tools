@@ -60,7 +60,7 @@ def _pool_scope(effective, *, building):
     from qatlib_env.pool import Pool, PoolCapacityError
     raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
-    cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1")))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", "1")))
+    cpu = max(1, int(effective.get("QATLAS_JOBS", "1"))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", effective.get("LEAN_NUM_THREADS", "1"))))
     pool_budget = int(effective.get("QATLAS_POOL_BUDGET_MIB", "24576"))
     pool_cpu = int(effective.get("QATLAS_POOL_CPU", "4"))
     if memory_mib > pool_budget or cpu > pool_cpu:
@@ -102,11 +102,17 @@ def _backend_command(argv, effective, *, building, require_limits=False):
         return list(argv)
     raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
-    cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1")))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", "1")))
+    cpu = max(1, int(effective.get("QATLAS_JOBS", "1"))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", effective.get("LEAN_NUM_THREADS", "1"))))
     if sys.platform.startswith("linux"):
-        from qatlib_env.backends.linux import linux_command, systemd_available
-        if require_limits and not systemd_available():
-            raise ValueError("heavy local execution requires a delegated systemd user CPU/memory scope")
+        from qatlib_env.backends.linux import enclosing_cgroup_limits, linux_command, systemd_available
+        if not systemd_available():
+            protection = enclosing_cgroup_limits(memory_mib=memory_mib, cpu=cpu)
+            if protection is not None:
+                print("RESOURCE_CONTROL " + json.dumps(protection, sort_keys=True), file=sys.stderr)
+                return list(argv)
+            if require_limits:
+                raise ValueError("heavy local execution requires a delegated systemd user CPU/memory scope "
+                                 "or an enclosing cgroup v2 with finite memory and CPU hard limits")
         return linux_command(list(argv), memory_mib=memory_mib, cpu=cpu,
                              unit=f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     if sys.platform == "darwin":
@@ -140,7 +146,6 @@ def run(argv, *, cwd, env=None, capture=False):
         argv = compiler_command(argv, jobs=int(effective["QATLAS_LEAN_THREADS"]),
             memory_mib=max(2048, int(effective["QATLAS_MEMORY_BUDGET"]) // 1024**2 // int(effective["QATLAS_JOBS"])))
     build_started_ns = time.time_ns() if building else None
-    command = _backend_command(argv, effective, building=building, require_limits=bool(plan and plan["reasons"]))
     job = None
     process_callback = None
     if building and sys.platform == "win32" and effective.get("QATLAS_USE_JOB_OBJECT", "1") == "1":
@@ -163,6 +168,8 @@ def run(argv, *, cwd, env=None, capture=False):
         raise ValueError("heavy local execution requires a Windows Job Object")
     try:
         with _pool_scope(effective, building=building):
+            # Recheck outer cgroup headroom after any pool admission wait.
+            command = _backend_command(argv, effective, building=building, require_limits=bool(plan and plan["reasons"]))
             return supervisor.run(
                 command, cwd=cwd, env=effective, check=True, text=True,
                 stdout=subprocess.PIPE if capture else None,
@@ -791,13 +798,14 @@ def check(project, env, modules=()):
 
 def _check(project, env, modules):
     """Keep the full-gate scope through every constituent child operation."""
-    gate = project / "python/dev_metadata/check_source_imports.py"
-    if gate.is_file():
+    gate_package = next((name for name in ("example_library", "dev_metadata")
+                         if (project / "python" / name / "check_source_imports.py").is_file()), None)
+    if gate_package:
         dependencies = []
         for package in manifest(project)["packages"]:
             if package["name"].strip("«»") in {"Qatlib", "Project", "example_library"}:
                 dependencies += ["--dependency-repo", str(project / ".lake/packages" / package["name"].strip("«»"))]
-        run([sys.executable, "-B", "-m", "dev_metadata.check_source_imports", "--repo", str(project), *dependencies], cwd=project, env=env)
+        run([sys.executable, "-B", "-m", gate_package + ".check_source_imports", "--repo", str(project), *dependencies], cwd=project, env=env)
     run(["lake", "lint"], cwd=project, env=env)
     if modules:
         run(["lake", "build", *modules], cwd=project, env=env)

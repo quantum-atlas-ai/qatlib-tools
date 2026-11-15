@@ -329,7 +329,8 @@ def test_allowed_cli_preserves_pool_controller_and_timeouts(project):
 
 
 def test_missing_controller_or_disabled_scope_cannot_be_bypassed(project):
-    with patch("qatlib_env.backends.linux.systemd_available", return_value=False):
+    with patch("qatlib_env.backends.linux.systemd_available", return_value=False), \
+         patch("qatlib_env.backends.linux.enclosing_cgroup_limits", return_value=None):
         with pytest.raises(ValueError, match="systemd"):
             workspace._backend_command(["lake", "build"], {}, building=True, require_limits=True)
     with pytest.raises(ValueError, match="controller"):

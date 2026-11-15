@@ -74,6 +74,7 @@ class SourceGraph:
         self.project_modules: set[str] = set()
         self.edges: dict[str, set[str]] = {}
         self.errors: set[str] = set()
+        self.module_errors: dict[str, set[str]] = defaultdict(set)
         self.lock_mismatches: list[dict] = []
         self.warm_cache: dict[str, bool] = {}
         self.package_stamp: dict[Path, int] = {}
@@ -130,23 +131,71 @@ class SourceGraph:
         output = base / ("lib/lean" if toolchain else ".lake/build/lib/lean") / (name.replace(".", "/") + ".olean")
         module = Module(path, output, package, base, toolchain)
         if name in self.modules and self.modules[name] != module:
-            self.errors.add("<ambiguous provider: " + name + ">")
+            self.module_errors[name].add("<ambiguous provider: " + name + ">")
             return
         self.modules[name] = module
         if package == "project":
             self.project_modules.add(name)
+
+    @staticmethod
+    def _dsl_libraries(base: Path) -> list[dict]:
+        """Recognize library names and literal source directories without Lake.
+
+        Executable declarations and package configuration are not importable
+        libraries. Dynamic DSL expressions stay unresolved when imported.
+        """
+        path = base / "lakefile.lean"
+        if not path.is_file():
+            return []
+        try:
+            text = path.read_text()
+            masked = mask_comments(text, preserve_escaped_identifiers=True)
+        except (OSError, UnicodeError, ValueError):
+            return []
+        declarations = list(re.finditer(
+            r"(?m)^[ \t]*(?:@\[[^\n]*\][ \t]*)?(package|lean_lib|lean_exe)"
+            r"\s+(«[^»\n]+»|[\w.]+)", masked))
+
+        def source_directory(start: int, end: int, default: str | None) -> str | None:
+            field = re.search(r"(?m)^[ \t]*srcDir[ \t]*:=", masked[start:end])
+            if field is None:
+                return default
+            raw = text[start + field.end():end].lstrip()
+            try:
+                value, consumed = json.JSONDecoder().raw_decode(raw)
+                tail = mask_comments(raw[consumed:].split("\n", 1)[0]).strip()
+            except ValueError:
+                return None
+            return value if isinstance(value, str) and not tail else None
+
+        default_source = "."
+        libraries = []
+        for index, declaration in enumerate(declarations):
+            end = declarations[index + 1].start() if index + 1 < len(declarations) else len(text)
+            kind, name = declaration.groups()
+            if kind == "package":
+                default_source = source_directory(declaration.end(), end, ".")
+            elif kind == "lean_lib":
+                source = source_directory(declaration.end(), end, default_source)
+                if source is not None:
+                    libraries.append({"name": name.strip("«»"), "srcDir": source})
+        return libraries
 
     def add_package(self, base: Path, package: str, conf: dict):
         libraries = conf.get("lean_lib", [])
         if not isinstance(libraries, list):
             raise ValueError(f"{base}: lean_lib must be an array")
         if not libraries:
-            # Lean DSL libraries cannot be evaluated without Lake. Register
-            # available providers; only their reachable imports enter the plan.
+            if package != "project":
+                libraries = self._dsl_libraries(base)
+                if libraries:
+                    self.add_package(base, package, {"lean_lib": libraries})
+                return
+            # Project targets may include standalone files. Missing TOML
+            # declarations still prevent certifying a complete project plan.
             for path in _sources(base):
                 self.add(".".join(path.relative_to(base).with_suffix("").parts), path, base, package)
-            if package == "project":
-                self.errors.add("<missing TOML lean_lib declarations>")
+            self.errors.add("<missing TOML lean_lib declarations>")
             return
         for library in libraries:
             name = library["name"]
@@ -168,14 +217,13 @@ class SourceGraph:
                         members.add(module)
             if package == "project":
                 self.libraries[name] = members
-        for executable in conf.get("lean_exe", []):
+        for executable in conf.get("lean_exe", []) if package == "project" else []:
             source = base / executable.get("srcDir", conf.get("srcDir", "."))
             name = executable.get("root", executable["name"])
             path = source / (name.replace(".", "/") + ".lean")
             if path.is_file():
                 self.add(name, path, base, package)
-                if package == "project":
-                    self.executables[executable["name"]] = name
+                self.executables[executable["name"]] = name
 
     def add_toolchain(self):
         tc_file = self.project / "lean-toolchain"
@@ -192,13 +240,13 @@ class SourceGraph:
                 for path in paths:
                     if path.is_file():
                         module = ".".join(path.relative_to(source).with_suffix("").parts)
-                        if module not in self.modules:
+                        if module not in self.modules or not self.modules[module].toolchain:
                             self.add(module, path, prefix, "toolchain", toolchain=True)
         # Some distributions omit sources. Their precompiled modules are valid
         # boundaries, but the absent source-level closure is reported explicitly.
         for path in (prefix / "lib/lean").rglob("*.olean") if (prefix / "lib/lean").is_dir() else []:
             module = ".".join(path.relative_to(prefix / "lib/lean").with_suffix("").parts)
-            if module not in self.modules:
+            if module not in self.modules or not self.modules[module].toolchain:
                 self.add(module, None, prefix, "toolchain", toolchain=True)
 
     def deps(self, name: str) -> set[str]:
@@ -213,9 +261,9 @@ class SourceGraph:
                     if not re.match(r"\s*(?:module\s+)?prelude\b", mask_comments(text[:end])) and name != "Init":
                         result.add("Init")
                 except (ValueError, OSError, UnicodeError) as error:
-                    self.errors.add(f"<cannot parse {name}: {error}>")
+                    self.module_errors[name].add(f"<cannot parse {name}: {error}>")
             elif module and module.toolchain:
-                self.errors.add(f"<toolchain source unavailable: {name}>")
+                self.module_errors[name].add(f"<toolchain source unavailable: {name}>")
             self.edges[name] = result
         return self.edges[name]
 
@@ -368,7 +416,8 @@ def estimate(project: str | Path, targets=(), *, env: Mapping[str, str] | None =
             if dep and dep.output.is_file() and graph.modules[name].output.is_file() and dep.output.stat().st_mtime_ns > graph.modules[name].output.stat().st_mtime_ns:
                 invalid.add(name)
     invalid = graph.walk(invalid | (closure - known), lambda n: users[n]) & known
-    unresolved = sorted((closure - graph.modules.keys()) | graph.errors)
+    reachable_errors = {error for name in closure for error in graph.module_errors.get(name, ())}
+    unresolved = sorted((closure - graph.modules.keys()) | graph.errors | reachable_errors)
     head = git(project, "rev-parse", "HEAD")
     if head is None:
         unresolved.append("<missing Git HEAD>")

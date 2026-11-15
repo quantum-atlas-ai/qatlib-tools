@@ -162,8 +162,8 @@ def probe_resources(*, proc_root: Path = Path("/proc"),
 
 
 ENV_KEYS = {
-    "jobs": ("QATLAS_JOBS", "LEAN_NUM_THREADS"),
-    "lean_threads": ("QATLAS_LEAN_THREADS",),
+    "jobs": ("QATLAS_JOBS",),
+    "lean_threads": ("QATLAS_LEAN_THREADS", "LEAN_NUM_THREADS"),
     "memory_budget": ("QATLAS_MEMORY_BUDGET",),
     "heavy_jobs": ("QATLAS_HEAVY_JOBS",),
     "module_timeout": ("QATLAS_MODULE_TIMEOUT",),
@@ -192,7 +192,7 @@ class ResolvedConfig:
 
     def environment(self, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
         result = dict(os.environ if base_env is None else base_env)
-        result["LEAN_NUM_THREADS"] = str(self.values["jobs"])
+        result["LEAN_NUM_THREADS"] = str(self.values["lean_threads"])
         for name, variables in ENV_KEYS.items():
             value = self.values[name]
             result[variables[0]] = ",".join(value) if isinstance(value, list) else str(value)

@@ -119,8 +119,9 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(config.sources["jobs"], "command-line")
         self.assertEqual(config.sources["heavy_jobs"], "environment:QATLAS_HEAVY_JOBS")
         exported = config.environment({})
-        self.assertEqual(exported["LEAN_NUM_THREADS"], "7")
-        self.assertEqual(exported["QATLAS_LEAN_THREADS"], "3")
+        self.assertEqual(config.values["lean_threads"], 6)
+        self.assertEqual(exported["LEAN_NUM_THREADS"], "6")
+        self.assertEqual(exported["QATLAS_LEAN_THREADS"], "6")
         self.assertEqual(config.explain()["resources"]["reserve"], host.reserve)
 
     def test_explicit_hard_limit_conflicts_warn_without_truncation(self):
