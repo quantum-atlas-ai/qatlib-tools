@@ -184,7 +184,7 @@ def _restore_artifacts(project: Path, manifest: Path, service: dict, scope: str,
     read-only artifact onto itself.  Install only missing paths here, without
     weakening permissions or exposing temporary partial output mappings.
     """
-    from qatlib_env.r2_cache import _verify_artifact_hashes
+    from qatlib_env.r2_cache import ArtifactHashMismatch, _verify_artifact_hashes
     descriptors = _artifact_descriptors(manifest)
     cache = Path(env["LAKE_CACHE_DIR"])
     validate_cache(cache)
@@ -218,7 +218,7 @@ def _restore_artifacts(project: Path, manifest: Path, service: dict, scope: str,
         # sidecars. A real permission/hash error is never treated as a miss.
         try:
             checksums = _verify_artifact_hashes(project, paths, env)
-        except (ValueError, subprocess.SubprocessError) as error:
+        except ArtifactHashMismatch as error:
             raise CacheError(f"corrupt cache artifact content for {package}; native hash validation failed") from error
         for index, name in enumerate(missing):
             target = artifacts / name
@@ -235,7 +235,7 @@ def _restore_artifacts(project: Path, manifest: Path, service: dict, scope: str,
                 _readable_artifact(target)
                 try:
                     _verify_artifact_hashes(project, {name: target}, env)
-                except (ValueError, subprocess.SubprocessError) as error:
+                except ArtifactHashMismatch as error:
                     raise CacheError(f"concurrently installed corrupt cache artifact: {name}") from error
 
 

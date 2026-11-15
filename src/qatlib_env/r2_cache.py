@@ -327,6 +327,10 @@ def _source_identity(repo: Path, profile: dict[str, object], env: dict[str, str]
     return head, compute_input_tree(repo, paths, env)
 
 
+class ArtifactHashMismatch(ValueError):
+    """The native hash command succeeded but bytes differ from the descriptor."""
+
+
 def _verify_artifact_hashes(repo: Path, paths: dict[str, Path], env: dict[str, str]) -> dict[str, str]:
     """Recompute Lake's native content hash, independently of stale .hash files."""
     names = sorted(paths)
@@ -352,7 +356,7 @@ open Lake System
         actual = _run(repo, {**env, "QATLAS_ARTIFACT_AUDIT_LIST": str(listing)},
                       ["lake", "--no-build", "lean", str(helper)], capture=True).splitlines()
         if actual != [name.split(".", 1)[0].lower() for name in names]:
-            raise ValueError("Lake artifact content hash does not match its manifest descriptor")
+            raise ArtifactHashMismatch("Lake artifact content hash does not match its manifest descriptor")
     # Keep a standard checksum for the interval between validation and upload.
     return {name: hashlib.sha256(paths[name].read_bytes()).hexdigest() for name in names}
 
