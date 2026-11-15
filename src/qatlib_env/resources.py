@@ -5,13 +5,12 @@ All sizes in the Python API are bytes and all timeouts are seconds (zero disable
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 import os
 from pathlib import Path
 import re
 from typing import Any, Mapping
-import tomllib
 
 GIB = 1024 ** 3
 
@@ -179,9 +178,11 @@ class ResolvedConfig:
     sources: dict[str, str]
     host: HostResources
     warnings: list[str]
+    configuration: Any = None
 
     def explain(self) -> dict[str, Any]:
         return {"values": self.values, "sources": self.sources, "warnings": self.warnings,
+                "configuration": self.configuration.explain() if self.configuration else {},
                 "resources": {"physical_memory": self.host.physical_memory,
                               "available_memory": self.host.available_memory,
                               "memory_headroom": self.host.memory_headroom,
@@ -195,61 +196,38 @@ class ResolvedConfig:
         for name, variables in ENV_KEYS.items():
             value = self.values[name]
             result[variables[0]] = ",".join(value) if isinstance(value, list) else str(value)
+        if self.configuration is not None:
+            result["QATLAS_POOL_BUDGET_MIB"] = str(self.configuration.local_pool_mib)
+            result["QATLAS_POOL_CPU"] = str(self.configuration.local_pool_cpu)
+            result["QATLAS_MAX_COLD_MODULES"] = str(self.configuration.budget.max_cold_modules)
+            result["QATLAS_MAX_REVERSE_MODULES"] = str(self.configuration.budget.max_reverse_modules)
         return result
 
 
 def _config_file(path: Path, *, explicit: bool = False) -> dict[str, Any]:
-    if not path.exists() and not explicit:
-        return {}
-    with path.open("rb") as stream:
-        data = tomllib.load(stream)
-    if isinstance(data.get("tool"), dict) and isinstance(data["tool"].get("qatlib-env"), dict):
-        values = data["tool"]["qatlib-env"]
-        values = {key: value for key, value in values.items() if key in ENV_KEYS}
-    else:
-        values = data.get("resources", data)
-    if not isinstance(values, dict):
-        raise ValueError(f"{path}: resources must be a TOML table")
-    unknown = set(values) - ENV_KEYS.keys()
-    if unknown:
-        raise ValueError(f"{path}: unknown resource options: {', '.join(sorted(unknown))}")
-    return values
+    from .config import read_layer
+    return {key: value for key, value in read_layer(path, explicit=explicit).items() if key in ENV_KEYS}
 
 
 def resolve_config(repo: Path, cli: Mapping[str, Any] | None = None,
                    env: Mapping[str, str] | None = None, *,
                    probe: HostResources | None = None) -> ResolvedConfig:
-    """Resolve CLI > environment > workspace > user > runner > adaptive defaults."""
+    """Resolve CLI > environment > local > shared > compatibility > defaults."""
+    from .config import load_config
     environment = os.environ if env is None else env
     host = probe if probe is not None else probe_resources()
     values: dict[str, Any] = {"lean_threads": 2, "memory_budget": host.memory_budget,
                               "heavy_jobs": 1, "module_timeout": 1800.0,
                               "stage_timeout": 10800.0, "heavy_patterns": ["BalancedGram"]}
     sources = dict.fromkeys(values, "automatic")
-    home = Path(environment.get("HOME", str(Path.home())))
-    xdg = Path(environment.get("XDG_CONFIG_HOME", str(home / ".config")))
-    layers = []
-    if environment.get("QATLAS_RUNNER_CONFIG"):
-        path = Path(environment["QATLAS_RUNNER_CONFIG"])
-        layers.append((f"runner:{path}", _config_file(path, explicit=True)))
-    path = xdg / "qatlib/env.toml"
-    layers.append((f"user:{path}", _config_file(path)))
-    path = Path(repo) / "qatlib-env.toml"
-    layers.append((f"workspace:{path}", _config_file(path)))
-    env_values = {}
-    env_sources = {}
-    for key, variables in ENV_KEYS.items():
-        for variable in variables:
-            if variable in environment:
-                env_values[key] = environment[variable]
-                env_sources[key] = f"environment:{variable}"
-                break
-    layers.append(("environment", env_values))
-    layers.append(("command-line", {k: v for k, v in (cli or {}).items() if k in ENV_KEYS and v is not None}))
-    for source, layer in layers:
-        for key, value in layer.items():
-            values[key] = value
-            sources[key] = env_sources[key] if source == "environment" else source
+    configuration = load_config(repo, environment, cli)
+    # Unconfigured pools adapt to host capacity; an explicit pool is never
+    # enlarged by either a host probe or an individual task request.
+    configuration = replace(configuration,
+        local_pool_mib=configuration.local_pool_mib if configuration.sources["local_pool_mib"] != "automatic" else max(1, (host.memory_budget + 1024**2 - 1) // (1024**2)),
+        local_pool_cpu=configuration.local_pool_cpu if configuration.sources["local_pool_cpu"] != "automatic" else host.effective_cpus)
+    values.update(configuration.resource_values)
+    sources.update({key: configuration.sources[key] for key in configuration.resource_values})
     for key in ("jobs", "lean_threads", "heavy_jobs"):
         if key not in values:
             continue
@@ -283,5 +261,5 @@ def resolve_config(repo: Path, cli: Mapping[str, Any] | None = None,
         warnings.append("configured jobs exceed the 4 GiB/job memory estimate; explicit values were retained")
     if values["heavy_jobs"] > values["jobs"]:
         warnings.append("heavy_jobs exceeds jobs; explicit values were retained")
-    return ResolvedConfig(values, sources, host, warnings)
+    return ResolvedConfig(values, sources, host, warnings, configuration)
 

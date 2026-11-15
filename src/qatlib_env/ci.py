@@ -131,20 +131,14 @@ def source_imports(project, env=None):
 
 def profile(package, env=None, project=None):
     values = os.environ if env is None else env
-    configured = {}
-    if project is not None:
-        root = Path(project)
-        for path in (root / "qatlib-env.toml", root / "pyproject.toml", root / ".qatlib-env.local.toml"):
-            try:
-                raw = tomllib.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            section = raw.get("tool", {}).get("qatlib-env", {}) if path.name == "pyproject.toml" else raw.get("tool", {}).get("qatlib-env", raw)
-            if isinstance(section, dict):
-                configured.update(section)
+    from .config import load_config
+    configured = load_config(project, values).metadata if project is not None else {}
     library = str(configured.get("library", values.get("QATLIB_LIBRARY", package))).strip()
     tests = str(configured.get("tests", values.get("QATLIB_TEST_TARGET", ""))).strip()
-    repository = str(configured.get("repository", values.get("QATLIB_REPOSITORY", ""))).strip()
+    repository = str(configured.get("cache_repository", configured.get("repository", values.get("QATLIB_REPOSITORY", "")))).strip()
+    if "://" in repository:
+        from urllib.parse import urlsplit
+        repository = urlsplit(repository).path.strip("/").removesuffix(".git")
     return library, [library, tests] if tests else [library], repository
 
 
@@ -717,13 +711,17 @@ def build(project, env):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="qatlib-env ci", description=__doc__)
     parser.add_argument("command", choices=("lint", "build", "build-gate", "mirror"))
+    parser.add_argument("--allow-local-heavy", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "build-gate":
         build_gate(os.environ)
         return 0
     project = Path.cwd().resolve()
+    from qatlib_env.budget import admit, permission
+    if args.command in {"lint", "build"}:
+        admit(project, full_gate=True, allow_local_heavy=args.allow_local_heavy)
     temporary = os.environ.get("RUNNER_TEMP")
-    with nullcontext(temporary) if temporary else tempfile.TemporaryDirectory(prefix="qatlas-ci-") as directory:
+    with permission(args.allow_local_heavy, full_gate=True), (nullcontext(temporary) if temporary else tempfile.TemporaryDirectory(prefix="qatlas-ci-")) as directory:
         base_env = runner_environment(project, {**os.environ, "RUNNER_TEMP": directory})
         if args.command == "mirror":
             mirror_main(project, base_env)

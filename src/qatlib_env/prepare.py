@@ -437,13 +437,15 @@ def _locked_package_names(project: Path) -> dict[Path, str]:
 
 
 def enforce_cold_limit(project: Path, env: dict) -> int:
+    from .config import load_config
+    from .budget import _permission
     count = cold_modules(project)
-    maximum = int(env.get("QATLAS_MAX_COLD_MODULES", "0"))
+    maximum = load_config(project, env).budget.max_cold_modules
     warning = int(env.get("QATLAS_COLD_WARN_MODULES", "100"))
     if maximum < 0 or warning < 0:
         raise ValueError("cold module thresholds must be nonnegative")
-    if maximum and count > maximum:
-        raise CacheError(f"{count} cold modules exceed configured limit {maximum}; run qatlib-env prepare to prewarm, or explicitly raise QATLAS_MAX_COLD_MODULES")
+    if count > maximum and not _permission.get():
+        raise CacheError(f"{count} cold modules exceed configured limit {maximum}; use qatlib-env cloud submit, or --allow-local-heavy after explicit permission")
     if warning and count > warning:
         print(f"COLD_BUILD_WARNING modules={count}; inspect qatlib-env cache explain before compiling", file=sys.stderr)
     return count

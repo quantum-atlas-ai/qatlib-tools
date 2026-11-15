@@ -19,6 +19,11 @@ class WorkspaceCommandsTests(unittest.TestCase):
         prepare.assert_not_called()
 
     def setUp(self):
+        # These tests compose commands with a fake project and mocked executor;
+        # admission itself is exercised against real Git fixtures in test_budget.
+        admission = patch('qatlib_env.budget.admit', return_value={'reasons': []})
+        admission.start()
+        self.addCleanup(admission.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.project = Path(self.temporary.name)

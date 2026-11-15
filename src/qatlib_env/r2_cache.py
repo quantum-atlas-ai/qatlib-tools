@@ -178,18 +178,15 @@ def detect_repo_profile(repo: Path) -> dict[str, object]:
     config = tomllib.loads((repo / "lakefile.toml").read_text(encoding="utf-8"))
     name = config["name"]
     tc = (repo / "lean-toolchain").read_text(encoding="utf-8").strip()
-    profile = {}
-    for path in (repo / "qatlib-env.toml", repo / "pyproject.toml", repo / ".qatlib-env.local.toml"):
-        try:
-            raw = tomllib.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        section = raw.get("tool", {}).get("qatlib-env", {}) if path.name == "pyproject.toml" else raw.get("tool", {}).get("qatlib-env", raw)
-        if isinstance(section, dict): profile.update(section)
+    from .config import load_config
+    profile = load_config(repo).metadata
     library = str(profile.get("library", name))
     tests = str(profile["tests"]) if profile.get("tests") else None
     bucket = str(profile.get("cache_bucket", ""))
-    slug = str(profile.get("repository", ""))
+    slug = str(profile.get("cache_repository", profile.get("repository", "")))
+    if "://" in slug:
+        from urllib.parse import urlsplit
+        slug = urlsplit(slug).path.strip("/").removesuffix(".git")
     if not bucket or not slug:
         bucket, slug = "", ""
     return {"package": name, "bucket": bucket, "repo_slug": slug,

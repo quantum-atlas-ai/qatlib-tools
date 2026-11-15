@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 import hashlib
 import io
 from pathlib import Path
@@ -81,10 +82,13 @@ class PoolCloudTests(unittest.TestCase):
 
     def test_backend_command_and_run_use_darwin_taskpolicy(self):
         with tempfile.TemporaryDirectory() as directory, \
+             patch('qatlib_env.budget.admit', return_value={'reasons': []}), \
+             patch.object(workspace, '_pool_scope', return_value=nullcontext()), \
+             patch.object(workspace, 'command_runtime_environment', side_effect=lambda p, e, a: e), \
              patch.object(workspace.sys, "platform", "darwin"), \
              patch("qatlib_env.backends.macos.macos_limits", return_value=["taskpolicy", "--", "lake", "build"]) as limits, \
              patch.object(workspace.supervisor, "run", return_value=__import__("subprocess").CompletedProcess(["lake", "build"], 0, stdout="")) as supervised:
-            workspace.run(["lake", "build"], cwd=directory, env={"QATLAS_POOL_BYPASS": "1"}, capture=True)
+            workspace.run(["lake", "build"], cwd=directory, env={}, capture=True)
             limits.assert_called_once()
             self.assertEqual(supervised.call_args.args[0][:2], ["taskpolicy", "--"])
 
@@ -99,10 +103,13 @@ class PoolCloudTests(unittest.TestCase):
             kwargs["process_callback"](SimpleNamespace(pid=4242))
             return __import__("subprocess").CompletedProcess(command, 0, stdout="")
         with tempfile.TemporaryDirectory() as directory, \
+             patch('qatlib_env.budget.admit', return_value={'reasons': []}), \
+             patch.object(workspace, '_pool_scope', return_value=nullcontext()), \
+             patch.object(workspace, 'command_runtime_environment', side_effect=lambda p, e, a: e), \
              patch.object(workspace.sys, "platform", "win32"), \
              patch("qatlib_env.backends.windows.JobObject", FakeJob), \
              patch.object(workspace.supervisor, "run", side_effect=supervise):
-            workspace.run(["lake", "build"], cwd=directory, env={"QATLAS_POOL_BYPASS": "1"}, capture=True)
+            workspace.run(["lake", "build"], cwd=directory, env={}, capture=True)
         self.assertEqual(len(jobs), 1)
         self.assertGreaterEqual(jobs[0].configuration["memory_bytes"], 2048 * 1024 * 1024)
         self.assertEqual(jobs[0].attached, 4242)

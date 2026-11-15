@@ -49,7 +49,7 @@ uv pip install -e '.[validation]'
 - `docs [--path]`：查看安装包手册，或输出手册位置。
 - `clean-setup`、`gc`、`maintain-mirror`：检查或清理派生产物、维护本机依赖镜像；清理需显式指定 `--apply`。
 - `pool status`、`pool prune`：查看资源池租约，清除失效记录。
-- `plan`、`cloud submit|status|logs|wait|fetch`：评估本地/云端路由并操作远端工作流。
+- `plan [targets...]`、`cloud submit|status|logs|wait|fetch`：只读估算目标预算，并显式操作远端工作流。
 - `ci lint|build|build-gate|mirror`：供下游仓库 CI 使用，也可通过 `python -m qatlib_env.ci` 调用；具体门禁和镜像依赖目标仓库的配置。
 
 本机构建使用带心跳的租约账本控制并发准入。Linux 在支持时使用 `systemd --user` cgroup v2 scope，Windows 使用 Job Object，macOS 在可用时使用 `taskpolicy` 调整调度优先级；各平台能力不同，macOS 不提供聚合内存硬上限。编译器包装层通过 `LEAN_SYSROOT` 覆盖和 `LAKE_OVERRIDE_LEAN` 注入线程数 `-j` 与内存参数 `-M`，其中 `-M` 最低为 `2048 MiB`。
@@ -61,10 +61,34 @@ qatlib-env config explain
 qatlib-env pool status
 
 qatlib-env worktree ../feature-branch feat/new-lemma
-qatlib-env --project ../feature-branch check MyLib.TargetModule
+qatlib-env --project ../feature-branch plan MyLib.TargetModule
+qatlib-env --project ../feature-branch run -- lake build MyLib.TargetModule
 ```
 
-`plan` 只输出路由建议；实际提交由 `cloud submit` 显式执行。云端命令需要先配置仓库和工作流、提供目标平台的 API 凭据，并确保工作流接受手动触发。`--head` 填目标工作流所在的真实分支，例如 `main`：
+`plan` 接受模块名、源码文件路径或库名，留空使用 Lake 默认目标。它读取真实 Git HEAD、依赖锁与检出身份、词法导入图、项目内反向依赖，以及 `.olean` / `.trace` 的保守有效性检查，输出目标数、包/工具链闭包、反向失效、热命中与必须重编数、未知导入、内存与耗时区间、`mode` 和结构化 `reasons`。它不运行 Lake、不恢复缓存、不写 `.lake`。耗时暂用每冷模块5–60秒及并发估算，重模块按至少8GiB进程峰值计；结果仍需结合实际测量，未涵盖链接与公理审计开销，也不替代 Lake 的原生 depHash 校验。
+
+```bash
+qatlib-env plan MyLib.TargetModule
+qatlib-env plan MyLib/TargetModule.lean
+qatlib-env plan --cold --full-gate
+qatlib-env plan MyLib.TargetModule --check-remote-cache
+```
+
+`--check-remote-cache` 只将精确修订清单取到内存，输出可达性与映射行数；清单行数不等于模块命中率，探测不会减少本机重编计数。缺失/损坏输出、依赖锁失配和未解析导入均不能被认证为热缓存。
+
+`run` 与 `check` 共用默认拒绝门禁。冷编/重编或反向波及超过配置阈值、整库目标、lint/test/可执行驱动或公理审计、依赖身份不符与导入未知时，本机执行返回非零并输出预算诊断。`--no-prepare` 只跳过缓存准备；`--policy local` 只表达偏好。任意 Python/shell 驱动按可能触发编译的完整操作处理；Lake 的跨目录参数必须与 `--project` 一致。
+
+获得用户对当次重任务的明确许可后，才使用下面的单次标志：
+
+```bash
+qatlib-env run --no-prepare --allow-local-heavy -- lake build MyLib
+qatlib-env check --allow-local-heavy MyLib.TargetModule
+qatlib-env ci build --allow-local-heavy
+```
+
+许可仅在本次进程调用内有效，诊断记录 `allow_local_heavy=true`，不会写入配置或传给子进程作为绕过变量。它不能提高池的 CPU/内存硬上限，也不能禁用控制器或超时。Linux 重任务要求可用的 systemd 用户 CPU/内存 scope，Windows 要求成功配置并附加 Job Object；缺少硬限制的后端拒绝本机重任务。更新消费项目固定版本时，应同步核对其 CI 调用显式许可和 Runner 资源配置。
+
+实际远端提交由 `cloud submit` 显式执行。云端命令需要先配置仓库和工作流、提供目标平台的 API 凭据，并确保工作流接受手动触发。排队、超时或平台不可用会保持远端状态或报错，不会自动回退本机。`--head` 填目标工作流所在的真实分支，例如 `main`：
 
 ```bash
 qatlib-env plan --policy auto --cold
@@ -119,7 +143,9 @@ qatlib-search query .cache/search-index.json 'gram' --kind theorem --limit 10
 
 ## 项目配置
 
-云端路由设置依次读取 `pyproject.toml` 的 `[tool.qatlib-env]`、`qatlib-env.toml`、`.qatlib-env.local.toml`，后者覆盖前者。独立的 `qatlib-env.toml` 可以使用顶层键；下面同时包含顶层云端设置和单独的 `[resources]` 构建资源节：
+路由、运行资源、CI/缓存项目资料及预算门禁共用一个校验加载器。优先级从低到高为：自适应默认、项目共享配置、仓内 local、环境变量、CLI。共享配置先读取根 `pyproject.toml` 的 `[tool.qatlib-env]`，再读取根 `qatlib-env.toml`；两者都不存在时回退到 `python/pyproject.toml`。兼容的 Runner 与已存在用户资源配置只作为低于项目的只读基础层，工具不会创建用户级配置文件。
+
+根 `.qatlib-env.local.toml` 同时覆盖路由、资源和预算；次级 worktree 缺失该文件时，只读回退到主检出根目录同名文件，当前 worktree 自己的文件优先。私有覆盖不存令牌、不提交 Git；格式损坏、类型错误和未知键会报告文件路径并停止。以下是共享配置示例：
 
 ```toml
 # qatlib-env.toml
@@ -127,6 +153,7 @@ cloud_platform = "github"
 repository = "quantum-atlas-ai/qatlib"
 workflow = "build.yml"
 local_pool_mib = 24576
+local_pool_cpu = 4
 
 [resources]
 jobs = 2
@@ -136,22 +163,42 @@ heavy_jobs = 1
 module_timeout = 1800
 stage_timeout = 10800
 heavy_patterns = []
+
+[budget]
+max_cold_modules = 15
+max_reverse_modules = 15
+require_explicit_local_heavy = true
 ```
 
-若把**云端设置**放进 `pyproject.toml`，必须使用配置节，不能直接使用文件顶层键：
+也可以把所有设置放进 `pyproject.toml` 或本地覆盖的 `[tool.qatlib-env]` 命名空间：
 
 ```toml
-# pyproject.toml
+# .qatlib-env.local.toml
 [tool.qatlib-env]
 cloud_platform = "github"
 repository = "quantum-atlas-ai/qatlib"
 workflow = "build.yml"
 local_pool_mib = 24576
+local_pool_cpu = 4
+
+[tool.qatlib-env.resources]
+jobs = 2
+lean_threads = 1
+memory_budget = "8GiB"
+heavy_jobs = 1
+heavy_patterns = ["HeavyCertificate"]
+
+[tool.qatlib-env.budget]
+max_cold_modules = 15
+max_reverse_modules = 15
+require_explicit_local_heavy = true
 ```
 
-实际构建资源由独立的资源解析器处理：`jobs`、`lean_threads`、`memory_budget` 等请放在 `qatlib-env.toml` 的 `[resources]` 节，或用 `--jobs`、`--lean-threads`、`--memory-budget` 等 CLI 参数覆盖。该资源解析器当前不读取 `pyproject.toml` 或 `.qatlib-env.local.toml`；`config explain` 可查看实际生效值与来源。
+`[resources]`、`[tool.qatlib-env]` 的资源键及其 `[resources]` 子表均受支持，子表覆盖同层平铺键。`default_jobs` 是 `jobs` 的兼容别名，`default_memory_mib` 转为字节单位的 `memory_budget`，同表的规范键优先。`require_explicit_local_heavy` 须保持 `true`；不接受把一次性重任务许可持久化。`config explain` 输出运行值、路由/预算及各自来源；超配保留原值供诊断，执行准入会硬拒绝。
 
-`local_pool_mib` 用于 `plan` 的路由比较；实际本机准入总预算使用 `QATLAS_POOL_BUDGET_MIB` 与 `QATLAS_POOL_CPU` 环境变量，等待超时使用 `QATLAS_POOL_WAIT_TIMEOUT`。本机编译缓存目录可通过 `LAKE_CACHE_DIR` 指定。私有覆盖文件可保存本机云端配置，但不要纳入版本控制或放入访问令牌。检索入口 `build` 的源码根目录由位置参数指定，与上述云端路由配置分别处理。
+`local_pool_mib` / `local_pool_cpu` 同时约束计划与执行，环境变量 `QATLAS_POOL_BUDGET_MIB` / `QATLAS_POOL_CPU` 可显式覆盖；并发 CPU 请求按 `jobs × lean_threads` 计。未配置的池按宿主可用资源自适应；单次请求绝不反向放大显式上限，活跃租约也不能被另一个调用者放大。`QATLAS_POOL_WAIT_TIMEOUT` 只控制等待其他租约的时间，超过硬上限的单次请求立即拒绝。预算阈值可用 `QATLAS_MAX_COLD_MODULES` / `QATLAS_MAX_REVERSE_MODULES` 覆盖，0表示不允许任何对应重编/波及，不表示无限制。
+
+本机工件缓存目录仍由 `LAKE_CACHE_DIR` 指定，池账本由 `XDG_STATE_HOME` / `XDG_CACHE_HOME` 定位；工具不会为两仓自动创建用户级共享配置。检索 `build` 的源码根由位置参数指定。需要共同使用机器池的项目必须指向同一账本，并采用一致的池上限。
 
 ## 本地开发与测试
 

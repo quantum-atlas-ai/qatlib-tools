@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from qatlib_env import checkpoint, r2_cache
 
@@ -194,13 +195,21 @@ raise SystemExit(1)
 class LakeCacheIntegrationTests(unittest.TestCase):
     """An actual dependency-free Lean package exercises native traces and ltars."""
     def setUp(self):
+        # Keep actual Lake/hash/cache I/O, isolating the admission policy tested
+        # by test_budget. Subprocess CLI probes still exercise real admission.
+        admission = patch('qatlib_env.budget.admit', return_value={'reasons': []})
+        admission.start()
+        self.addCleanup(admission.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.project = self.root / "repo"
         self.project.mkdir()
         self.env = {**os.environ, "LAKE_CACHE_DIR": str(self.root / "cache"),
-                    "LAKE_ARTIFACT_CACHE": "true", "LEAN_NUM_THREADS": "2"}
+                    "LAKE_ARTIFACT_CACHE": "true", "LEAN_NUM_THREADS": "2",
+                    "QATLAS_JOBS": "1", "QATLAS_LEAN_THREADS": "1", "QATLAS_MEMORY_BUDGET": str(2*1024**3),
+                    "QATLAS_POOL_BUDGET_MIB": "4096", "QATLAS_POOL_CPU": "2",
+                    "XDG_STATE_HOME": str(self.root / "state")}
         self.env.pop("LAKE_PKG_URL_MAP", None)
         self.env.pop("ELAN_TOOLCHAIN", None)
         for variable in {*r2_cache.KEY_VARIABLES.values(), "LAKE_CACHE_KEY", "QATLAS_R2_KEY_FILE"}:

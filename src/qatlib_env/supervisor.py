@@ -234,9 +234,9 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
     try:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout, stderr=stderr,
                                    text=text, **kwargs)
+        tree = _Tree(process, baseline)
         if process_callback is not None:
             process_callback(process)
-        tree = _Tree(process, baseline)
         started = time.monotonic()
         pending_input = input
         while True:

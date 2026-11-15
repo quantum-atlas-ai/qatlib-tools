@@ -23,6 +23,14 @@ from qatlib_env import workspace as lake
 
 class CacheWorkflowTests(unittest.TestCase):
     def setUp(self):
+        # Isolate supervision/cache behavior from the separately tested policy
+        # and native controller boundaries. Child processes remain real.
+        for boundary in [patch('qatlib_env.budget.admit', return_value={'reasons': []}),
+                         patch.object(lake, '_pool_scope', return_value=__import__('contextlib').nullcontext()),
+                         patch.object(lake, 'command_runtime_environment', side_effect=lambda p, e, a: e),
+                         patch.object(lake, '_backend_command', side_effect=lambda argv, *a, **kw: list(argv))]:
+            boundary.start()
+            self.addCleanup(boundary.stop)
         root = Path(os.environ.get("QATLAS_TEST_ROOT", tempfile.gettempdir()))
         root.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=root)
@@ -246,6 +254,7 @@ class CacheWorkflowTests(unittest.TestCase):
     def test_default_jobs_reserves_memory_per_lean_process(self):
         host = lake.resources.HostResources(125 * lake.GIB, 105 * lake.GIB, 48, 48, 125 * lake.GIB)
         with patch.object(lake.resources, "probe_resources", return_value=host), \
+             patch.object(Path, "cwd", return_value=self.project), \
              patch.dict(os.environ, self.env, clear=True):
             self.assertEqual(lake.default_jobs(), 23)
 

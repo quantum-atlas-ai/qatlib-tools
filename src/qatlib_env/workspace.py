@@ -45,7 +45,7 @@ def command_runtime_environment(project, env, argv):
     if _is_lake(argv):
         effective = command_environment(project, effective, argv)
     executable = Path(argv[0]).stem if argv else ""
-    if effective.get("QATLAS_LEAN_THREADS") and (_is_lake(argv) or executable.startswith(("python", "pypy")) or executable in {"bash", "sh"}):
+    if effective.get("QATLAS_LEAN_THREADS") and (_is_lake(argv) or executable.startswith(("python", "pypy")) or executable in {"bash", "sh", "elan"}):
         from qatlib_env.compiler import environment as compiler_environment
         effective = compiler_environment(project, effective)
     return effective
@@ -54,32 +54,25 @@ def command_runtime_environment(project, env, argv):
 @contextmanager
 def _pool_scope(effective, *, building):
     """Admit builds to the machine pool and renew the lease while running."""
-    if not building or effective.get("QATLAS_POOL_BYPASS") == "1":
+    if not building:
         yield
         return
-    from qatlib_env.pool import Pool
+    from qatlib_env.pool import Pool, PoolCapacityError
     raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
-    cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1"))))
-    configured_budget = effective.get("QATLAS_POOL_BUDGET_MIB")
-    if configured_budget is not None:
-        pool_budget = int(configured_budget)
-    else:
-        # Reserve from a host-RAM-scaled aggregate budget so one large
-        # per-job cap does not strand the remaining machine capacity.  A
-        # repository may still pin this with QATLAS_POOL_BUDGET_MIB.
-        try:
-            host = resources.probe_resources()
-            pool_budget = int(host.physical_memory * 0.90 / (1024 * 1024))
-        except (OSError, ValueError):
-            pool_budget = 24576
-    pool = Pool(budget_mib=max(memory_mib, pool_budget),
-                budget_cpu=max(cpu, int(effective.get("QATLAS_POOL_CPU", "4"))))
+    cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1")))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", "1")))
+    pool_budget = int(effective.get("QATLAS_POOL_BUDGET_MIB", "24576"))
+    pool_cpu = int(effective.get("QATLAS_POOL_CPU", "4"))
+    if memory_mib > pool_budget or cpu > pool_cpu:
+        raise ValueError(f"本机池硬上限拒绝准入: request={memory_mib}MiB/{cpu}cpu pool={pool_budget}MiB/{pool_cpu}cpu")
+    pool = Pool(budget_mib=pool_budget, budget_cpu=pool_cpu)
     deadline = time.monotonic() + float(effective.get("QATLAS_POOL_WAIT_TIMEOUT", "300"))
     lease = None
     while lease is None:
         try:
             lease = pool.acquire(memory_mib, cpu, owner=str(Path.cwd()))
+        except PoolCapacityError as error:
+            raise ValueError(str(error)) from error
         except RuntimeError:
             if time.monotonic() >= deadline:
                 raise TimeoutError("local build pool admission timed out")
@@ -100,39 +93,74 @@ def _pool_scope(effective, *, building):
         pool.release(lease)
 
 
-def _backend_command(argv, effective, *, building):
-    if not building or effective.get("QATLAS_USE_SYSTEMD_SCOPE", "1") != "1":
+def _backend_command(argv, effective, *, building, require_limits=False):
+    if not building:
+        return list(argv)
+    if effective.get("QATLAS_USE_SYSTEMD_SCOPE", "1") != "1":
+        if require_limits:
+            raise ValueError("heavy local execution requires an enabled hard resource controller")
         return list(argv)
     raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
-    cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1"))))
+    cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1")))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", "1")))
     if sys.platform.startswith("linux"):
-        from qatlib_env.backends.linux import linux_command
+        from qatlib_env.backends.linux import linux_command, systemd_available
+        if require_limits and not systemd_available():
+            raise ValueError("heavy local execution requires a delegated systemd user CPU/memory scope")
         return linux_command(list(argv), memory_mib=memory_mib, cpu=cpu,
                              unit=f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     if sys.platform == "darwin":
+        if require_limits:
+            raise ValueError("heavy local execution requires aggregate CPU/memory hard limits unavailable on this backend")
         from qatlib_env.backends.macos import macos_limits
         return macos_limits(list(argv), qos=effective.get("QATLIB_MACOS_QOS", "utility"))
+    if require_limits and sys.platform != "win32":
+        raise ValueError("heavy local execution requires a supported hard resource controller")
     return list(argv)
 
 
 def run(argv, *, cwd, env=None, capture=False):
     """Supervise every command, including Python/shell drivers spawning Lake."""
     project = Path(cwd)
-    effective = command_runtime_environment(project, env, argv)
-    building = lake_build_command(argv) and "--no-build" not in argv
+    from qatlib_env import budget
+    building, targets, full_gate = budget.command_request(argv, project)
+    plan = budget.admit(project, targets, env=env, full_gate=full_gate) if building else None
+    if plan is not None:
+        print("LOCAL_ADMISSION " + json.dumps(plan, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+    base = dict(os.environ if env is None else env)
+    if building:
+        # Normalize budgets even for programmatic callers without environment().
+        base = resources.resolve_config(project, env=base).environment(base)
+    effective = command_runtime_environment(project, base, argv)
+    if plan and plan["reasons"] and any(float(effective.get(key, default)) <= 0 for key, default in
+        (("QATLAS_STAGE_TIMEOUT", "10800"), ("QATLAS_MODULE_TIMEOUT", "1800"))):
+        raise ValueError("heavy local execution requires positive stage and module timeouts")
+    if building and Path(argv[0]).stem.casefold() == "lean":
+        from qatlib_env.compiler import compiler_command
+        argv = compiler_command(argv, jobs=int(effective["QATLAS_LEAN_THREADS"]),
+            memory_mib=max(2048, int(effective["QATLAS_MEMORY_BUDGET"]) // 1024**2 // int(effective["QATLAS_JOBS"])))
     build_started_ns = time.time_ns() if building else None
-    command = _backend_command(argv, effective, building=building)
+    command = _backend_command(argv, effective, building=building, require_limits=bool(plan and plan["reasons"]))
     job = None
     process_callback = None
     if building and sys.platform == "win32" and effective.get("QATLAS_USE_JOB_OBJECT", "1") == "1":
         from qatlib_env.backends.windows import JobObject
-        job = JobObject("qatlib-lean-build")
+        job = JobObject(f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
         memory_bytes = raw_memory if raw_memory > 65536 else raw_memory * 1024 * 1024
-        cpu_percent = max(1, int(effective.get("QATLAS_CPU_PERCENT", "100")))
-        job.configure(memory_bytes=max(2048 * 1024 * 1024, memory_bytes), cpu_percent=cpu_percent)
-        process_callback = lambda child: job.attach_pid(child.pid)
+        cpu = int(effective["QATLAS_JOBS"]) * int(effective["QATLAS_LEAN_THREADS"])
+        cpu_percent = min(float(effective.get("QATLAS_CPU_PERCENT", "100")), 100 * cpu / (os.cpu_count() or 1))
+        try:
+            job.configure(memory_bytes=max(2048 * 1024 * 1024, memory_bytes), cpu_percent=cpu_percent)
+        except BaseException:
+            job.close()
+            raise
+        def attach(child):
+            if not job.attach_pid(child.pid):
+                raise OSError("cannot attach child to the required Windows Job Object")
+        process_callback = attach
+    elif building and sys.platform == "win32" and plan and plan["reasons"]:
+        raise ValueError("heavy local execution requires a Windows Job Object")
     try:
         with _pool_scope(effective, building=building):
             return supervisor.run(
@@ -755,6 +783,8 @@ def lake_build_command(argv):
 
 def check(project, env, modules=()):
     """Run the consumer's own import gate, lint, build and kernel audit."""
+    from qatlib_env.budget import admit
+    admit(project, modules, env=env, full_gate=True)
     gate = project / "python/dev_metadata/check_source_imports.py"
     if gate.is_file():
         dependencies = []
@@ -963,12 +993,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="qatlib-env", description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--source-root", type=Path)
-    resource_options = ("jobs", "lean_threads", "memory_budget", "heavy_jobs", "module_timeout", "stage_timeout", "heavy_patterns")
+    resource_options = ("jobs", "lean_threads", "memory_budget", "heavy_jobs", "module_timeout", "stage_timeout", "heavy_patterns",
+                        "local_pool_mib", "local_pool_cpu", "max_cold_modules", "max_reverse_modules")
     def options(target, *, defaults=False):
         for name in resource_options:
             target.add_argument("--" + name.replace("_", "-"), default=None if defaults else argparse.SUPPRESS)
         target.add_argument("--offline", action="store_true", default=False if defaults else argparse.SUPPRESS)
         target.add_argument("--no-prepare", action="store_true", default=False if defaults else argparse.SUPPRESS)
+        target.add_argument("--allow-local-heavy", action="store_true", default=False if defaults else argparse.SUPPRESS)
+        target.add_argument("--full-gate", action="store_true", default=False if defaults else argparse.SUPPRESS)
+        target.add_argument("--policy", choices=("auto", "local", "cloud"), default="auto" if defaults else argparse.SUPPRESS)
     options(parser, defaults=True)
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("env", "shell", "bootstrap", "prepare"):
@@ -1006,10 +1040,11 @@ def main(argv=None):
     pool = commands.add_parser("pool")
     pool.add_argument("action", choices=("status", "prune"), nargs="?", default="status")
     plan = commands.add_parser("plan")
-    plan.add_argument("--policy", choices=("auto", "local", "cloud"), default="auto")
+    options(plan)
+    plan.add_argument("targets", nargs="*")
     plan.add_argument("--cold", action="store_true")
-    plan.add_argument("--full-gate", action="store_true")
     plan.add_argument("--memory-mib", type=int, default=0)
+    plan.add_argument("--check-remote-cache", action="store_true")
     cloud = commands.add_parser("cloud")
     cloud.add_argument("action", choices=("submit", "status", "logs", "wait", "fetch"))
     cloud.add_argument("--head", default="HEAD")
@@ -1031,15 +1066,17 @@ def main(argv=None):
     if args.command in {"pool", "plan", "cloud"}:
         if args.command == "pool":
             from qatlib_env.pool import Pool
-            result = Pool().prune() if args.action == "prune" else Pool().status()
+            config = resources.resolve_config(project, cli).configuration
+            instance = Pool(budget_mib=config.local_pool_mib, budget_cpu=config.local_pool_cpu)
+            result = instance.prune() if args.action == "prune" else instance.status()
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
         if args.command == "plan":
-            from qatlib_env.config import choose_mode, load_config
-            config = load_config(project)
-            mode = choose_mode(args.policy, cold=args.cold, memory_mib=args.memory_mib,
-                               full_gate=args.full_gate, pool_mib=config.local_pool_mib)
-            print(json.dumps({"mode": mode, "head": "HEAD"}, indent=2))
+            from qatlib_env.budget import estimate
+            result = estimate(project, args.targets, cli=cli, policy=args.policy, cold=args.cold,
+                              full_gate=args.full_gate, memory_mib=args.memory_mib,
+                              check_remote_cache=args.check_remote_cache)
+            print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
             return 0
         from qatlib_env.cloud import CloudLoop, make_request, unpack_bundle
         if args.action == "fetch" and args.bundle:
@@ -1049,7 +1086,7 @@ def main(argv=None):
             return 0
         from qatlib_env.config import load_config
         from qatlib_forge.repo_api import RepoAPI, RepoRef
-        config = load_config(project)
+        config = load_config(project, cli=cli)
         if not config.repository or not config.workflow:
             raise ValueError("cloud mode requires repository and workflow in qatlib-env.toml")
         request = make_request(config, head=args.head, policy="cloud", cold=True)
@@ -1089,6 +1126,16 @@ def main(argv=None):
             raise ValueError("maintain-mirror needs --mirror or QATLAS_PKG_MIRROR")
         maintain_mirror(mirror, dict(os.environ), gc_cache=args.gc_cache, project=project)
         return 0
+    if args.command in {"run", "check"}:
+        from qatlib_env import budget
+        if args.command == "check":
+            active, targets, entire = True, args.modules, True
+        else:
+            requested = args.args[1:] if args.args[:1] == ["--"] else args.args
+            active, targets, entire = budget.command_request(requested, project)
+        if active:
+            budget.admit(project, targets, cli=cli, policy=args.policy,
+                         full_gate=args.full_gate or entire, allow_local_heavy=args.allow_local_heavy)
     env = environment(project, args.source_root, cli=cli)
     if args.command == "env":
         print(json.dumps({k: env[k] for k in ENV_KEYS}, indent=2))
@@ -1097,8 +1144,10 @@ def main(argv=None):
             print(f"export {key}={shlex.quote(env[key])}")
     elif args.command in {"bootstrap", "prepare"}:
         from qatlib_env.prepare import prepare
-        result = ({"skipped": "explicit --no-prepare"} if args.no_prepare else
-                  prepare(project, env, source=args.source_root, offline=args.offline))
+        from qatlib_env.budget import permission
+        with permission(args.allow_local_heavy):
+            result = ({"skipped": "explicit --no-prepare"} if args.no_prepare else
+                      prepare(project, env, source=args.source_root, offline=args.offline))
         print(json.dumps(result, indent=2))
     elif args.command == "cache":
         from qatlib_env import checkpoint
@@ -1107,22 +1156,26 @@ def main(argv=None):
                           "cold_modules": cold_modules(project), "checkpoint": checkpoint.describe(project, env),
                           "resources": resources.resolve_config(project, cli).explain()}, indent=2))
     elif args.command == "check":
-        if not args.no_prepare:
-            from qatlib_env.prepare import prepare
-            prepare(project, env, source=args.source_root, offline=args.offline)
-        check(project, env, args.modules)
+        from qatlib_env.budget import permission
+        with permission(args.allow_local_heavy, full_gate=True):
+            if not args.no_prepare:
+                from qatlib_env.prepare import prepare
+                prepare(project, env, source=args.source_root, offline=args.offline)
+            check(project, env, args.modules)
     elif args.command == "run":
         command = args.args[1:] if args.args[:1] == ["--"] else args.args
         if not command:
             raise ValueError("run needs a command after --")
-        if lake_build_command(command) and "--no-build" not in command and not args.no_prepare:
-            from qatlib_env.prepare import prepare
-            prepare(project, env, source=args.source_root, offline=args.offline)
         run_env = {**env, **({"LAKE_PKG_URL_MAP": os.environ["LAKE_PKG_URL_MAP"]}
                              if "LAKE_PKG_URL_MAP" in os.environ else {})}
         # A finished child does not imply an idle workspace: another Lean or
         # leanir process may still consume setup files. Only clean-setup sweeps.
-        run(command, cwd=project, env=run_env)
+        from qatlib_env.budget import permission
+        with permission(args.allow_local_heavy, full_gate=args.full_gate):
+            if active and "--no-build" not in command and not args.no_prepare:
+                from qatlib_env.prepare import prepare
+                prepare(project, env, source=args.source_root, offline=args.offline)
+            run(command, cwd=project, env=run_env)
     elif args.command == "worktree":
         path = args.path.expanduser().resolve()
         run(["git", "worktree", "add", "-b", args.branch, str(path)], cwd=project)

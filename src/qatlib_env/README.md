@@ -8,6 +8,22 @@ This package contains the shared Lean workspace control plane. It is distributed
 
 All workspace roots, package targets, cache services, Forge endpoints, and runner values are read from `qatlib-env.toml`, `[tool.qatlib-env]`, `.qatlib-env.local.toml`, environment variables, or explicit CLI flags. The shared package contains no consumer-repository profile.
 
+The configuration pipeline validates every layer. Missing local overrides fall
+back to the primary checkout; projects with neither root configuration file may
+use `python/pyproject.toml`. `config explain` reports routing, budget, resource
+values and provenance. No user configuration is created.
+
+`plan [targets...]` inspects source imports, reverse dependencies, pinned package
+identities and conservative output freshness without building or restoring
+anything. Optional remote-manifest reads remain in memory. Estimates explicitly
+report unresolved imports and heuristic memory/time assumptions.
+
+Local cold/rebuild and reverse thresholds default to 15. Full gates, audits and
+unknown source identities require `--allow-local-heavy` for that invocation;
+`--no-prepare` and `--policy local` do not bypass admission. The permission never
+raises hard pool limits or disables process controls. Heavy execution fails if
+its hard controller is unavailable. CI callers must opt in explicitly as well.
+
 ## Local pool and cloud loop
 
 Lake builds acquire a machine-wide lease with a heartbeat and stale-process reaping. Linux uses a delegated user cgroup scope when available; macOS and Windows use their native process controls where available and retain ledger admission plus supervisor cleanup as the portable fallback. The compiler overlay supplies explicit Lean job and memory limits without changing Lake dependency identity.

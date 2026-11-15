@@ -144,7 +144,11 @@ def main() -> int:
         threads = int(os.environ.get("QATLAS_LEAN_THREADS", "2"))
         if threads < 1:
             raise ValueError("QATLAS_LEAN_THREADS must be positive")
-        args = [f"-j{threads}", *args]
+        from qatlib_env.config import memory_bytes
+        total = memory_bytes(os.environ.get("QATLAS_MEMORY_BUDGET", str(4 * 1024**3)))
+        processes = max(1, int(os.environ.get("QATLAS_JOBS", "1")))
+        memory_mib = max(2048, total // (1024**2) // processes)
+        args = [f"-j{threads}", f"-M{memory_mib}", *args]
     actual = dict(os.environ)
     actual["LEAN_SYSROOT"] = actual["QATLAS_REAL_SYSROOT"]
     os.execve(real, [real, *args], actual)
