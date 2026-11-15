@@ -17,9 +17,12 @@ BUDGET_DEFAULTS = {"max_cold_modules": 15, "max_reverse_modules": 15,
 ROUTE_DEFAULTS = {"source_roots": ["."], "cache_dir": ".lake", "local_pool_mib": 24576,
                   "local_pool_cpu": 4, "cloud_platform": "auto"}
 PROFILE_KEYS = frozenset({"repository", "workflow", "library", "tests", "ref", "cache_repository",
-                          "cache_bucket", "cache_key_variable", "gitea_host"})
+                          "cache_bucket", "cache_key_variable", "gitea_host", "search_source_roots",
+                          "search_module_roots"})
 ENV_FIELDS = {
     "source_roots": ("QATLIB_SOURCE_ROOTS",), "cache_dir": ("QATLIB_CACHE_DIR",),
+    "search_source_roots": ("QATLIB_SEARCH_SOURCE_ROOTS",),
+    "search_module_roots": ("QATLIB_SEARCH_MODULE_ROOTS",),
     "local_pool_mib": ("QATLAS_POOL_BUDGET_MIB",), "local_pool_cpu": ("QATLAS_POOL_CPU",),
     "repository": ("QATLIB_REPOSITORY",), "workflow": ("QATLIB_WORKFLOW",),
     "cloud_platform": ("QATLIB_CLOUD_PLATFORM",), "library": ("QATLIB_LIBRARY",),
@@ -83,7 +86,7 @@ def _validate(values: Mapping[str, object], source: str, *, strings: bool = Fals
                 raise ValueError(f"{source}: {key} must be an integer >= {minimum}")
             if key == "default_memory_mib":
                 value = max(2048, value) * 1024**2
-        elif key in {"source_roots", "heavy_patterns"}:
+        elif key in {"source_roots", "heavy_patterns", "search_source_roots", "search_module_roots"}:
             if strings and isinstance(value, str):
                 value = [part.strip() for part in value.split(",") if part.strip()]
             if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) and v for v in value):

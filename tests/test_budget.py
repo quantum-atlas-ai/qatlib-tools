@@ -178,6 +178,14 @@ def test_nested_distribution_fallback(tmp_path):
     assert config.load_config(tmp_path).repository == "sample/shared"
 
 
+def test_distribution_shared_search_settings_are_valid_configuration():
+    root = Path(__file__).resolve().parents[1]
+    settings = config.load_config(root, env={})
+    assert settings.metadata["search_source_roots"] == ["Qatlib", "Project"]
+    assert settings.metadata["search_module_roots"] == ["Qatlib", "Project"]
+    assert resources.resolve_config(root, env={}).values["jobs"] == 2
+
+
 @pytest.mark.parametrize("text", ['[resources', '[resources]\njobs=true', '[budget]\nmax_cold_modules="15"',
                                         'source_roots="Consumer"', '[resources]\nheavy_patterns=8',
                                         '[tool.qatlib-env]\nresources=3', '[budget]\nrequire_explicit_local_heavy=false'])
