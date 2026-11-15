@@ -313,10 +313,13 @@ def _lake_guard(path, remote_cache=None):
         if ".git" in dirs or ".git" in files:
             fact = checkout_facts(root)
             common = common_facts(root, check_remote=True, remote_cache=remote_cache)
-            ignored_source = git(root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
-                                 "--", "*.lean", "*.py", "*.md")
-            if fact["errors"] or fact.get("dirty_count") or ignored_source.returncode or ignored_source.stdout:
-                errors.append(f"modified/ignored/unknown dependency source: {root}")
+            try:
+                ignored_source = git(root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
+                                     "--", "*.lean", "*.py", "*.md")
+                if fact["errors"] or fact.get("dirty_count") or ignored_source.returncode or ignored_source.stdout:
+                    errors.append(f"modified/ignored/unknown dependency source: {root}")
+            except (OSError, subprocess.SubprocessError) as error:
+                errors.append(f"dependency source inspection incomplete: {root}: {error}")
             if (common["errors"] or common.get("stash_count") or not common["remote_verified"] or
                     common["unpushed_branches"] or common["unknown_branches"]):
                 errors.append(f"unharvested/unknown dependency Git data: {root}")
@@ -374,7 +377,7 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
             nested, markers, errors, _ = discover([path])
             if errors or any(Path(p) != path for p in nested):
                 reasons.append("nested checkout or incomplete discovery; review separately")
-        elif target.is_dir() and not target.is_symlink():
+        elif target.is_dir() and not target.is_symlink() and not reasons:
             reasons.extend(_lake_guard(target, remote_cache=remote_cache))
         if target.is_symlink() or not target.exists():
             reasons.append("missing or shared/symlinked target")

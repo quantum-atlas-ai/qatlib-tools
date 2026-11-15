@@ -1,5 +1,6 @@
 """Read-only inventory and fail-closed cleanup tests: no real Trash calls."""
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -163,6 +164,46 @@ def mock_cleanup(monkeypatch, *, facts=None, groups=None, active=None):
     moved = Mock(side_effect=lambda path: {'original_path': str(path), 'backend': 'mock'})
     monkeypatch.setattr(inventory.system_trash, 'trash', moved)
     return moved
+
+
+def lake_dependency(monkeypatch, *, common=None, git_result=None):
+    root = Path('/r/a/.lake/packages/example')
+    monkeypatch.setattr(inventory.os, 'walk', lambda *a, **k: iter([(str(root), ['.git'], [])]))
+    monkeypatch.setattr(Path, 'is_symlink', lambda self: False)
+    monkeypatch.setattr(inventory, 'checkout_facts', lambda path: fact(path))
+    monkeypatch.setattr(inventory, 'common_facts', lambda *a, **k: common or group())
+    monkeypatch.setattr(inventory, 'git', git_result or Mock(return_value=SimpleNamespace(returncode=0, stdout='', stderr='')))
+    return root
+
+
+def test_lake_dependency_ignored_source_timeout_is_protected(monkeypatch):
+    timeout = Mock(side_effect=subprocess.TimeoutExpired(['git', 'ls-files'], 15))
+    root = lake_dependency(monkeypatch, git_result=timeout)
+    reasons = inventory._lake_guard(Path('/r/a/.lake'))
+    assert reasons
+    assert any('incomplete' in reason.lower() and str(root) in reason for reason in reasons)
+
+
+def test_lake_dependency_common_dir_serving_worktree_is_protected(monkeypatch):
+    root = lake_dependency(monkeypatch, common=group(worktrees=['/another/worktree']))
+    reasons = inventory._lake_guard(Path('/r/a/.lake'))
+    assert any('common-dir serves other worktrees' in reason and str(root) in reason for reason in reasons)
+
+
+def test_lake_dependency_verified_cold_source_is_allowed(monkeypatch):
+    lake_dependency(monkeypatch)
+    assert inventory._lake_guard(Path('/r/a/.lake')) == []
+
+
+def test_hot_cache_preview_skips_deep_dependency_inspection(monkeypatch):
+    moved = mock_cleanup(monkeypatch, facts=lambda p, **k: fact(p, last_activity=inventory.time.time()))
+    deep_check = Mock(side_effect=AssertionError('hot checkout should skip deep audit'))
+    monkeypatch.setattr(inventory, '_lake_guard', deep_check)
+    result = inventory.clean(['/r/a'])
+    assert not result['targets'][0]['eligible']
+    assert any('hot checkout' in reason for reason in result['targets'][0]['reasons'])
+    deep_check.assert_not_called()
+    moved.assert_not_called()
 
 
 @pytest.mark.parametrize(('case', 'expected'), [
