@@ -200,6 +200,40 @@ require_explicit_local_heavy = true
 
 本机工件缓存目录仍由 `LAKE_CACHE_DIR` 指定，池账本由 `XDG_STATE_HOME` / `XDG_CACHE_HOME` 定位；工具不会为两仓自动创建用户级共享配置。检索 `build` 的源码根由位置参数指定。需要共同使用机器池的项目必须指向同一账本，并采用一致的池上限。
 
+## 多根工作区盘点与官方回收站
+
+普通环境命令不扫描机器。维护时使用独立入口；扫描不初始化环境、不 fetch、不刷新
+Git index，也不创建缓存锁。使用 `python -B` 避免 Python 导入生成字节码：
+
+```bash
+python -B -m qatlib_env workspace scan ~/work ~/.legacy-worktrees/tmp --json
+python -B -m qatlib_env workspace scan ~/work --measure --check-remote --json
+python -B -m qatlib_env workspace scan /known/checkout /another/checkout --exact --json
+python -B -m qatlib_env workspace clean-caches --checkout /exact/idle/checkout --dry-run --json
+python -B -m qatlib_env workspace trash-checkouts --checkout /exact/redundant/checkout --dry-run --json
+```
+
+默认扫描当前目录的父目录与 `~/.legacy-worktrees/tmp`。显式根可以跨挂载；递归不进入
+其他挂载、符号链接、`.git`、`.lake`、回收站和常见依赖/容器目录。输出同时记录 Git、
+Lake/Lean 与研究目录标记，并按 `common-dir` 汇总全部分支、stash 与 worktree。
+已知清单可用 `--exact` 跳过递归发现。默认不遍历 `.lake` 测大小；`--measure`
+测分配/逻辑字节，耗时取决于文件数量。
+`--check-remote` 只读 `ls-remote`；缺失远端对象或浅克隆会保守标为未知，不自动 fetch。
+
+两个清理命令默认仅预览。保留常用 clone 时选 `clean-caches`，整树回收只选明确多余的
+`trash-checkouts`。两者均要求精确检出根，保护最近至少 24 小时有活动、dirty/stash、
+可见 Lean/Lake 进程和 `--protect PATH`；整树回收另检查全部共享分支、忽略文件、
+嵌套仓及仍依赖主 Git 目录的 linked worktree。`.lake/packages` 内的源码独立检查，
+未知/未推成果不被当作可重建缓存。收远端、整合成果和切回 main 由 Agent/操作者判断。
+
+审阅具体路径和状态并得到用户批准后，才用同一选择列表加 `--apply`。执行会重新预检，
+遇保护项整批拒绝，后端途中失败保留已成功项的回执并停止；仍需操作者协调写者，
+无法排除检查后新进程启动的竞态。工具不保存批准，也不自动恢复或清空回收站。
+Linux 优先 gio 本地 VFS，明确不支持时停止；缺 gio 可用 trash-put。macOS 使用
+`/usr/bin/trash` 或 Finder，Windows 使用显式 `SendToRecycleBin`。无可用官方后端
+或后端拒绝时停下询问用户，没有自制目录或永久删除兜底。同盘回收通常保留物理块，
+大小和回执均不代表已经释放磁盘空间；共享 extents/硬链接也不能重复计算为可释放量。
+
 ## 本地开发与测试
 
 在检出目录中执行以下命令。测试工具通过 `uv run --with` 临时加入隔离环境；它们不属于核心运行时依赖。构建检查也会核验随 wheel 分发的手册、Lean 导出器与 JSON schema。
