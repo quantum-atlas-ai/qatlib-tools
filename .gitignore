@@ -1,0 +1,11 @@
+.venv/
+.wheel-venv*/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+dist/
+build/
+.lake/
+.qatlib-env.local.toml
+

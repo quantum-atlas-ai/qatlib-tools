@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+      - name: Verify lockfile
+        run: uv lock --check
+      - name: Build distributions
+        run: uv build
+      - name: Run tests
+        run: uv run --with pytest --with hatchling --with jsonschema pytest -q -rs
+      - name: Install wheel in a clean environment
+        run: |
+          uv venv --python 3.12 .wheel-venv-ci
+          uv pip install --python .wheel-venv-ci/bin/python dist/*.whl
+          .wheel-venv-ci/bin/qatlib-env --help
+          .wheel-venv-ci/bin/qatlib-forge --help
+          .wheel-venv-ci/bin/qatlib-search --help
+          .wheel-venv-ci/bin/python -m qatlib_search --help
+          .wheel-venv-ci/bin/python -m qatlib_env.ci --help
+

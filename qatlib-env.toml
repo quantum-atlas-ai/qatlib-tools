@@ -1,0 +1,11 @@
+[tool.qatlib-env]
+source_roots = ["."]
+cache_dir = ".lake"
+local_pool_mib = 24576
+local_pool_cpu = 4
+default_jobs = 2
+default_memory_mib = 2048
+cloud_platform = "auto"
+search_source_roots = ["Qatlib", "Project"]
+search_module_roots = ["Qatlib", "Project"]
+
