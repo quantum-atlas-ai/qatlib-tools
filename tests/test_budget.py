@@ -253,6 +253,19 @@ def test_full_gate_context_cannot_drop_controller_requirement(project):
     assert not budget.estimate(project, ["Consumer.Leaf"])["full_gate"]
 
 
+@pytest.mark.parametrize("options", [["+other-toolchain"], ["--toolchain", "other-toolchain"], ["-f", "alternate.toml"]])
+def test_lake_global_overrides_cannot_change_planned_inputs(project, options):
+    with pytest.raises(ValueError):
+        budget.command_request(["lake", *options, "build", "Consumer.Leaf"], project)
+
+
+def test_programmatic_check_retains_full_gate_scope_for_all_children(project):
+    seen = []
+    with budget.permission(True), patch.object(workspace, "run", side_effect=lambda *a, **kw: seen.append(budget._full_gate.get())):
+        workspace.check(project, os.environ, ["Consumer.Leaf"])
+    assert seen and all(seen)
+
+
 def test_explicit_task_budget_cannot_be_exceeded_by_compiler_floor(project):
     with pytest.raises(budget.AdmissionError):
         budget.admit(project, ["Consumer.Leaf"], allow_local_heavy=True, cli={"memory_budget": "1GiB"})

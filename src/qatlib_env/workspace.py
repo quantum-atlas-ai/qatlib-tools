@@ -783,8 +783,14 @@ def lake_build_command(argv):
 
 def check(project, env, modules=()):
     """Run the consumer's own import gate, lint, build and kernel audit."""
-    from qatlib_env.budget import admit
+    from qatlib_env.budget import admit, permission, _permission
     admit(project, modules, env=env, full_gate=True)
+    with permission(_permission.get(), full_gate=True):
+        _check(project, env, modules)
+
+
+def _check(project, env, modules):
+    """Keep the full-gate scope through every constituent child operation."""
     gate = project / "python/dev_metadata/check_source_imports.py"
     if gate.is_file():
         dependencies = []

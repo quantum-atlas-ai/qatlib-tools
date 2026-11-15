@@ -485,10 +485,18 @@ def command_request(argv, project: Path) -> tuple[bool, list[str], bool]:
     verb, rest = argv[index], argv[index + 1:]
     if verb not in {"build", "lean", "lint", "test", "exe", "env"}:
         return (False, [], False) if verb in {"update", "upgrade", "resolve-deps", "cache", "help", "--help", "--version"} else (True, [], True)
-    for index, arg in enumerate(argv[1:], 1):
+    for index, arg in enumerate(argv[1:index], 1):
         directory = argv[index + 1] if arg in {"-d", "--dir"} and index + 1 < len(argv) else arg.split("=", 1)[1] if arg.startswith("--dir=") else arg[2:] if arg.startswith("-d") and len(arg) > 2 else None
         if directory and (project / directory).resolve() != project.resolve():
             raise ValueError("Lake directory override must match --project; select the project explicitly")
+        toolchain = argv[index + 1] if arg == "--toolchain" and index + 1 < len(argv) else arg.split("=", 1)[1] if arg.startswith("--toolchain=") else arg[1:] if arg.startswith("+") else None
+        if toolchain:
+            pinned = project / "lean-toolchain"
+            if not pinned.is_file() or toolchain != pinned.read_text().strip():
+                raise ValueError("Lake toolchain override must match the pinned lean-toolchain")
+        alternate = argv[index + 1] if arg in {"-f", "--file"} and index + 1 < len(argv) else arg.split("=", 1)[1] if arg.startswith("--file=") else arg[2:] if arg.startswith("-f") and len(arg) > 2 else None
+        if alternate and (project / alternate).resolve() != (project / "lakefile.toml").resolve():
+            raise ValueError("alternate Lake configuration cannot bypass the planned project inputs")
     if verb == "env":
         # Environment wrappers can spawn an unrestricted compiler/driver.
         return True, [], True
