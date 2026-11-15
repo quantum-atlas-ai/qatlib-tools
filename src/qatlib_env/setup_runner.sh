@@ -6,6 +6,7 @@ usage() {
   cat <<'EOF'
 Usage:
   setup_runner.sh [init]
+  setup_runner.sh known-hosts <RUNNER_HOME> [RUNNER_USER]
   setup_runner.sh register <lane> <instance> --url <URL>
       [--token TOKEN] [--labels LABELS] [--forge auto|github|gitea]
       [--jobs N] [--lean-threads N] [--memory-budget SIZE] [--heavy-jobs N]
@@ -18,10 +19,10 @@ EOF
 }
 
 command=${1:-init}
-case "$command" in init|register|--help|-h) ;; *) usage >&2; exit 1;; esac
+case "$command" in init|known-hosts|register|--help|-h) ;; *) usage >&2; exit 1;; esac
 if [ "$command" = "--help" ] || [ "$command" = "-h" ]; then usage; exit 0; fi
 
-if [ "$(id -u)" -ne 0 ]; then
+if [ "$command" != known-hosts ] && [ "$(id -u)" -ne 0 ]; then
   echo 'Run this script as root.' >&2
   exit 1
 fi
@@ -32,6 +33,39 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 valid_lane() { case "$1" in pub|dev|secondary) return 0;; *) return 1;; esac; }
 valid_instance() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
+
+# Fixed keys from https://api.github.com/meta. Runtime setup never trusts an
+# unauthenticated ssh-keyscan result for host identity.
+GITHUB_ED25519_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl'
+GITHUB_ECDSA_KEY='ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg='
+GITHUB_RSA_KEY='ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk='
+
+known_hosts_has_key() {
+  local known_hosts=$1 host=$2 key=$3
+  ssh-keygen -F "$host" -f "$known_hosts" 2>/dev/null | grep -F -- " $key" >/dev/null 2>&1
+}
+
+configure_github_known_hosts() {
+  local account=$1 root=$2
+  local ssh_dir="$root/.ssh" known_hosts="$root/.ssh/known_hosts"
+  local group host key
+  group=$(id -gn "$account")
+  install -d -m 0700 -o "$account" -g "$group" "$ssh_dir"
+  if [ ! -e "$known_hosts" ]; then
+    : > "$known_hosts"
+  fi
+  chown "$account:$group" "$known_hosts"
+  chmod 0600 "$known_hosts"
+  for host in github.com '[ssh.github.com]:443'; do
+    for key in "$GITHUB_ED25519_KEY" "$GITHUB_ECDSA_KEY" "$GITHUB_RSA_KEY"; do
+      if ! known_hosts_has_key "$known_hosts" "$host" "$key"; then
+        printf '%s %s\n' "$host" "$key" >> "$known_hosts"
+      fi
+    done
+  done
+  chown "$account:$group" "$known_hosts"
+  chmod 0600 "$known_hosts"
+}
 
 host_packages=(build-essential ca-certificates curl git python3 python3-venv systemd tar zstd)
 host_commands=(cc curl git install python3 runuser systemctl tar useradd zstd)
@@ -171,11 +205,20 @@ register() {
   esac
   [ -d "$base/$lane/runners" ] || { echo "Lane $lane is not provisioned; run setup_runner.sh init first." >&2; exit 1; }
   ensure_host_prerequisites
+  configure_github_known_hosts "qatlas-ci-$lane" "$base/$lane"
   PYTHONPATH="$script_dir/..${PYTHONPATH:+:$PYTHONPATH}" python3 -B -m qatlib_env.runner_config \
     --base "$base" --systemd-dir "$systemd_dir" --lane "$lane" --instance "$instance" "${resource_args[@]}"
   chown "qatlas-ci-$lane:qatlas-ci-$lane" "$base/$lane/runners/$instance/.env" "$base/$lane/runners/$instance/resources.toml"
   if [ "$forge" = github ]; then register_github "$lane" "$instance" "$url" "$token" "$labels"; else register_gitea "$lane" "$instance" "$url" "$token" "$labels"; fi
 }
+
+if [ "$command" = known-hosts ]; then
+  known_hosts_root=${2:-}
+  known_hosts_account=${3:-$(id -un)}
+  [ -n "$known_hosts_root" ] || { echo 'known-hosts requires <RUNNER_HOME>.' >&2; exit 1; }
+  configure_github_known_hosts "$known_hosts_account" "$known_hosts_root"
+  exit 0
+fi
 
 if [ "$command" = "register" ]; then
   shift
@@ -224,6 +267,7 @@ while read -r lane; do
     useradd --system --user-group --create-home --home-dir "$root" --shell /bin/bash "$account"
   fi
   install -d -m 0700 -o "$account" -g "$account" "$root"
+  configure_github_known_hosts "$account" "$root"
   for directory in elan venv node lake-cache xdg-cache pkg-mirror runners tmp bin; do
     install -d -m 0700 -o "$account" -g "$account" "$root/$directory"
   done

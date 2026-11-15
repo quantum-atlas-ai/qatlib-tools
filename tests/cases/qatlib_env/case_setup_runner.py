@@ -148,6 +148,7 @@ exit 0
 ''')
         (self.bin / "mktemp").symlink_to("/usr/bin/mktemp")
         (self.bin / "cp").symlink_to("/bin/cp")
+        (self.bin / "chmod").symlink_to("/usr/bin/chmod")
         self.stub("chown", "exit 0")
         # A prior setup used this fixed staging directory for separate packages.
         # A new init must not ship stale child distribution metadata or modules.

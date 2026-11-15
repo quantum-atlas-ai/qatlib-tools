@@ -61,7 +61,19 @@ def _pool_scope(effective, *, building):
     raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
     cpu = max(1, int(effective.get("QATLAS_JOBS", effective.get("LEAN_NUM_THREADS", "1"))))
-    pool = Pool(budget_mib=max(memory_mib, int(effective.get("QATLAS_POOL_BUDGET_MIB", "24576"))),
+    configured_budget = effective.get("QATLAS_POOL_BUDGET_MIB")
+    if configured_budget is not None:
+        pool_budget = int(configured_budget)
+    else:
+        # Reserve from a host-RAM-scaled aggregate budget so one large
+        # per-job cap does not strand the remaining machine capacity.  A
+        # repository may still pin this with QATLAS_POOL_BUDGET_MIB.
+        try:
+            host = resources.probe_resources()
+            pool_budget = int(host.physical_memory * 0.90 / (1024 * 1024))
+        except (OSError, ValueError):
+            pool_budget = 24576
+    pool = Pool(budget_mib=max(memory_mib, pool_budget),
                 budget_cpu=max(cpu, int(effective.get("QATLAS_POOL_CPU", "4"))))
     deadline = time.monotonic() + float(effective.get("QATLAS_POOL_WAIT_TIMEOUT", "300"))
     lease = None
@@ -97,7 +109,7 @@ def _backend_command(argv, effective, *, building):
     if sys.platform.startswith("linux"):
         from qatlib_env.backends.linux import linux_command
         return linux_command(list(argv), memory_mib=memory_mib, cpu=cpu,
-                             unit="qatlib-lean-build")
+                             unit=f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     if sys.platform == "darwin":
         from qatlib_env.backends.macos import macos_limits
         return macos_limits(list(argv), qos=effective.get("QATLIB_MACOS_QOS", "utility"))
