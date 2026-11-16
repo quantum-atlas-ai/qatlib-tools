@@ -45,8 +45,15 @@ def command_runtime_environment(project, env, argv):
         effective = command_environment(project, effective, argv)
     executable = Path(argv[0]).stem if argv else ""
     if effective.get("QATLAS_LEAN_THREADS") and (_is_lake(argv) or executable.startswith(("python", "pypy")) or executable in {"bash", "sh", "elan"}):
-        from qatlib_env.compiler import environment as compiler_environment
-        effective = compiler_environment(project, effective)
+        if sys.platform == "win32":
+            # The runtime overlay wraps the toolchain in POSIX symlink shims.
+            # On Windows the Job Object backend already enforces the hard
+            # memory/CPU caps and the supervisor keeps stage/module timeouts,
+            # so run the real toolchain with the configured thread count only.
+            effective["LEAN_NUM_THREADS"] = effective["QATLAS_LEAN_THREADS"]
+        else:
+            from qatlib_env.compiler import environment as compiler_environment
+            effective = compiler_environment(project, effective)
     return effective
 
 
