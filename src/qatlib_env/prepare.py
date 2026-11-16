@@ -269,6 +269,24 @@ def _publish_native_mappings(staged: Path, cache: Path) -> int:
     if shared.is_symlink():
         raise CacheError("cache outputs directory must not be symlinked")
     shared.mkdir(exist_ok=True)
+    if os.name == "nt":
+        # Directory descriptors are POSIX-only. Apply the same namespace and
+        # regular-file checks through paths; os.replace stays atomic because
+        # staging and outputs share the cache volume.
+        for source, namespace, name in mappings:
+            namespace_dir = shared / namespace
+            if namespace_dir.is_symlink():
+                raise CacheError(f"cache output namespace is symlinked: {namespace}")
+            namespace_dir.mkdir(exist_ok=True)
+            target = namespace_dir / name
+            try:
+                info = target.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                info = None
+            if info is not None and not stat.S_ISREG(info.st_mode):
+                raise CacheError(f"cache output mapping is not a regular file: {namespace}/{name}")
+            os.replace(source, target)
+        return len(mappings)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     # Directory descriptors keep the destination anchored even if a path is
     # replaced after inspection. Never follow an existing namespace symlink.
