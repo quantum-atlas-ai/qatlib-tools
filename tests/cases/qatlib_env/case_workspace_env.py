@@ -65,36 +65,18 @@ class CacheWorkflowTests(unittest.TestCase):
     def collect(self, **kwargs):
         return lake.gc(self.cache, workspace=self.project, age=0, **kwargs)
 
-    def test_remove_derived_prefers_path_trash_put(self):
+    def test_remove_derived_uses_system_trash(self):
         path = self.root / "derived"
         path.write_text("payload")
-        with patch.object(lake.shutil, "which", return_value="/opt/bin/trash-put"), \
-             patch.object(lake.supervisor, "run") as command:
+        with patch.object(lake.trash, "trash", return_value={"backend": "gio"}) as command:
             lake.remove_derived(path, {"XDG_DATA_HOME": str(self.root / "xdg")})
-        command.assert_called_once_with(["/opt/bin/trash-put", str(path)], check=True)
+        command.assert_called_once_with(path, {"XDG_DATA_HOME": str(self.root / "xdg")})
         self.assertTrue(path.exists())
 
     def test_remove_derived_missing_file_does_not_call_trash(self):
-        with patch.object(lake.supervisor, 'run') as command:
+        with patch.object(lake.trash, 'trash') as command:
             lake.remove_derived(self.root / 'missing')
         command.assert_not_called()
-
-    def test_remove_derived_falls_back_to_freedesktop_trash_and_avoids_collisions(self):
-        path = self.root / "derived"
-        path.write_text("payload")
-        xdg = self.root / "xdg"
-        files = xdg / "Trash/files"
-        files.mkdir(parents=True)
-        (files / path.name).write_text("existing")
-        with patch.object(lake.shutil, "which", return_value=None):
-            lake.remove_derived(path, {"XDG_DATA_HOME": str(xdg)})
-        destination = files / (path.name + ".1")
-        info = xdg / "Trash/info" / (destination.name + ".trashinfo")
-        self.assertFalse(path.exists())
-        self.assertEqual(destination.read_text(), "payload")
-        self.assertIn("[Trash Info]\n", info.read_text())
-        self.assertIn("Path=", info.read_text())
-        self.assertIn("DeletionDate=", info.read_text())
 
     def init_worktree(self):
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.project, check=True)
@@ -125,13 +107,12 @@ class CacheWorkflowTests(unittest.TestCase):
         output, artifacts = self.output()
         self.assertEqual(self.collect()["artifacts"], 3)
         self.assertTrue(output.exists())
-        with patch.dict(os.environ, {"XDG_DATA_HOME": str(self.root / "xdg")}, clear=False):
+        with patch.object(lake, "remove_derived") as moved:
             result = self.collect(apply=True)
         self.assertEqual(result["artifacts"], 3)
         self.assertEqual(result["physical_bytes_freed_estimate"], 0)
         self.assertGreater(result["bytes_moved_to_trash_estimate"], 0)
-        self.assertFalse(output.exists())
-        self.assertFalse(any(p.exists() for p in artifacts))
+        self.assertEqual({c.args[0] for c in moved.call_args_list}, {output, *artifacts})
         self.assertFalse((self.cache / ".qatlas").exists())
 
     def test_linked_ilean_keeps_entire_module_without_registered_workspace(self):
@@ -151,18 +132,19 @@ class CacheWorkflowTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 1)
             return original_run(argv, **kwargs)
 
-        with patch.object(lake.supervisor, "run", side_effect=no_running_lake):
+        with patch.object(lake.supervisor, "run", side_effect=no_running_lake), \
+             patch.object(lake, "remove_derived") as moved:
             lake.maintain_mirror(self.root / "pkg-mirror", self.env, gc_cache=True, project=self.project)
-        self.assertFalse(output.exists())
-        self.assertTrue(all(not artifact.exists() for artifact in artifacts))
+        self.assertEqual({c.args[0] for c in moved.call_args_list}, {output, *artifacts})
 
     def test_cross_scope_reference_keeps_shared_artifacts(self):
         output, artifacts = self.output()
         self.output("e" * 16, "qatlib")
-        result = self.collect(apply=True)
+        with patch.object(lake, "remove_derived") as moved:
+            result = self.collect(apply=True)
         self.assertEqual(result["maps"], 1)
         self.assertEqual(result["artifacts"], 0)
-        self.assertFalse(output.exists())
+        moved.assert_called_once_with(output)
         self.assertTrue(all(p.exists() for p in artifacts))
 
     def test_recent_map_or_artifact_is_retained(self):
@@ -202,8 +184,9 @@ class CacheWorkflowTests(unittest.TestCase):
         other.write_text("C output")
         self.assertEqual(lake.clean_setup(self.project)["files"], 1)
         self.assertTrue(setup.exists())
-        lake.clean_setup(self.project, apply=True)
-        self.assertFalse(setup.exists())
+        with patch.object(lake, "remove_derived") as moved:
+            lake.clean_setup(self.project, apply=True)
+        moved.assert_called_once_with(setup)
         self.assertTrue(other.exists())
         self.assertFalse((self.project / ".lake/qatlas-quarantine").exists())
 
@@ -214,8 +197,9 @@ class CacheWorkflowTests(unittest.TestCase):
         setup.write_text('{"name":"Probe","isModule":false,"importArts":{}}')
         other = directory / "user.json"
         other.write_text('{"name":"user data"}')
-        self.assertEqual(lake.clean_setup(self.project, apply=True)["files"], 1)
-        self.assertFalse(setup.exists())
+        with patch.object(lake, "remove_derived") as moved:
+            self.assertEqual(lake.clean_setup(self.project, apply=True)["files"], 1)
+        moved.assert_called_once_with(setup)
         self.assertTrue(other.exists())
 
     def test_dependency_escape_rejected_before_cleanup(self):

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -18,11 +17,11 @@ import threading
 import time
 import tomllib
 import uuid
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qatlib_env import resources, supervisor
+from qatlib_env import resources, supervisor, trash
 
 try:
     import fcntl
@@ -826,69 +825,12 @@ def atomic_json(path, data):
     temporary.replace(path)
 
 
-def _restore_writable(path: Path) -> None:
-    """Clear read-only attributes before a Windows fallback move."""
-    if os.name != "nt":
-        return
-    candidates = [path]
-    if path.is_dir() and not path.is_symlink():
-        try:
-            candidates.extend(path.rglob("*"))
-        except OSError:
-            pass
-    for candidate in candidates:
-        try:
-            candidate.chmod(candidate.stat().st_mode | stat.S_IWRITE)
-        except OSError:
-            pass
-
-
-def _freedesktop_trash(path: Path, env_or_os=None) -> None:
-    """Move *path* to a FreeDesktop Trash directory using only the stdlib."""
-    environment = os.environ if env_or_os is None else env_or_os
-    data_home = Path(environment.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    files = data_home / "Trash" / "files"
-    info = data_home / "Trash" / "info"
-    files.mkdir(parents=True, exist_ok=True)
-    info.mkdir(parents=True, exist_ok=True)
-
-    original = Path(path)
-    base_name = original.name or "unnamed"
-    deletion_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    encoded_path = quote(str(original.absolute()), safe="/")
-    for index in range(1000000):
-        name = base_name if index == 0 else f"{base_name}.{index}"
-        destination = files / name
-        info_path = info / f"{name}.trashinfo"
-        if os.path.lexists(destination) or os.path.lexists(info_path):
-            continue
-        try:
-            with info_path.open("x", encoding="utf-8") as descriptor:
-                descriptor.write("[Trash Info]\n")
-                descriptor.write(f"Path={encoded_path}\n")
-                descriptor.write(f"DeletionDate={deletion_date}\n")
-            _restore_writable(original)
-            shutil.move(original, destination)
-            return
-        except Exception:
-            try:
-                info_path.unlink()
-            except OSError:
-                pass
-            raise
-    raise FileExistsError(f"unable to choose a unique Trash name for {original}")
-
-
 def remove_derived(path, env_or_os=None):
-    """Move a derived file to Trash, falling back to the FreeDesktop layout."""
+    """Move a derived file to the operating system Trash."""
     path = Path(path)
     if not path.exists() and not path.is_symlink():
         return
-    trash = shutil.which("trash-put")
-    if trash is not None:
-        supervisor.run([trash, str(path)], check=True)
-        return
-    _freedesktop_trash(Path(path), env_or_os)
+    return trash.trash(path, env_or_os)
 
 
 def active_lean_processes(project):
@@ -1004,6 +946,10 @@ def gc(cache, *, workspace, apply=False, age=86400, scope=None):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["workspace"]:
+        from qatlib_env.inventory import cli_main as inventory_main
+        return inventory_main(argv[1:])
     parser = argparse.ArgumentParser(prog="qatlib-env", description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--source-root", type=Path)
@@ -1019,6 +965,7 @@ def main(argv=None):
         target.add_argument("--policy", choices=("auto", "local", "cloud"), default="auto" if defaults else argparse.SUPPRESS)
     options(parser, defaults=True)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("workspace", help="read-only multi-root scan and explicit system Trash previews")
     for name in ("env", "shell", "bootstrap", "prepare"):
         options(commands.add_parser(name))
     config = commands.add_parser("config")

@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-**`qatlib-tools`** 是面向 [Lean 4](https://lean-lang.org/) 形式化工程的 Python 3.11+ 命令行工具集与基础库，提供工作树与缓存管理、GitHub / Gitea 协作接口，以及声明和证明检索。核心运行时仅使用 Python 标准库，**零第三方依赖**，支持在 Linux、macOS 和 Windows 的隔离环境中安装。
+**`qatlib-tools`** 是面向 [Lean 4](https://lean-lang.org/) 形式化工程的 Python 3.11+ 命令行工具集与基础库，提供工作树与缓存管理、GitHub / Gitea 协作接口，以及声明和证明检索。回收站操作使用成熟的 `Send2Trash`，构建进程观察使用 `psutil`，Windows 另安装平台限定的 `pywin32`；支持在 Linux、macOS 和 Windows 的隔离环境中安装。
 
 ## 组件概览
 
@@ -199,6 +199,47 @@ require_explicit_local_heavy = true
 `local_pool_mib` / `local_pool_cpu` 同时约束计划与执行，环境变量 `QATLAS_POOL_BUDGET_MIB` / `QATLAS_POOL_CPU` 可显式覆盖；并发 CPU 请求按 `jobs × lean_threads` 计。未配置的池按宿主可用资源自适应；单次请求绝不反向放大显式上限，活跃租约也不能被另一个调用者放大。`QATLAS_POOL_WAIT_TIMEOUT` 只控制等待其他租约的时间，超过硬上限的单次请求立即拒绝。预算阈值可用 `QATLAS_MAX_COLD_MODULES` / `QATLAS_MAX_REVERSE_MODULES` 覆盖，0表示不允许任何对应重编/波及，不表示无限制。
 
 本机工件缓存目录仍由 `LAKE_CACHE_DIR` 指定，池账本由 `XDG_STATE_HOME` / `XDG_CACHE_HOME` 定位；工具不会为两仓自动创建用户级共享配置。检索 `build` 的源码根由位置参数指定。需要共同使用机器池的项目必须指向同一账本，并采用一致的池上限。
+
+## 多根工作区盘点与官方回收站
+
+普通环境命令不扫描机器。维护时使用独立入口；扫描不初始化环境、不 fetch、不刷新
+Git index，也不创建缓存锁。使用 `python -B` 避免 Python 导入生成字节码：
+
+```bash
+python -B -m qatlib_env workspace scan ~/work ~/.legacy-worktrees/tmp --json
+python -B -m qatlib_env workspace scan ~/work --measure --check-remote --json
+python -B -m qatlib_env workspace scan /known/checkout /another/checkout --exact --json
+python -B -m qatlib_env workspace clean-caches --checkout /exact/idle/checkout --dry-run --json
+python -B -m qatlib_env workspace trash-checkouts --checkout /exact/redundant/checkout --dry-run --json
+```
+
+默认扫描当前目录的父目录与 `~/.legacy-worktrees/tmp`。显式根可以跨挂载；递归不进入
+其他挂载、符号链接、`.git`、`.lake`、回收站和常见依赖/容器目录。输出同时记录 Git、
+Lake/Lean 与研究目录标记，并按 `common-dir` 汇总全部分支、stash 与 worktree。
+已知清单可用 `--exact` 跳过递归发现。默认不遍历 `.lake` 测大小；`--measure`
+测分配/逻辑字节，耗时取决于文件数量。
+`--check-remote` 只读 `ls-remote`；缺失远端对象或浅克隆会保守标为未知，不自动 fetch。
+
+两个清理命令默认仅预览。保留常用 clone 时选 `clean-caches`，整树回收只选明确多余的
+`trash-checkouts`。两者均列出完整目标、逻辑/分配大小及结构化 `warnings`：近期活动、
+dirty/stash、未推或未知分支、Git 忽略的任务目录、被追踪的 `.lake` 内容、修改的依赖，
+以及 `.lake/task-*` 等非标准目录。文件提示列出具体路径，非标准目录另测整树大小；
+Git 元数据提示共享目标总量，不虚构分支的磁盘大小。这些发现供操作者审阅和归档，
+不会因为命中提示就禁止用户确认后的回收。默认不查询远端；需要 live 引用时加 `--check-remote`。
+
+审阅具体路径和状态并得到用户批准后，才用同一选择列表加 `--apply`。执行会重新预检，
+只有活跃 Lean/Lake/构建占用、路径越界（含会破坏未选 worktree 的共享 Git 目录）、
+不存在或非法链接、显式 `--protect` 排除和回收站后端故障才拒绝；`reasons` 列出这些阻断。
+提示项在 `--apply` 下可直接回收，无需第二套覆盖开关。后端途中失败保留已成功项的回执并停止；仍需操作者协调写者，
+无法排除检查后新进程启动的竞态。工具不保存批准，也不自动恢复或清空回收站。
+三端均交给 Send2Trash：Linux 使用 Gio 或库提供的 FreeDesktop Trash 实现（含外盘
+`.Trash/$uid`、`.Trash-$uid`），macOS 使用 Cocoa/CoreServices，Windows 强制使用
+pywin32 的原生 `IFileOperation`，不使用 .NET 或旧 `SHFileOperation` 兜底。Windows
+同时补齐上游取消回调的异常契约，并拒绝已知不安全的长路径情况；其他普通 Windows 路径可以回收。
+库没有通用只读能力探测接口，预览只确认后端可加载、路径和挂载的已知条件，不调用移动函数，
+不创建 Trash 目录；具体文件系统是否接受移动以执行结果为准。失败即报告，没有永久删除后备路径。
+跨盘可能需要复制到用户 Trash 后移动，耗时和临时占用取决于数据量。同盘回收通常保留物理块，
+大小和回执均不代表已经释放磁盘空间；共享 extents/硬链接也不能重复计算为可释放量。
 
 ## 本地开发与测试
 

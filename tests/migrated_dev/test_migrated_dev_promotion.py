@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from qatlib_env.workspace import remove_derived
 from qatlib_search import promotion
 from tests._git_fixture import snapshot
 
@@ -59,7 +58,7 @@ class ExactPromotionLockTests(unittest.TestCase):
                 write(manifest, content)
                 with self.assertRaisesRegex(ValueError, 'invalid dependency lock'):
                     promotion.verify_locked_source(self.consumer, self.public)
-        remove_derived(manifest)
+        manifest.rename(self.root / 'saved-manifest.json')
         with self.assertRaisesRegex(ValueError, 'invalid dependency lock'):
             promotion.verify_locked_source(self.consumer, self.public)
 
@@ -90,7 +89,7 @@ class ExactPromotionLockTests(unittest.TestCase):
         with mock.patch.object(promotion, '_git', side_effect=ValueError('git unavailable')):
             with self.assertRaisesRegex(ValueError, 'git unavailable'):
                 promotion.source_files(self.public, 'Qatlib')
-        remove_derived(self.module)
+        self.module.rename(self.root / 'saved-module.lean')
         with self.assertRaisesRegex(ValueError, 'missing or redirected'):
             promotion.verify_locked_source(self.consumer, self.public)
 
@@ -107,7 +106,7 @@ class ExactPromotionLockTests(unittest.TestCase):
     def test_redirected_source_is_rejected(self):
         other = self.root / 'other.lean'
         write(other, self.module.read_text())
-        remove_derived(self.module)
+        self.module.rename(self.root / 'saved-module.lean')
         self.module.symlink_to(other)
         with self.assertRaisesRegex(ValueError, 'redirected Lean source'):
             promotion.verify_locked_source(self.consumer, self.public)

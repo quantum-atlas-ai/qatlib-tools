@@ -8,21 +8,32 @@ on:
 permissions:
   contents: read
 
+env:
+  UV_PYTHON: '3.12'
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Only repository-owned code may use the existing self-hosted runner.
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: ci/${{ github.run_id }}-${{ github.run_attempt }}
+          clean: false
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.12'
+          enable-cache: false
       - name: Verify lockfile
+        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv lock --check
       - name: Build distributions
+        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv build
       - name: Run tests
+        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv run --with pytest --with hatchling --with jsonschema pytest -q -rs
       - name: Install wheel in a clean environment
+        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           uv venv --python 3.12 .wheel-venv-ci
           uv pip install --python .wheel-venv-ci/bin/python dist/*.whl

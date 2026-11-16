@@ -5,7 +5,10 @@ import hashlib
 import subprocess
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
+
+from qatlib_env.trash import TrashError, trash
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,8 +19,14 @@ ECDSA = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAAB
 
 class SetupRunnerKnownHostsTests(unittest.TestCase):
     def setUp(self):
-        self.directory = Path(tempfile.mkdtemp(prefix=".setup-runner-knownhosts-", dir=ROOT))
-        self.addCleanup(lambda: subprocess.run(["trash-put", str(self.directory)], check=False))
+        self.directory = Path(tempfile.mkdtemp(prefix="setup-runner-knownhosts-"))
+        self.addCleanup(self.cleanup_fixture)
+
+    def cleanup_fixture(self):
+        try:
+            trash(self.directory)
+        except (OSError, TrashError) as error:
+            warnings.warn(f"Test fixture retained at {self.directory}: {error}", RuntimeWarning)
 
     def run_helper(self):
         subprocess.run(["bash", str(SCRIPT), "known-hosts", str(self.directory), getpass.getuser()],
