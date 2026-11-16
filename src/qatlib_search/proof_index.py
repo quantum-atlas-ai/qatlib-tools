@@ -3,7 +3,7 @@
 Literal and bounded regex search locate source; natural-language doc search is
 local lexical ranking, not semantic/Lean applicability verification. No network,
 embeddings or compilation. Module sources/documents and owned Markdown docs are
-searched locally; explicit cross-repository scope also resolves local Qatlib sources.
+searched locally; explicit cross-repository scope also resolves locked upstream sources.
 """
 from __future__ import annotations
 
@@ -32,19 +32,20 @@ SOURCE_DIRS = (*index_identity.MODULE_ROOTS, "docs")
 SOURCE_SCOPES = {"source-and-docs", "qatlib-lean"}
 
 
-def scope_path(relative: str, source_scope: str) -> bool:
+def scope_path(relative: str, source_scope: str, roots=None) -> bool:
     if source_scope not in SOURCE_SCOPES:
         raise ValueError("unsupported proof source scope")
-    return (source_scope == "source-and-docs"
-            or relative == "Qatlib.lean"
-            or relative.startswith("Qatlib/") and relative.endswith(".lean"))
+    roots = index_identity.module_roots() if roots is None else roots
+    return (source_scope == "source-and-docs" or relative.endswith(".lean")
+            and any(relative == name + ".lean" or relative.startswith(name + "/") for name in roots))
 
 
-def admitted_path(relative: str) -> bool:
+def admitted_path(relative: str, roots=None) -> bool:
     path = Path(relative)
+    roots = index_identity.module_roots() if roots is None else roots
     return (relative == "README.md"
-            or relative in {name + ".lean" for name in index_identity.MODULE_ROOTS}
-            or any(relative.startswith(area + "/") for area in index_identity.MODULE_ROOTS)
+            or relative in {name + ".lean" for name in roots}
+            or any(relative.startswith(area + "/") for area in roots)
             and path.suffix in {".lean", ".md"}
             or relative.startswith("docs/") and path.suffix == ".md")
 
@@ -68,7 +69,8 @@ def json_bytes(value: object) -> bytes:
 def source_files(root: Path, source_scope: str = "source-and-docs") -> list[Path]:
     scope_path("", source_scope)
     found = []
-    for area in (("Qatlib",) if source_scope == "qatlib-lean" else SOURCE_DIRS):
+    roots = index_identity.module_roots(root)
+    for area in (roots if source_scope == "qatlib-lean" else (*roots, "docs")):
         directory = root / area
         if not directory.exists():
             continue
@@ -77,14 +79,14 @@ def source_files(root: Path, source_scope: str = "source-and-docs") -> list[Path
         for path in sorted(directory.rglob("*")):
             if path.is_symlink():
                 raise ValueError(f"symlink in index scope: {path.relative_to(root)}")
-            if (path.is_file() and admitted_path(path.relative_to(root).as_posix())
-                    and scope_path(path.relative_to(root).as_posix(), source_scope)):
+            if (path.is_file() and admitted_path(path.relative_to(root).as_posix(), roots)
+                    and scope_path(path.relative_to(root).as_posix(), source_scope, roots)):
                 found.append(path)
-    for name in ["README.md", *(name + ".lean" for name in index_identity.MODULE_ROOTS)]:
+    for name in ["README.md", *(name + ".lean" for name in roots)]:
         path = root / name
         if path.is_symlink():
             raise ValueError("symlink in index scope: " + name)
-        if path.is_file() and scope_path(name, source_scope):
+        if path.is_file() and scope_path(name, source_scope, roots):
             found.append(path)
     if not any(p.suffix == ".lean" for p in found):
         raise ValueError("no Lean source files in index scope")
@@ -150,9 +152,10 @@ def doc_comments(text: str) -> list[tuple[int, str]]:
 
 
 def fingerprint(root: Path, source_scope: str = "source-and-docs") -> dict[str, str]:
+    roots = index_identity.module_roots(root)
     paths = [p.relative_to(root).as_posix() for p in source_files(root, source_scope)]
     tracked = index_identity.git_output(root, ["ls-tree", "-rz", "--name-only", "HEAD"]).decode('utf-8').split("\0")
-    paths = sorted(set(paths) | {p for p in tracked if admitted_path(p) and scope_path(p, source_scope)})
+    paths = sorted(set(paths) | {p for p in tracked if admitted_path(p, roots) and scope_path(p, source_scope, roots)})
     result = index_identity.snapshot(root, paths)
     if set(result) != set(paths):
         raise ValueError("source index requires committed sources")
@@ -224,8 +227,11 @@ def admit(index: dict, root: Path | None = ROOT) -> dict:
     if not isinstance(records, list) or digest(json_bytes(records)) != index.get("records_sha256"):
         raise ValueError("index records are malformed or differ from their recorded hash")
     bindings = index.get("source_git_blob")
+    roots = index_identity.module_roots(root) if root is not None else tuple({
+        p.split('/')[0].removesuffix('.lean') for p in (bindings if isinstance(bindings, dict) else {})
+        if isinstance(p, str) and p.endswith('.lean')})
     if (not isinstance(bindings, dict) or not bindings
-            or any(not isinstance(p, str) or not admitted_path(p) or not scope_path(p, source_scope) or ".." in Path(p).parts
+            or any(not isinstance(p, str) or not admitted_path(p, roots) or not scope_path(p, source_scope, roots) or ".." in Path(p).parts
                    or Path(p).is_absolute() or "\\" in p
                    or not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}", blob)
                    for p, blob in bindings.items())):
@@ -538,18 +544,18 @@ def main(argv: list[str] | None = None) -> int:
     find.add_argument("--all-matches", action="store_true",
                       help="inspect non-overlapping literal/regex occurrences, not just one per file")
     find.add_argument("--scope", choices=("local", "all", "qatlib", "frozen", "dev-docs"), default="local",
-                      help="all searches local Qatlib plus current sources/docs; frozen is a deprecated qatlib alias")
+                      help="all searches locked upstream plus current sources/docs; frozen is a deprecated qatlib scope alias")
     find.add_argument("--public-repo", type=Path,
-                      help="select an explicit local Qatlib checkout instead of the locked dependency")
+                      help="select an explicit local upstream checkout instead of the locked dependency")
     find.add_argument("--offline", action="store_true",
-                      help="compatibility option; Qatlib source search always works locally")
+                      help="compatibility option; upstream source search always works locally")
     args = parser.parse_args(argv)
     output = args.index or args.root / ".qatlas/proof-source-index.json"
     try:
         if args.command == "build":
             resolved_output = output.resolve()
             if (resolved_output.is_relative_to(args.root.resolve())
-                    and admitted_path(resolved_output.relative_to(args.root.resolve()).as_posix())):
+                    and admitted_path(resolved_output.relative_to(args.root.resolve()).as_posix(), index_identity.module_roots(args.root))):
                 raise ValueError("index output cannot be a source file in index scope")
             value = build(args.root)
             save(value, output)

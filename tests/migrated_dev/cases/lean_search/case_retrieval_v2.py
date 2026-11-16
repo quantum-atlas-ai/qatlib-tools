@@ -302,11 +302,7 @@ class RetrievalV2Tests(unittest.TestCase):
                     current.validate_current(root)
 
     def test_sources_include_all_four_levels_and_keep_exact_owner(self):
-        self.assertIn('Qatlib/Foundations', index_identity.AREAS)
-        self.assertIn('Qatlib/Concepts', index_identity.AREAS)
-        self.assertIn('Qatlib/Papers', index_identity.AREAS)
-        self.assertIn('Project/Research', index_identity.AREAS)
-        self.assertIn('Project/Concepts', index_identity.AREAS)
+        self.assertEqual(index_identity.MODULE_ROOTS, ())
         self.assertFalse(lean_path('ExternalProject/Research/Topic/Core/A.lean'))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -314,6 +310,7 @@ class RetrievalV2Tests(unittest.TestCase):
             dev.parent.mkdir(parents=True)
             dev.write_text('def x := 1\n')
             catalog = SourceCatalog(root)
+            self.assertEqual(index_identity.module_roots(root), ('Project',))
             self.assertEqual(catalog.resolve(dev.relative_to(root).as_posix()).path, dev)
             # The same suffix in another module root must never act as an alias.
             with self.assertRaisesRegex(ValueError, 'invalid Lean source path'):
@@ -516,7 +513,7 @@ class CrossProofIndexTests(unittest.TestCase):
             manifest = json.loads((dev / 'lake-manifest.json').read_text())
             manifest['packages'][0]['name'] = 'qatlas_frozen'
             (dev / 'lake-manifest.json').write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(ValueError, 'exactly one Qatlib'):
+            with self.assertRaisesRegex(ValueError, 'source checkout is unavailable'):
                 cross_proof_index.qatlib_pin(dev)
             self.assertEqual(cross_proof_index.current_repository(dev), 'quantum-atlas-ai/qatlib-tools')
 

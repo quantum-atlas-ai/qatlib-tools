@@ -43,7 +43,7 @@ class CacheWorkflowTests(unittest.TestCase):
         (self.project / "lakefile.toml").write_text('name="example_library"\n')
         self.cache = self.root / "cache"
         self.cache.mkdir()
-        self.env = {**HOST_ENV, "LAKE_CACHE_DIR": str(self.cache)}
+        self.env = {**HOST_ENV, "HOME": str(self.root), "LAKE_CACHE_DIR": str(self.cache)}
 
     def artifact(self, name):
         path = self.cache / "artifacts" / name

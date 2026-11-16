@@ -164,12 +164,11 @@ exit 0
         self.assertTrue((source / "pyproject.toml").is_file())
         self.assertEqual(stale.read_text(), "old child distribution\n")
         for package in ("qatlib_env", "qatlib_forge", "qatlib_search"):
-            self.assertTrue((source / package / "__init__.py").is_file(), package)
-            self.assertFalse((source / package / "pyproject.toml").exists(), package)
-        for resource in ("qatlib_env/setup_runner.sh", "qatlib_env/README.md", "qatlib_env/docs/cache.md",
-                         "qatlib_env/docs/resources.md", "qatlib_env/docs/runners.md", "qatlib_forge/README.md",
-                         "qatlib_search/README.md", "qatlib_search/ExportSearchIndex.lean",
+            self.assertTrue((source / "src" / package / "__init__.py").is_file(), package)
+            self.assertFalse((source / "src" / package / "pyproject.toml").exists(), package)
+        self.assertEqual((source / "README.md").read_bytes(), (SCRIPT.parents[2] / "README.md").read_bytes())
+        for resource in ("qatlib_env/setup_runner.sh", "qatlib_search/ExportSearchIndex.lean",
                          "qatlib_search/retrieval-report.schema.json"):
-            self.assertEqual((source / resource).read_bytes(),
+            self.assertEqual((source / "src" / resource).read_bytes(),
                              (SCRIPT.parent.parent / resource).read_bytes())
         self.assertIn("--no-deps --no-build-isolation " + str(source), calls[-1])

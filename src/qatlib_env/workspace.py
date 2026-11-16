@@ -124,7 +124,7 @@ def _backend_command(argv, effective, *, building, require_limits=False):
     return list(argv)
 
 
-def run(argv, *, cwd, env=None, capture=False):
+def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
     """Supervise every command, including Python/shell drivers spawning Lake."""
     project = Path(cwd)
     from qatlib_env import budget
@@ -172,6 +172,7 @@ def run(argv, *, cwd, env=None, capture=False):
             return supervisor.run(
                 command, cwd=cwd, env=effective, check=True, text=True,
                 stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.STDOUT if capture and capture_stderr else None,
                 timeout=float(effective.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
                 module_timeout=float(effective.get("QATLAS_MODULE_TIMEOUT", "1800")) or None,
                 process_callback=process_callback,
@@ -797,14 +798,8 @@ def check(project, env, modules=()):
 
 def _check(project, env, modules):
     """Keep the full-gate scope through every constituent child operation."""
-    gate_package = next((name for name in ("example_library", "dev_metadata")
-                         if (project / "python" / name / "check_source_imports.py").is_file()), None)
-    if gate_package:
-        dependencies = []
-        for package in manifest(project)["packages"]:
-            if package["name"].strip("«»") in {"Qatlib", "Project", "example_library"}:
-                dependencies += ["--dependency-repo", str(project / ".lake/packages" / package["name"].strip("«»"))]
-        run([sys.executable, "-B", "-m", gate_package + ".check_source_imports", "--repo", str(project), *dependencies], cwd=project, env=env)
+    from qatlib_env.ci import source_imports
+    source_imports(project, env)
     run(["lake", "lint"], cwd=project, env=env)
     if modules:
         run(["lake", "build", *modules], cwd=project, env=env)
@@ -965,6 +960,14 @@ def main(argv=None):
         target.add_argument("--policy", choices=("auto", "local", "cloud"), default="auto" if defaults else argparse.SUPPRESS)
     options(parser, defaults=True)
     commands = parser.add_subparsers(dest="command", required=True)
+    from qatlib_env.promotion import add_parser as promotion_parser
+    promotion_parser(commands)
+    conflicts = commands.add_parser("conflicts", help="check source-level collisions against a locked dependency")
+    conflicts.add_argument("--package", required=True)
+    conflicts.add_argument("--source", type=Path)
+    conflicts.add_argument("--source-root")
+    conflicts.add_argument("--upstream-root")
+    conflicts.add_argument("--expected-rev", help="explicit source revision for an isolated rehearsal")
     commands.add_parser("workspace", help="read-only multi-root scan and explicit system Trash previews")
     for name in ("env", "shell", "bootstrap", "prepare"):
         options(commands.add_parser(name))
@@ -1017,8 +1020,23 @@ def main(argv=None):
     args = parser.parse_args(argv)
     project = args.project.resolve()
     cli = {name: getattr(args, name, None) for name in resource_options if getattr(args, name, None) is not None}
+    if args.command == "conflicts":
+        from qatlib_env.conflicts import main as conflicts_main
+        selected = ["--package", args.package]
+        for key in ("source", "source_root", "upstream_root", "expected_rev"):
+            value = getattr(args, key)
+            if value is not None:
+                selected.extend(["--" + key.replace("_", "-"), str(value)])
+        return conflicts_main(selected, project=project)
+    if args.command == "promotion":
+        from qatlib_env.promotion import cli as promotion_cli
+        from qatlib_env.budget import permission
+        with permission(args.allow_local_heavy):
+            return promotion_cli(project, args, resource_cli=cli)
     if args.command == "docs":
-        manual_path = Path(__file__).with_name("README.md")
+        manual_path = Path(__file__).with_name("_manual.md")
+        if not manual_path.is_file():
+            manual_path = Path(__file__).resolve().parents[2] / "README.md"
         print(manual_path if args.path else manual_path.read_text())
         return 0
     if args.command == "config":

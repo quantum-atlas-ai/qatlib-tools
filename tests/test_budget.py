@@ -178,12 +178,12 @@ def test_nested_distribution_fallback(tmp_path):
     assert config.load_config(tmp_path).repository == "sample/shared"
 
 
-def test_distribution_shared_search_settings_are_valid_configuration():
+def test_distribution_has_no_consumer_or_machine_configuration(tmp_path):
     root = Path(__file__).resolve().parents[1]
-    settings = config.load_config(root, env={})
-    assert settings.metadata["search_source_roots"] == ["Qatlib", "Project"]
-    assert settings.metadata["search_module_roots"] == ["Qatlib", "Project"]
-    assert resources.resolve_config(root, env={}).values["jobs"] == 2
+    settings = config.load_config(root, env={"HOME": str(tmp_path)})
+    assert "search_source_roots" not in settings.metadata
+    assert "search_module_roots" not in settings.metadata
+    assert settings.sources["local_pool_mib"] == "automatic"
 
 
 @pytest.mark.parametrize("text", ['[resources', '[resources]\njobs=true', '[budget]\nmax_cold_modules="15"',

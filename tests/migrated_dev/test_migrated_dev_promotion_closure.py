@@ -26,6 +26,7 @@ class PromotionClosureTests(unittest.TestCase):
 
     def closure(self, modules, **kwargs):
         kwargs.setdefault('source_root', 'ExampleLibrary')
+        kwargs.setdefault('public_root', 'Qatlib')
         kwargs.setdefault('non_promotable_roots', ('Research',))
         kwargs.setdefault('test_roots', ('Tests',))
         return candidate_closure(self.source, self.public, modules, **kwargs)

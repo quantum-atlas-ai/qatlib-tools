@@ -5,7 +5,7 @@ import subprocess
 import tomllib
 from qatlib_env.git_identity import assert_clean_git_sources
 
-DEFAULT_MODULE_ROOTS = ('Qatlib', 'Project')
+DEFAULT_MODULE_ROOTS = ()
 DEFAULT_AREAS = ('Foundations', 'Concepts', 'Papers', 'Research')
 
 
@@ -27,6 +27,8 @@ def module_roots(project: Path | None = None) -> tuple[str, ...]:
             values = section.get('search_module_roots') if isinstance(section, dict) else None
             if isinstance(values, list) and values:
                 return tuple(str(value) for value in values)
+        from qatlib_env.project import source_directories
+        return source_directories(Path(project))
     return DEFAULT_MODULE_ROOTS
 
 

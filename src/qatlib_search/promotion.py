@@ -35,7 +35,12 @@ def _git(repo: Path, *args: str) -> bytes:
 
 
 def _tree(repo: Path, root: str) -> tuple[Path, Path]:
-    if not isinstance(root, str) or not _ROOT.fullmatch(root):
+    valid = isinstance(root, str) and bool(_ROOT.fullmatch(root))
+    if not valid and isinstance(root, str) and '/' in root and (repo / 'lakefile.toml').is_file():
+        from qatlib_env.project import libraries
+        valid = root in {(lib.src_dir / name.replace('.', '/')).as_posix()
+                         for lib in libraries(repo) for name in lib.roots}
+    if not valid:
         raise ValueError(f'invalid source root: {root!r}')
     repo = repo.resolve()
     tree = repo / root
@@ -76,7 +81,7 @@ def source_files(repo: Path, root: str) -> list[Path]:
     return files
 
 
-def locked_revision(consumer_repo: Path, package: str = 'Qatlib', *, allow_inherited: bool = False) -> str:
+def locked_revision(consumer_repo: Path, package: str | None = None, *, allow_inherited: bool = False) -> str:
     """Require one full direct Git pin, unless inherited pins are opted into."""
     manifest = consumer_repo / 'lake-manifest.json'
     try:
@@ -85,7 +90,8 @@ def locked_revision(consumer_repo: Path, package: str = 'Qatlib', *, allow_inher
         if not isinstance(packages, list):
             raise ValueError('packages must be an array')
         entries = [entry for entry in packages if isinstance(entry, dict)
-                   and entry.get('name') == package]
+                   and (entry.get('name') == package if package is not None
+                        else not entry.get('inherited', False))]
         if len(entries) != 1:
             raise ValueError(f'expected one {package} dependency, found {len(entries)}')
         entry = entries[0]
@@ -99,7 +105,7 @@ def locked_revision(consumer_repo: Path, package: str = 'Qatlib', *, allow_inher
         raise ValueError(f'{manifest}: invalid dependency lock: {error}') from error
 
 
-def verify_source_revision(source_repo: Path, expected_rev: str, root: str = 'Qatlib') -> str:
+def verify_source_revision(source_repo: Path, expected_rev: str, root: str | None = None) -> str:
     """Require an independent checkout and tracked source bytes at this SHA.
 
     This also rejects bare/object-only mirrors, dirty source files, symlinks,
@@ -108,6 +114,9 @@ def verify_source_revision(source_repo: Path, expected_rev: str, root: str = 'Qa
     """
     if not isinstance(expected_rev, str) or not _REV.fullmatch(expected_rev):
         raise ValueError(f'expected revision must be a full 40-character Git SHA: {expected_rev!r}')
+    if root is None:
+        from qatlib_env.project import source_root
+        root = source_root(source_repo)
     repo, tree = _tree(source_repo, root)
     top = Path(os.fsdecode(_git(repo, 'rev-parse', '--show-toplevel')).strip()).resolve()
     if top != repo:
@@ -143,17 +152,20 @@ def verify_source_revision(source_repo: Path, expected_rev: str, root: str = 'Qa
 
 
 def verify_locked_source(consumer_repo: Path, source_repo: Path, *,
-                         package: str = 'Qatlib', root: str = 'Qatlib',
+                         package: str | None = None, root: str | None = None,
                          allow_inherited: bool = False) -> str:
     """Check a direct lock by default; legacy inherited pins require opt-in."""
     return verify_source_revision(source_repo, locked_revision(
         consumer_repo, package, allow_inherited=allow_inherited), root)
 
 
-def theorem_candidates(repo: Path, *, source_root: str = 'Project',
+def theorem_candidates(repo: Path, *, source_root: str | None = None,
                        allowed_layers: tuple[str, ...] = PUBLIC_LAYERS) -> tuple[str, ...]:
     """Select every theorem/lemma file, including private declarations; no rank filter."""
     repo = repo.resolve()
+    if source_root is None:
+        from qatlib_env.project import source_root as discover_root
+        source_root = discover_root(repo)
     candidates = []
     for path in source_files(repo, source_root):
         relative = path.relative_to(repo)
@@ -189,13 +201,15 @@ def _normalized_text(text: str, root: str, normalized_root: str) -> str:
 
 
 def inventory(repo: Path, root: str, *, allowed_layers: tuple[str, ...] | None = None,
-              skip_prefixes: tuple[str, ...] = (), normalized_root: str = 'Qatlib') -> Inventory:
+              skip_prefixes: tuple[str, ...] = (), normalized_root: str | None = None) -> Inventory:
     """Inventory explicit public declarations and whole-file normalized text."""
     repo = repo.resolve()
     tree = repo / root
     declarations: dict[tuple[str, ...], list[str]] = {}
     files: dict[str, str] = {}
     errors = []
+    namespace_root = root.split('/')[-1]
+    normalized_root = normalized_root or namespace_root
     for path in source_files(repo, root):
         relative = path.relative_to(tree).as_posix()
         if allowed_layers is not None and relative.split('/')[0] not in allowed_layers:
@@ -209,23 +223,26 @@ def inventory(repo: Path, root: str, *, allowed_layers: tuple[str, ...] | None =
         except (OSError, UnicodeError, ValueError) as error:
             errors.append(f'{path}: cannot index declarations: {error}')
             continue
-        files[relative] = _normalized_text(text, root, normalized_root)
+        files[relative] = _normalized_text(text, namespace_root, normalized_root.split('/')[-1])
         for name in kinds:
             # Only declarations rooted at the selected source package are
             # promotion candidates; short or unrelated names are not providers.
-            if name[0] == root:
+            if name[0] == namespace_root:
                 declarations.setdefault(name[1:], []).append(str(path))
     return Inventory(declarations, files, errors)
 
 
 def check_duplicates(source_repo: Path, public_repo: Path, *, source_root: str,
-                     public_root: str = 'Qatlib', allowed_layers: tuple[str, ...] | None = None,
+                     public_root: str | None = None, allowed_layers: tuple[str, ...] | None = None,
                      skip_prefixes: tuple[str, ...] = ()) -> tuple[list[str], dict[str, int]]:
     """Compare supplied inventories; callers must verify the Public lock first.
 
     downstream adapters pass their configured source root explicitly; the
     shared package keeps no repository-specific default.
     """
+    if public_root is None:
+        from qatlib_env.project import source_root as discover_root
+        public_root = discover_root(public_repo)
     source = inventory(source_repo, source_root, allowed_layers=allowed_layers,
                        skip_prefixes=skip_prefixes, normalized_root=public_root)
     public = inventory(public_repo, public_root, allowed_layers=allowed_layers,

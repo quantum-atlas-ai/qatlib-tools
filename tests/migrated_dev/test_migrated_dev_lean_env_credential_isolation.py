@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from qatlib_env import ci, prepare, r2_cache, workspace
+from tests._credential_fixture import environment as credential_env
 
 DEV = "dev_fixture_access_12345:dev_fixture_secret_67890"
 SECONDARY = "secondary_fixture_access_12345:secondary_fixture_secret_67890"
@@ -46,8 +47,8 @@ class CredentialIsolationTests(unittest.TestCase):
         for package, variable, expected in PRIVATE_PACKAGES:
             for generic in (GENERIC, "malformed generic value"):
                 with self.subTest(package=package, generic_valid=generic == GENERIC):
-                    env = {"HOME": str(self.home), "LAKE_CACHE_KEY": generic,
-                           "LAKE_PUBLIC_CACHE_KEY": PUBLIC}
+                    env = credential_env({"HOME": str(self.home), "LAKE_CACHE_KEY": generic,
+                                          "LAKE_PUBLIC_CACHE_KEY": PUBLIC})
                     other_variable, other_key = ("LAKE_SECONDARY_CACHE_KEY", SECONDARY) if variable == "LAKE_DEV_CACHE_KEY" else ("LAKE_DEV_CACHE_KEY", DEV)
                     env[other_variable] = other_key
                     self.assertEqual(r2_cache.resolve_write_key(package, env=env), "")
@@ -61,10 +62,10 @@ class CredentialIsolationTests(unittest.TestCase):
         generic_only = self.private_file(f"LAKE_CACHE_KEY={GENERIC}\n", "generic-only")
         dedicated = self.private_file(f"LAKE_DEV_CACHE_KEY={DEV}\nLAKE_SECONDARY_CACHE_KEY={SECONDARY}\n"
                                       "LAKE_CACHE_KEY=malformed generic value\n", "dedicated")
-        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env={}, key_file=generic_only), GENERIC)
+        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env=credential_env(), key_file=generic_only), GENERIC)
         for package, variable, expected in PRIVATE_PACKAGES:
-            env = {"HOME": str(self.home), "LAKE_CACHE_KEY": GENERIC,
-                   "QATLAS_R2_KEY_FILE": str(generic_only)}
+            env = credential_env({"HOME": str(self.home), "LAKE_CACHE_KEY": GENERIC,
+                                  "QATLAS_R2_KEY_FILE": str(generic_only)})
             self.assertEqual(r2_cache.resolve_write_key(package, env=env), "")
             self.assertEqual(r2_cache.resolve_write_key(package, env=env, key_file=dedicated), expected)
             alternate = "override_fixture_access:override_fixture_secret"
@@ -73,13 +74,13 @@ class CredentialIsolationTests(unittest.TestCase):
 
     def test_public_community_environment_file_and_raw_line_compatibility(self):
         path = self.private_file(f"LAKE_PUBLIC_CACHE_KEY={PUBLIC}\nLAKE_CACHE_KEY={GENERIC}\n")
-        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env={}, key_file=path), PUBLIC)
-        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env={"LAKE_CACHE_KEY": GENERIC}, key_file=path), GENERIC)
-        env = {"LAKE_PUBLIC_CACHE_KEY": PUBLIC, "LAKE_CACHE_KEY": "malformed generic value"}
+        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env=credential_env(), key_file=path), PUBLIC)
+        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env=credential_env({"LAKE_CACHE_KEY": GENERIC}), key_file=path), GENERIC)
+        env = credential_env({"LAKE_PUBLIC_CACHE_KEY": PUBLIC, "LAKE_CACHE_KEY": "malformed generic value"})
         self.assertEqual(r2_cache.resolve_write_key("Qatlib", env=env), PUBLIC)
         self.assertEqual(ci.write_key("Qatlib", env), PUBLIC)
         raw = self.private_file(GENERIC + "\n", "raw-public")
-        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env={}, key_file=raw), GENERIC)
+        self.assertEqual(r2_cache.resolve_write_key("Qatlib", env=credential_env(), key_file=raw), GENERIC)
         for package, _variable, _expected in PRIVATE_PACKAGES:
             self.assertEqual(r2_cache.resolve_write_key(package, env={}, key_file=raw), "")
 
@@ -90,20 +91,21 @@ class CredentialIsolationTests(unittest.TestCase):
             (project / "lakefile.toml").write_text(f"name={json.dumps(package)}\n")
             (project / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n")
             path = project / "private/secrets"
-            with patch.object(r2_cache.getpass, "getpass", return_value=expected):
+            with patch.object(r2_cache.getpass, "getpass", return_value=expected), \
+                    patch.dict(os.environ, credential_env()):
                 self.assertEqual(r2_cache.main(["--repo", str(project), "--save-key", "--key-file", str(path)]), 0)
             self.assertEqual(r2_cache.parse_key_file(path), {variable: expected})
             self.assertNotIn("LAKE_CACHE_KEY=", path.read_text())
         default = self.root / "default-public/secrets"
-        r2_cache.save_key_file(default, PUBLIC)
+        r2_cache.save_key_file(default, PUBLIC, "LAKE_PUBLIC_CACHE_KEY")
         self.assertEqual(r2_cache.parse_key_file(default), {"LAKE_PUBLIC_CACHE_KEY": PUBLIC})
         with self.assertRaisesRegex(ValueError, "unsupported R2 credential variable"):
-            r2_cache.save_key_file(default, GENERIC, "LAKE_CACHE_KEY")
+            r2_cache.save_key_file(default, GENERIC, "OTHER_SECRET")
 
     def test_ci_publication_requires_matching_private_identity(self):
         for provider in ("GITHUB_", "GITEA_"):
-            base = {provider + "REF": "refs/heads/main", provider + "EVENT_NAME": "push",
-                    "LAKE_CACHE_KEY": GENERIC, "LAKE_PUBLIC_CACHE_KEY": PUBLIC}
+            base = credential_env({provider + "REF": "refs/heads/main", provider + "EVENT_NAME": "push",
+                                   "LAKE_CACHE_KEY": GENERIC, "LAKE_PUBLIC_CACHE_KEY": PUBLIC})
             self.assertFalse(ci.may_publish(base))
             for package, variable, expected in PRIVATE_PACKAGES:
                 self.assertFalse(ci.may_publish(base, package))
@@ -120,8 +122,8 @@ class CredentialIsolationTests(unittest.TestCase):
             (project / "lakefile.toml").write_text(f"name={json.dumps(package)}\n")
             (project / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n")
             (project / "lake-manifest.json").write_text('{"packages":[]}\n')
-            incoming = {"HOME": str(self.home), "LAKE_CACHE_DIR": str(project / "cache"),
-                        "LAKE_CACHE_KEY": GENERIC}
+            incoming = credential_env({"HOME": str(self.home), "LAKE_CACHE_DIR": str(project / "cache"),
+                                       "LAKE_CACHE_KEY": GENERIC})
             env = workspace.environment(project, base_env=incoming)
             self.assertNotIn("LAKE_CACHE_KEY", env)
             if package == "Qatlib":
@@ -171,9 +173,10 @@ revisionEndpoint="http://127.0.0.1:{server.server_port}/revisions"
 s3Auth="{PUBLIC}"
 ''')
         subprocess.run(["git", "init", "-q", str(project)], check=True)
+        subprocess.run(["git", "-C", str(project), "remote", "add", "origin", "https://github.com/fixture/library.git"], check=True)
         snapshot(project)
-        env = {"ELAN_TOOLCHAIN": "leanprover/lean4:v4.35.0", "LAKE_CACHE_DIR": str(self.root / "cache"),
-               "LAKE_CACHE_KEY": "malformed generic value"}
+        env = credential_env({"ELAN_TOOLCHAIN": "leanprover/lean4:v4.35.0", "LAKE_CACHE_DIR": str(self.root / "cache"),
+                              "LAKE_CACHE_KEY": "malformed generic value"})
         self.assertEqual(prepare.restore_repository(project, project, env), "missing")
         self.assertTrue(requests)
         self.assertTrue(all("Credential=public_fixture_access_12345/" in (value or "") for value in requests))

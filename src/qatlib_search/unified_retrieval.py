@@ -375,8 +375,8 @@ def discover(project: Path, catalog: Path | None = None, *,
                 ref, context = None, {"repository": None}
             sources.append({"id": "dependency:" + name, "kind": "dependency", "root": str(root.resolve()),
                             **context, "locked_version": package.get("rev"),
-                            "incremental": name in {"Project", "Qatlib"} or package.get("type") == "path"})
-            if name in {"Project", "Qatlib", "qatlas_frozen"} and ref:
+                            "incremental": not package.get("inherited", False) or package.get("type") == "path"})
+            if not package.get("inherited", False) and ref:
                 upstream.append({"id": "upstream:" + name, "kind": "upstream", **context, "ref": "main"})
     else:
         sources.append({"id": "dependencies", "kind": "unavailable", "error": "lake-manifest.json is missing; dependency coverage unknown"})
@@ -435,7 +435,9 @@ def _import_index(path: Path) -> dict:
         if record["kind"] == "source" or record["path"].endswith(".md"):
             # The existing Frozen/Dev proof catalog schema admits only these
             # declared package module roots, not arbitrary research directories.
-            layout = [{"srcDir": ".", "roots": list(proof_index.index_identity.MODULE_ROOTS)}]
+            roots = sorted({p.split('/')[0].removesuffix('.lean') for p in value['source_git_blob']
+                            if p.endswith('.lean')})
+            layout = [{"srcDir": ".", "roots": roots}]
             files[record["path"]] = _records(record["path"], record["text"], layout)
     return {"schema": SCHEMA, "files": files, "repository": value.get("repository"),
             "version": value.get("git_head"), "observation": "imported-proof-catalog",

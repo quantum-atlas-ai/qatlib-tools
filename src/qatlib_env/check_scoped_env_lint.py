@@ -4,14 +4,15 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-import re
 import subprocess
 import uuid
 
 from qatlib_env import workspace
+from qatlib_env.project import libraries, primary_library
+from qatlib_search.lean_declarations import name_parts
 
 
-def scoped_source(source: str, modules: list[str], *, root_prefix: str = "Project") -> str:
+def scoped_source(source: str, modules: list[str], *, root_prefix: str) -> str:
     """Filter both vacuity checks and Batteries checks; fail on template drift."""
     def replace_once(old: str, new: str) -> None:
         nonlocal source
@@ -35,22 +36,62 @@ def scoped_source(source: str, modules: list[str], *, root_prefix: str = "Projec
     return source
 
 
-def main() -> int:
+def selected_modules(repo: Path, base: str, layouts) -> list[str]:
+    changed = subprocess.check_output(["git", "diff", "--name-only", "-z", "--diff-filter=ACMR",
+                                       base, "HEAD", "--"], cwd=repo)
+    result = []
+    for raw in changed.split(b"\0"):
+        path = Path(os.fsdecode(raw))
+        if not raw or path.suffix != ".lean" or not (repo / path).is_file():
+            continue
+        for directory, roots in layouts:
+            if not path.is_relative_to(directory):
+                continue
+            module = ".".join(path.relative_to(directory).with_suffix("").parts)
+            if any(module == root or module.startswith(root + ".") for root in roots):
+                result.append(module)
+                break
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--base", help="Audit changed Lean modules relative to this Git revision")
-    parser.add_argument("--root-prefix", default=os.environ.get("QATLIB_ENV_ROOT", "Project"))
-    parser.add_argument("--test-root-prefix", default=os.environ.get("QATLIB_ENV_TEST_ROOT", "Verification"))
+    parser.add_argument("--root-prefix", default=os.environ.get("QATLIB_ENV_ROOT"))
+    parser.add_argument("--test-root-prefix", default=os.environ.get("QATLIB_ENV_TEST_ROOT"))
+    parser.add_argument("--test-src-dir", type=Path, help="source directory for an explicit test root")
     parser.add_argument("modules", nargs="*")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     repo = args.repo.resolve()
+    libs = ()
+    try:
+        libs = libraries(repo)
+        if args.root_prefix:
+            root = args.root_prefix
+        else:
+            primary = primary_library(repo)
+            if len(primary.roots) != 1:
+                raise ValueError("library has several roots; select --root-prefix explicitly")
+            root = primary.roots[0]
+        layouts = [(lib.src_dir, lib.roots) for lib in libs]
+    except ValueError as error:
+        if not args.root_prefix or (repo / "lakefile.toml").exists():
+            parser.error(str(error))
+        root, layouts = args.root_prefix, []
+    if args.root_prefix:
+        layouts.append((Path("."), (root,)))
+    if args.test_root_prefix:
+        matching = next((lib.src_dir for lib in libs if args.test_root_prefix in lib.roots), None) if libs else None
+        directory = args.test_src_dir or matching
+        if directory is None:
+            parser.error("--test-src-dir is required for a test root absent from lakefile.toml")
+        if directory.is_absolute() or ".." in directory.parts:
+            parser.error("test source directory must be inside the project")
+        layouts.append((directory, (args.test_root_prefix,)))
+    roots = tuple(name for _, names in layouts for name in names)
     if args.base:
-        changed = subprocess.check_output(["git", "diff", "--name-only", "--diff-filter=ACMR",
-                                           args.base, "HEAD", "--", args.root_prefix, "verification"],
-                                          cwd=repo, text=True)
-        args.modules.extend(path.removeprefix("verification/").removesuffix(".lean").replace("/", ".")
-                            for path in changed.splitlines() if path.endswith(".lean") and (repo / path).is_file()
-                            and path.startswith((args.root_prefix + "/", "verification/" + args.test_root_prefix + "/")))
+        args.modules.extend(selected_modules(repo, args.base, layouts))
     args.modules = sorted(set(args.modules))
     if not args.modules:
         if args.base:
@@ -58,9 +99,13 @@ def main() -> int:
             return 0
         parser.error("provide modules or --base")
     for module in args.modules:
-        if not re.fullmatch(r"(?:" + re.escape(args.root_prefix) + r"|" + re.escape(args.test_root_prefix) + r")(?:\.[A-Za-z_][A-Za-z0-9_]*)+", module):
+        try:
+            name_parts(module)
+        except ValueError:
+            parser.error("invalid Lean module name: " + module)
+        if not any(module.startswith(prefix + ".") for prefix in roots):
             parser.error("expected a project leaf module: " + module)
-    source = scoped_source((repo / "scripts/EnvLint.lean").read_text(), args.modules, root_prefix=args.root_prefix)
+    source = scoped_source((repo / "scripts/EnvLint.lean").read_text(), args.modules, root_prefix=root)
     directory = repo / ".lake/qatlas-tmp"
     directory.mkdir(parents=True, exist_ok=True)
     probe = directory / ("scoped_env_lint_" + uuid.uuid4().hex + ".lean")

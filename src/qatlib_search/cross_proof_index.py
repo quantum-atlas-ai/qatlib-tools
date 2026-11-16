@@ -1,4 +1,4 @@
-"""Index local Qatlib and current Dev source/document evidence.
+"""Index a locked upstream and current project source/document evidence.
 
 The default public corpus is the exact checkout locked in lake-manifest.json.
 An explicit --public-repo selects a separate local checkout and records whether
@@ -21,8 +21,7 @@ from qatlib_search import index_identity, proof_index
 
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-PUBLIC_REPOSITORIES = set(filter(None, os.environ.get(
-    'QATLIB_PUBLIC_REPOSITORIES', 'quantum-atlas-ai/qatlib,quantum-atlas-ai/qatlib-staging').split(',')))
+PUBLIC_REPOSITORIES = set(filter(None, os.environ.get('QATLIB_PUBLIC_REPOSITORIES', '').split(',')))
 
 
 def repository_identity(url: str) -> tuple[str, str]:
@@ -61,15 +60,16 @@ def current_repository(root: Path) -> str:
 
 def qatlib_lock(root: Path) -> tuple[dict, dict]:
     manifest = json.loads((root / "lake-manifest.json").read_text(encoding="utf-8"))
-    matches = [p for p in manifest["packages"] if p["name"].strip("«»") == "Qatlib"]
+    selected = os.environ.get('QATLIB_SOURCE_PACKAGE')
+    matches = [p for p in manifest["packages"] if p.get('name') == selected
+               or selected is None and not p.get('inherited', False)]
     if len(matches) != 1:
-        raise ValueError("lock must identify exactly one Qatlib dependency")
+        raise ValueError("lock must identify one direct source dependency; set QATLIB_SOURCE_PACKAGE")
     package = matches[0]
     repository, web = repository_identity(package.get("url", ""))
-    if (package.get("type") != "git" or repository not in PUBLIC_REPOSITORIES
-            or not web.startswith("https://github.com/")
+    if (package.get("type") != "git" or PUBLIC_REPOSITORIES and repository not in PUBLIC_REPOSITORIES
             or not SHA.fullmatch(package.get("rev", ""))):
-        raise ValueError("Qatlib lock repository or revision is invalid")
+        raise ValueError("upstream lock repository or revision is invalid")
     return manifest, package
 
 
@@ -78,21 +78,22 @@ def qatlib_pin(root: Path, public_repo: Path | None = None) -> tuple[Path, str]:
     root = Path(root).resolve()
     manifest, package = qatlib_lock(root)
     selected = (Path(public_repo).expanduser() if public_repo is not None
-                else root / manifest["packagesDir"] / "Qatlib")
+                else root / manifest.get("packagesDir", ".lake/packages") / package['name'])
     if selected.is_symlink():
-        raise ValueError("Qatlib checkout must not be a directory symlink")
+        raise ValueError("upstream checkout must not be a directory symlink")
     directory = selected.resolve()
     if public_repo is None and not directory.is_relative_to(root):
-        raise ValueError("Qatlib source checkout path escapes the consumer repository")
-    if not directory.is_dir() or not (directory / "Qatlib").is_dir():
-        raise ValueError("Qatlib source checkout is unavailable; prepare local Git sources")
+        raise ValueError("upstream source checkout path escapes the consumer repository")
+    from qatlib_env.project import source_directories
+    if not directory.is_dir() or not source_directories(directory):
+        raise ValueError("upstream source checkout is unavailable; prepare local Git sources")
     revision = proof_index.git_head(directory)
     if revision is None or not SHA.fullmatch(revision):
-        raise ValueError("Qatlib source must be its own committed Git checkout")
+        raise ValueError("upstream source must be its own committed Git checkout")
     if public_repo is None and revision != package["rev"]:
-        raise ValueError("Qatlib source checkout differs from the dependency lock")
+        raise ValueError("upstream source checkout differs from the dependency lock")
     if (directory / "lean-toolchain").read_bytes() != (root / "lean-toolchain").read_bytes():
-        raise ValueError("Qatlib and consumer toolchains differ")
+        raise ValueError("upstream and consumer toolchains differ")
     return directory, revision
 
 
@@ -127,7 +128,7 @@ def qatlib_index(root: Path, *, public_repo: Path | None = None,
     value = local_index(directory, cache, source_scope="qatlib-lean")
     proof_index._validate_current(value, directory)
     if value.get("git_head") != revision or qatlib_pin(root, public_repo) != (directory, revision):
-        raise ValueError("Qatlib source selection changed while admitting catalog")
+        raise ValueError("upstream source selection changed while admitting catalog")
     return value, evidence, directory
 
 
@@ -163,7 +164,7 @@ def search(root: Path, query: str, *, mode="literal", limit=10, regex_seconds=2.
             answer = proof_index.search(value, query, mode, limit, regex_seconds, all_matches=all_matches)
             proof_index._validate_current(value, directory)
             if name == "qatlib" and qatlib_pin(root, public_repo) != (directory, version):
-                raise ValueError("Qatlib source selection changed during search")
+                raise ValueError("upstream source selection changed during search")
             separator = "/blob/" if evidence["repository_url"].startswith("https://github.com/") else "/src/commit/"
             base = evidence["repository_url"] + separator + version + "/"
             for hit in answer["results"]:
@@ -185,7 +186,7 @@ def search(root: Path, query: str, *, mode="literal", limit=10, regex_seconds=2.
         try:
             proof_index._validate_current(value, directory)
             if name == "qatlib" and qatlib_pin(root, public_repo) != (directory, version):
-                raise ValueError("Qatlib source selection changed before the combined result was returned")
+                raise ValueError("upstream source selection changed before the combined result was returned")
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             corpus = corpora[position]["corpus"]
             corpora[position] = {"corpus": corpus, "status": "error", "error": str(error)}

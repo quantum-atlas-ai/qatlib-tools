@@ -20,7 +20,6 @@ from qatlib_search.lean_source import import_header, mask_comments
 IDENTIFIER = r"[A-Za-z_]\w*"
 MODULE_RE = NAME_RE
 IMPORT_RE = re.compile(rf"\bimport\s+(?:all\s+)?(?P<module>{NAME})")
-PROJECT_ROOTS = frozenset({'Qatlib', 'Project'})
 
 
 def _parts(module: str) -> tuple[str, ...]:
@@ -91,7 +90,7 @@ def _cycle(graph: dict[str, set[str]], nodes: set[str]) -> list[str]:
 
 def candidate_closure(
     repo: Path, public_repo: Path, candidates: Iterable[str], *,
-    source_root: str = "Project", public_root: str = "Qatlib",
+    source_root: str | None = None, public_root: str | None = None,
     allowed_layers: Iterable[str] = ("Foundations", "Concepts", "Papers"),
     external_roots: Iterable[str] = ("Init", "Lean", "Std", "Mathlib"),
     non_promotable_roots: Iterable[str] = (),
@@ -118,13 +117,16 @@ def candidate_closure(
                              dict(sorted(local_imports.items())), tuple(dict.fromkeys(errors)))
 
     try:
+        from qatlib_env.project import source_root as discover_root
+        source_root = source_root or discover_root(Path(repo))
+        public_root = public_root or discover_root(Path(public_repo))
         if any(isinstance(value, (str, bytes)) for value in (allowed_layers, external_roots, non_promotable_roots, test_roots)):
             raise ValueError("closure roots and layers must be iterables of identifiers, not strings")
         layers = tuple(allowed_layers)
         external = tuple(external_roots)
         non_promotable = tuple(non_promotable_roots)
         tests = tuple(test_roots)
-        if PROJECT_ROOTS.intersection(external) or source_root in external or public_root in external \
+        if source_root in external or public_root in external \
                 or set(non_promotable).intersection(external) or any(
                     root == test or root.endswith(test) for root in external for test in tests):
             raise ValueError('a project root cannot be declared an external library')
