@@ -1,4 +1,4 @@
-"""Read-only workspace facts and explicit, conservative Trash operations.
+"""Read-only workspace facts, review warnings and explicit Trash operations.
 
 No environment/bootstrap/cache-lock helpers are used here. Harvesting and
 migration belong to the operator, not to this inventory.
@@ -103,47 +103,54 @@ def discover(roots, *, max_directories=100000, semantic=None):
 
 
 def processes():
-    """Visible Lean/Lake processes; unreadable/unsupported inspection blocks apply."""
+    """Observe native build processes on Linux, macOS and Windows."""
+    import psutil
     found, errors = [], []
-    proc = Path("/proc")
-    if proc.is_dir():
-        for item in proc.iterdir():
-            if not item.name.isdigit():
-                continue
-            try:
-                argv = (item / "cmdline").read_bytes().split(b"\0")
-                name = Path(os.fsdecode(argv[0])).name.removesuffix(".exe") if argv[0] else ""
-                if name not in {"lean", "leanir", "lake"}:
-                    continue
-                found.append({"pid": int(item.name), "cwd": str((item / "cwd").resolve(strict=True)),
-                              "command": [os.fsdecode(x) for x in argv if x]})
-            except FileNotFoundError:
-                continue  # the process exited
-            except (OSError, ValueError) as error:
-                errors.append(f"process {item.name}: {error}")
-        return found, errors
-    # ps works on macOS; Windows requires a platform-specific process observer.
-    if sys.platform == "darwin":
-        result = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True,
-                                text=True, timeout=10, check=False)
-        if result.returncode:
-            return [], ["cannot inspect active processes"]
-        for line in result.stdout.splitlines():
-            parts = line.strip().split(None, 1)
-            if len(parts) == 2 and Path(parts[1]).name in {"lean", "leanir", "lake"}:
-                # No reliable cwd from ps: conservatively protect every checkout.
-                found.append({"pid": int(parts[0]), "cwd": None, "command": [parts[1]]})
-        return found, []
-    return [], ["active process inspection unavailable on this platform; apply refused"]
+    names = {"lean", "leanir", "lake", "make", "gmake", "ninja", "cmake",
+             "cc", "c++", "gcc", "g++", "clang", "clang++", "ld", "lld", "ar"}
+    for process in psutil.process_iter(["pid", "name"]):
+        if (process.info.get("name") or "").lower().removesuffix(".exe") not in names:
+            continue
+        try:
+            found.append({"pid": process.pid, "cwd": process.cwd(), "command": process.cmdline()})
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.AccessDenied, OSError) as error:
+            errors.append(f"cannot inspect build process {process.pid}: {error}")
+    return found, errors
 
 
 def _related(a, b):
     return a == b or a in b.parents or b in a.parents
 
 
+def _active_for(path, active):
+    found = []
+    for process in active:
+        cwd = Path(process["cwd"]).resolve() if process.get("cwd") else None
+        if cwd and (path == cwd or path in cwd.parents):
+            found.append(process)
+            continue
+        for argument in process.get("command", [])[1:]:
+            if argument.startswith(("-I", "-L")):
+                argument = argument[2:]
+            elif argument.startswith("-"):
+                continue
+            candidate = Path(argument)
+            if not candidate.is_absolute():
+                if cwd is None:
+                    continue
+                candidate = cwd / candidate
+            candidate = candidate.resolve()
+            if candidate == path or path in candidate.parents:
+                found.append(process)
+                break
+    return found
+
+
 def checkout_facts(path, *, inspect_ignored=False, semantic=None):
     path = Path(path).absolute()
-    row = {"path": str(path), "errors": []}
+    row = {"path": str(path), "errors": [], "warnings": []}
     try:
         if not (path / ".git").exists() or (path / ".git").is_symlink():
             raise ValueError("an exact independent Git checkout root is required")
@@ -158,7 +165,7 @@ def checkout_facts(path, *, inspect_ignored=False, semantic=None):
         row["linked_worktree"] = Path(row["git_dir"]) != Path(common)
         flags = _read_git(path, "ls-files", "-v", "-z").split("\0")
         if any(item and (item[0].islower() or item[0] == "S") for item in flags):
-            row["errors"].append("assume-unchanged/skip-worktree files require manual inspection")
+            row["warnings"].append("assume-unchanged/skip-worktree files may hide modifications")
         status = _read_git(path, "status", "--porcelain=v1", "-z", "--untracked-files=all",
                            "--ignore-submodules=none").split("\0")
         states = []
@@ -173,10 +180,14 @@ def checkout_facts(path, *, inspect_ignored=False, semantic=None):
         row["dirty_count"] = len(states)
         row["untracked_count"] = sum(s.startswith("??") for s in states)
         row["dirty_sample"] = states[:20]
+        if inspect_ignored:
+            row["dirty_entries"] = states
         row["ignored_count"] = None
         if inspect_ignored:
-            row["ignored_count"] = len(_read_git(path, "ls-files", "--others", "--ignored",
-                                                "--exclude-standard", "-z").split("\0")) - 1
+            row["ignored_paths"] = [p for p in _read_git(path, "ls-files", "--others", "--ignored",
+                                   "--exclude-standard", "--directory", "-z", "--", ".",
+                                   ":(exclude).lake").split("\0") if p]
+            row["ignored_count"] = len(row["ignored_paths"])
         recent = [path, Path(row["git_dir"]), Path(row["git_dir"]) / "HEAD",
                   Path(row["git_dir"]) / "index", Path(row["git_dir"]) / "logs/HEAD",
                   path / ".lake", path / ".lake/build"]
@@ -273,19 +284,17 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
         groups.update(executor.map(observe_common, representatives.items()))
     for row in rows:
         common = row.get("common_dir")
-        row["protection"] = list(row["errors"])
+        row["warnings"] = list(row.get("warnings", [])) + row["errors"] + process_errors
+        row["protection"] = []
         row["hot"] = now - row.get("last_activity", now) < hot_hours * 3600
         if row["hot"]:
-            row["protection"].append(f"activity within {hot_hours:g} hours")
+            row["warnings"].append(f"activity within {hot_hours:g} hours")
         path = Path(row["path"])
         if any(_related(path.resolve(), Path(p).expanduser().resolve()) for p in protect):
             row["protection"].append("explicitly protected by operator")
-        row["active_processes"] = [p for p in active if p["cwd"] is None or _related(path, Path(p["cwd"])) or
-                                   any(str(path) in a for a in p["command"][1:])]
+        row["active_processes"] = _active_for(path, active)
         if row["active_processes"]:
             row["protection"].append("active Lean/Lake process")
-        if process_errors:
-            row["protection"].extend(process_errors)
         lake = path / ".lake"
         row["lake"] = None
         if lake.exists() or lake.is_symlink():
@@ -305,154 +314,179 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
                       "Processes visible to this user only; coordinate idle writers before apply."]}
 
 
-def _lake_guard(path, remote_cache=None):
-    """Lake packages contain source, not just derived cache. Preserve uncertain data."""
-    errors = []
-    for directory, dirs, files in os.walk(path, followlinks=False, onerror=lambda e: errors.append(str(e))):
-        root = Path(directory)
-        for name in dirs + files:
-            item = root / name
-            if item.is_symlink():
-                errors.append(f"shared/symlinked Lake content: {item}")
-        if ".git" in dirs or ".git" in files:
-            fact = checkout_facts(root)
-            common = common_facts(root, check_remote=True, remote_cache=remote_cache)
-            try:
-                ignored_source = git(root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z",
-                                     "--", ".", ":(exclude).lake")
-                if fact["errors"] or fact.get("dirty_count") or ignored_source.returncode or ignored_source.stdout:
-                    errors.append(f"modified/ignored/unknown dependency source: {root}")
-            except (OSError, subprocess.SubprocessError) as error:
-                errors.append(f"dependency source inspection incomplete: {root}: {error}")
-            if (common["errors"] or common.get("stash_count") or not common["remote_verified"] or
-                    common["unpushed_branches"] or common["unknown_branches"]):
-                errors.append(f"unharvested/unknown dependency Git data: {root}")
-            if not fact.get("linked_worktree") and any(Path(p) != root for p in common.get("worktrees", [])):
-                errors.append(f"dependency common-dir serves other worktrees: {root}")
-            nested, _, discovery_errors, skipped = discover([root])
-            if discovery_errors or skipped or any(Path(p) != root for p in nested):
-                errors.append(f"nested/shared/unknown dependency content: {root}")
-            nested_lake = root / ".lake"
-            if nested_lake.is_dir() and not nested_lake.is_symlink():
-                errors.extend(_lake_guard(nested_lake, remote_cache=remote_cache))
-            dirs[:] = []
+def _warning(path, reason, *, recursive=False, **details):
+    """Keep findings complete; directory metadata warnings share target totals."""
+    path = Path(path)
+    row = {"path": str(path), "reason": reason, **details}
+    try:
+        if recursive or not path.is_dir() or system_trash.is_link(path):
+            row.update(system_trash.measure(path))
         else:
-            # Only the Lake root's build directory and compiled configuration
-            # are known derived outputs. A suffix or an arbitrary "build"
-            # directory elsewhere does not establish that data is disposable.
-            allowed = {"lakefile.olean", "lakefile.ilean", "lakefile.olean.trace"} if root == path else set()
-            if set(files) - allowed:
-                errors.append(f"unclassified content inside Lake: {root}")
-            dirs[:] = [d for d in dirs if d != ".git" and not (root == path and d == "build")
-                       and not (root / d).is_symlink()]
-    return errors
+            row["size_basis"] = "included in target totals"
+    except (OSError, RuntimeError) as error:
+        row["measurement_error"] = str(error)
+    return row
+
+
+def _git_warnings(path, fact, group):
+    warnings = [_warning(path, message) for message in fact["errors"] + fact.get("warnings", []) + group["errors"]]
+    for entry in fact.get("dirty_entries", []):
+        warnings.append(_warning(path / entry[3:], "modified/untracked Git content", status=entry[:2]))
+    for name in fact.get("ignored_paths", []):
+        warnings.append(_warning(path / name, "Git-ignored content", recursive=True))
+    if group.get("stash_count"):
+        warnings.append(_warning(path, "Git stash present", count=group["stash_count"]))
+    for name in ("unpushed_branches", "unknown_branches"):
+        if group.get(name):
+            warnings.append(_warning(path, name.replace("_", " "), refs=group[name]))
+    if not group.get("remote_verified"):
+        warnings.append(_warning(path, "remote preservation is not verified", basis=group.get("remote_basis")))
+    common = fact.get("common_dir")
+    if common and _related(path, Path(common)) and group.get("worktrees"):
+        warnings.append(_warning(path, "shared Git directory", common_dir=common,
+                                 worktrees=group["worktrees"]))
+    return warnings
+
+
+def _lake_warnings(path, *, check_remote=False, remote_cache=None):
+    """Describe nonstandard data, not a second permission system."""
+    warnings = []
+    try:
+        children = sorted(path.iterdir())
+    except OSError as error:
+        return [_warning(path, f"Lake inspection incomplete: {error}")]
+    standard = {"build", "packages", "lakefile.olean", "lakefile.ilean", "lakefile.olean.trace"}
+    for item in children:
+        if system_trash.is_link(item):
+            warnings.append(_warning(item, "symbolic link inside Lake; only the link is moved"))
+        elif item.name not in standard:
+            warnings.append(_warning(item, "nonstandard Lake content", recursive=True))
+        if item.is_mount():
+            warnings.append(_warning(item, "nested mount; size and Trash behavior depend on the filesystem"))
+    packages = path / "packages"
+    if packages.is_dir() and not system_trash.is_link(packages):
+        try:
+            dependencies = sorted(packages.iterdir())
+        except OSError as error:
+            return warnings + [_warning(packages, f"dependency inspection incomplete: {error}")]
+        for root in dependencies:
+            if system_trash.is_link(root) or not (root / ".git").exists():
+                warnings.append(_warning(root, "linked or unmanaged dependency", recursive=True))
+                continue
+            fact = checkout_facts(root, inspect_ignored=True)
+            group = common_facts(root, check_remote=check_remote, remote_cache=remote_cache)
+            warnings.extend(_git_warnings(root, fact, group))
+            nested = root / ".lake"
+            if nested.is_dir() and not system_trash.is_link(nested):
+                warnings.extend(_lake_warnings(nested, check_remote=check_remote, remote_cache=remote_cache))
+    return warnings
+
+
+def _runtime_reasons(checkout, target, active, protect):
+    reasons = []
+    if checkout.parent == checkout or checkout == Path.home().resolve():
+        reasons.append("a filesystem root or home directory is outside cleanup scope")
+    if any(system_trash.is_link(p) for p in (target, *target.parents)):
+        reasons.append("symlinked target or parent escapes explicit cleanup scope")
+    if not target.is_dir() or not (checkout / ".git").exists():
+        reasons.append("an existing directory in an exact Git checkout is required")
+    if any(_related(checkout, Path(p).expanduser().resolve()) for p in protect):
+        reasons.append("explicitly protected by operator")
+    if _active_for(checkout, active):
+        reasons.append("active Lean/Lake or build process")
+    return reasons
 
 
 def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), check_remote=False):
-    """Re-observe the exact selected list; refuse the whole batch before any move."""
+    """Preview complete warnings; --apply confirms them and uses native Trash."""
     if mode not in {"caches", "checkouts"}:
         raise ValueError("mode must be caches or checkouts")
     selected = [Path(p).expanduser().absolute() for p in checkouts]
-    for p in selected:
-        if any(parent.is_symlink() for parent in (p, *p.parents)):
-            raise ValueError(f"symlinked checkout path: {p}")
     selected = [Path(os.path.abspath(p)) for p in selected]
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("select distinct explicit checkout paths")
     targets = [p / ".lake" if mode == "caches" else p for p in selected]
     if any(_related(a, b) for i, a in enumerate(targets) for b in targets[i + 1:]):
         raise ValueError("overlapping targets must be reviewed separately")
-    # Scan only exact checkouts, not their descendants: discovery is a separate step.
     active, process_errors = processes()
     rows, receipts, remote_cache = [], [], {}
     for path, target in zip(selected, targets):
-        fact = checkout_facts(path, inspect_ignored=mode == "checkouts")
-        reasons = list(fact["errors"]) + process_errors
+        reasons = _runtime_reasons(path, target, active, protect)
+        fact = checkout_facts(path, inspect_ignored=True)
+        group = common_facts(path, check_remote=check_remote, remote_cache=remote_cache)
+        warnings = _git_warnings(path, fact, group)
+        warnings.extend(_warning(path, message) for message in process_errors)
         if time.time() - fact.get("last_activity", time.time()) < hot_hours * 3600:
-            reasons.append("hot checkout (<24h or configured protection window)")
+            warnings.append(_warning(path, "recent activity; coordinate idle writers before apply"))
         if not math.isfinite(hot_hours) or hot_hours < 24:
-            reasons.append("hot-hours must be finite and at least 24")
-        if any(_related(path, Path(p).expanduser().resolve()) for p in protect):
-            reasons.append("explicitly protected by operator")
-        if any(p["cwd"] is None or _related(path, Path(p["cwd"])) or
-               any(str(path) in a for a in p["command"][1:]) for p in active):
-            reasons.append("active Lean/Lake process")
-        if fact.get("dirty_count"):
-            reasons.append("dirty/untracked checkout")
-        group = common_facts(path, check_remote=check_remote or mode == "checkouts", remote_cache=remote_cache)
-        if group["errors"] or group.get("stash_count"):
-            reasons.append("stash or incomplete common-dir observation")
-        if mode == "checkouts":
-            if not group["remote_verified"] or group["unpushed_branches"] or group["unknown_branches"]:
-                reasons.append("unpushed/unknown common-dir branches or HEAD")
-            others = [p for p in group.get("worktrees", []) if Path(p) != path]
-            if not fact.get("linked_worktree") and others:
-                reasons.append("main common-dir still serves linked worktrees")
-            if fact.get("ignored_count"):
-                reasons.append("ignored files require agent harvest review")
-            # Never silently include nested independent repositories/research directories.
-            nested, markers, errors, skipped = discover([path])
-            if errors or skipped or any(Path(p) != path for p in nested):
-                reasons.append("nested checkout or incomplete discovery; review separately")
-        elif target.is_dir() and not target.is_symlink() and not reasons:
-            if _read_git(path, "ls-files", "-z", "--", ".lake"):
-                reasons.append("tracked Lake content requires harvest review")
-            reasons.extend(_lake_guard(target, remote_cache=remote_cache))
-        if target.is_symlink() or not target.is_dir():
-            reasons.append("missing or shared/symlinked target")
-        row = {"path": str(target), "checkout": str(path), "reasons": reasons,
+            raise ValueError("hot-hours must be finite and at least 24")
+        lake = path / ".lake"
+        if lake.is_dir() and not system_trash.is_link(lake) and not reasons:
+            warnings.extend(_lake_warnings(lake, check_remote=check_remote, remote_cache=remote_cache))
+            try:
+                tracked = _read_git(path, "ls-files", "-z", "--", ".lake").split("\0")
+                warnings.extend(_warning(path / p, "Lake content is tracked by the checkout") for p in tracked if p)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                warnings.append(_warning(lake, f"tracked-content inspection incomplete: {error}"))
+        for warning in warnings:
+            common = warning.get("common_dir")
+            if common and Path(common).is_relative_to(target) and any(
+                    not any(Path(p).is_relative_to(t) for t in targets) for p in warning.get("worktrees", [])):
+                reasons.append("Git directory serves worktrees outside the selected target")
+        row = {"path": str(target), "checkout": str(path), "reasons": reasons, "warnings": warnings,
                "head": fact.get("head"), "common_dir": fact.get("common_dir"),
-               "checkout_identity": fact.get("identity")}
+               "linked_worktree": fact.get("linked_worktree"),
+               "active_processes": _active_for(path, active)}
         try:
             row["identity"] = _identity(target)
+        except OSError as error:
+            reasons.append(f"target identity unavailable: {error}")
+        try:
             row.update(system_trash.measure(target))
-            row["trash_probe"] = system_trash.probe(target)
-            if not row["trash_probe"].get("supported"):
-                reasons.append("official Trash unavailable: " + str(row["trash_probe"]))
+            warnings.extend(_warning(p, "nested mount; included in target totals") for p in row.get("nested_mounts", []))
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-            reasons.append(str(error))
+            warnings.append(_warning(target, f"size inspection incomplete: {error}"))
+        if not reasons:
+            try:
+                row["trash_probe"] = system_trash.probe(target)
+                if not row["trash_probe"].get("supported"):
+                    reasons.append("Trash backend unavailable")
+            except (OSError, ValueError, RuntimeError) as error:
+                reasons.append(str(error))
         row["eligible"] = not reasons
         rows.append(row)
     result = {"applied": False, "mode": mode, "targets": rows, "receipts": receipts,
               "physical_bytes_freed": 0}
     if apply:
         if any(not row["eligible"] for row in rows):
-            result["error"] = "batch refused: protected or unverified targets; nothing moved"
+            result["error"] = "batch refused: active, out-of-scope or unavailable targets; nothing moved"
             return result
         def recheck(row):
             try:
-                unchanged = _identity(Path(row["path"])) == row["identity"]
+                unchanged = _identity(Path(row["path"]))[:2] == row["identity"][:2]
             except OSError as error:
                 raise ValueError(f"target unavailable since preflight: {error}") from error
             if not unchanged:
                 raise ValueError("target changed since preflight; stopped")
-            current = checkout_facts(row["checkout"], inspect_ignored=mode == "checkouts")
             live, live_errors = processes()
             checkout = Path(row["checkout"])
-            if (current["errors"] or current.get("head") != row["head"] or current.get("dirty_count") or
-                    current.get("identity") != row["checkout_identity"] or
-                    current.get("common_dir") != row["common_dir"] or
-                    any(p.is_symlink() for p in (checkout, *checkout.parents)) or
-                    time.time() - current.get("last_activity", time.time()) < hot_hours * 3600 or live_errors or
-                    any(p["cwd"] is None or _related(Path(row["checkout"]), Path(p["cwd"])) or
-                        any(row["checkout"] in a for a in p["command"][1:]) for p in live)):
-                raise ValueError("checkout/process state changed since preflight; stopped")
-            group = common_facts(row["checkout"], check_remote=check_remote or mode == "checkouts")
-            if (group["errors"] or group.get("stash_count") or
-                    (mode == "checkouts" and (current.get("ignored_count") or not group["remote_verified"] or
-                                             group["unpushed_branches"] or group["unknown_branches"] or
-                                             (not current.get("linked_worktree") and
-                                              any(Path(p) != checkout for p in group.get("worktrees", []))))) or
-                    (mode == "caches" and (_read_git(checkout, "ls-files", "-z", "--", ".lake") or
-                                           _lake_guard(Path(row["path"]))))):
-                raise ValueError("source/common-dir state changed since preflight; stopped")
-            if mode == "checkouts":
-                nested, _, errors, skipped = discover([checkout])
-                if errors or skipped or any(Path(p) != checkout for p in nested):
-                    raise ValueError("nested checkout/discovery changed since preflight; stopped")
-            if _identity(Path(row["path"])) != row["identity"]:
-                raise ValueError("target changed during recheck; stopped")
-        for row in rows:
+            row["warnings"].extend(_warning(checkout, message) for message in live_errors)
+            blockers = _runtime_reasons(checkout, Path(row["path"]), live, protect)
+            if blockers:
+                raise ValueError("; ".join(blockers))
+            for warning in row["warnings"][:]:
+                if warning.get("common_dir") and Path(warning["common_dir"]).is_relative_to(Path(row["path"])):
+                    try:
+                        raw = _read_git(warning["path"], "worktree", "list", "--porcelain", "-z")
+                    except (OSError, ValueError, subprocess.SubprocessError) as error:
+                        row["warnings"].append(_warning(warning["path"], f"worktree recheck incomplete: {error}"))
+                        continue
+                    worktrees = [x.removeprefix("worktree ") for x in raw.split("\0") if x.startswith("worktree ")]
+                    if any(not any(Path(p).is_relative_to(t) for t in targets) for p in worktrees):
+                        raise ValueError("Git directory now serves a worktree outside the selected targets")
+        # Move linked trees before their selected primary Git directory.
+        order = sorted(rows, key=lambda row: not row["linked_worktree"]) if mode == "checkouts" else rows
+        for row in order:
             try:
                 recheck(row)
                 receipts.append(system_trash.trash(Path(row["path"])))

@@ -1,13 +1,13 @@
-"""System Trash adapters. No permanent-deletion fallback is provided."""
+"""Thin Send2Trash adapter; no permanent-deletion fallback."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 import platform
-import re
-import shutil
+import json
 import stat
 import subprocess
+import sys
 
 
 class TrashError(RuntimeError):
@@ -23,6 +23,18 @@ def _identity(path):
     return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns
 
 
+def _reparse(info):
+    return bool(getattr(info, "st_file_attributes", 0) &
+                getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def is_link(path):
+    try:
+        return Path(path).is_symlink() or _reparse(Path(path).lstat())
+    except OSError:
+        return Path(path).is_symlink()
+
+
 def measure(path: Path) -> dict:
     """Count apparent and allocated bytes without following symbolic links.
 
@@ -33,13 +45,13 @@ def measure(path: Path) -> dict:
     seen = set()
     apparent = allocated = 0
     allocation_known = True
-    stack = [Path(path)]
-    device = stack[0].lstat().st_dev
+    mounts = []
+    stack = [(Path(path), None)]
     while stack:
-        item = stack.pop()
+        item, parent_device = stack.pop()
         info = item.lstat()
-        if info.st_dev != device:
-            raise _failure(f"nested filesystem requires separate review: {item}")
+        if parent_device is not None and info.st_dev != parent_device:
+            mounts.append(str(item))
         key = (info.st_dev, info.st_ino)
         if info.st_nlink > 1 and key in seen:
             continue
@@ -49,96 +61,105 @@ def measure(path: Path) -> dict:
             allocated += info.st_blocks * 512
         else:
             allocation_known = False
-        if stat.S_ISDIR(info.st_mode):
+        if stat.S_ISDIR(info.st_mode) and not _reparse(info):
             with os.scandir(item) as entries:
-                stack.extend(Path(entry.path) for entry in entries)
+                stack.extend((Path(entry.path), info.st_dev) for entry in entries)
     return {"apparent_bytes": apparent,
-            "allocated_bytes": allocated if allocation_known else None}
+            "allocated_bytes": allocated if allocation_known else None,
+            **({"nested_mounts": mounts} if mounts else {})}
 
 
-def _environment(env):
-    result = dict(os.environ if env is None else env)
-    result.update(GIO_USE_VFS="local", LC_ALL="C")
-    return result
+def _backend():
+    if platform.system() == "Windows":
+        # Never allow the library's legacy SHFileOperation fallback. pywin32 is
+        # a Windows-only runtime dependency. Keep the actual operation in the
+        # upstream IFileOperation backend, with its cancellation bug fixed:
+        # https://github.com/arsenetar/send2trash/pull/115
+        from send2trash.win import modern
+        from send2trash.win.IFileOperationProgressSink import FileOperationProgressSink
+        from win32com.server.exception import COMException
+        from win32com.shell import shellcon
+        import winerror
+
+        def require_recycle(self, flags, item):
+            if not flags & shellcon.TSF_DELETE_RECYCLE_IF_POSSIBLE:
+                raise COMException(description="The item cannot be recycled", hresult=winerror.E_ABORT)
+            return 0
+
+        FileOperationProgressSink.PreDeleteItem = require_recycle
+        return modern.send2trash
+    from send2trash import send2trash
+    return send2trash
 
 
-def _run(command, *, env):
-    try:
-        result = subprocess.run(command, env=env, text=True, capture_output=True,
-                                check=False, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise _failure(f"cannot run system Trash backend: {error}") from error
-    if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
-        raise _failure(f"system Trash backend failed ({result.returncode}): {detail}")
-    return result.stdout
+def _windows_path_check(path):
+    # Known Shell limitation: long descendants can be permanently deleted even
+    # with recycling requested (upstream issue #117). Reject this unsupported
+    # case until the native backend fixes it; ordinary Windows paths work.
+    def check(item):
+        if len(str(item).encode("utf-16le")) // 2 >= 260:
+            raise _failure(f"Windows Recycle Bin cannot safely handle this long path: {item}")
+    check(path)
+    if path.is_dir() and not is_link(path):
+        def failed(error):
+            raise error
+        for directory, dirs, files in os.walk(path, followlinks=False, onerror=failed):
+            for name in dirs + files:
+                check(Path(directory) / name)
+            dirs[:] = [name for name in dirs if not is_link(Path(directory) / name)]
 
 
 def probe(path: Path, env=None) -> dict:
-    """Read-only capability check; success is not a guarantee of a later move."""
+    """Read-only availability check; filesystem support is confirmed on apply.
+
+    Send2Trash has no dry-run API. Do not create Trash directories or call its
+    move function to manufacture a positive capability result.
+    """
     path = Path(os.path.abspath(os.fspath(path)))
     if not os.path.lexists(path):
         raise _failure(f"Trash target does not exist: {path}")
-    environment = _environment(env)
-    system = platform.system()
-    capability = None
-    if system == "Linux":
-        gio = shutil.which("gio", path=environment.get("PATH"))
-        if gio:
-            output = _run([gio, "info", "--nofollow-symlinks", "-a", "access::can-trash", "--", str(path)], env=environment)
-            found = re.findall(r"^\s*access::can-trash:\s*(TRUE|FALSE)\s*$", output, re.MULTILINE)
-            if found != ["TRUE"]:
-                raise _failure(f"gio reports Trash unsupported or unknown for {path}")
-            backend, executable, capability = "gio", gio, True
-        else:
-            executable = shutil.which("trash-put", path=environment.get("PATH"))
-            if not executable:
-                raise _failure("install gio or trash-put to use the system Trash")
-            backend = "trash-put"
-    elif system == "Darwin":
-        if os.path.isfile("/usr/bin/trash") and os.access("/usr/bin/trash", os.X_OK):
-            backend, executable = "macos-trash", "/usr/bin/trash"
-        else:
-            executable = shutil.which("osascript", path=environment.get("PATH"))
-            if not executable:
-                raise _failure("macOS native Trash requires /usr/bin/trash or Finder and osascript")
-            backend = "macos-finder"
-    elif system == "Windows":
-        # VisualBasic FileSystem ignores SendToRecycleBin when UserInteractive
-        # is false. Its interactive Shell path also only requests FOF_ALLOWUNDO
-        # (best effort). Neither path guarantees recoverability. Do not expose
-        # it as an automatic Trash backend, even if PowerShell is available.
-        raise _failure("automatic Windows recycling is unavailable: .NET SendToRecycleBin "
-                       "can permanently delete; use the native Recycle Bin manually")
-    else:
-        raise _failure(f"no system Trash backend for {system}")
-    return {"original_path": str(path), "backend": backend, "supported": True,
-            "executable": executable, "can_trash": capability,
-            "note": "A capability check does not guarantee that a later move will succeed."}
+    if path.parent == path:
+        raise _failure("a filesystem root cannot be sent to Trash")
+    if platform.system() == "Windows":
+        _windows_path_check(path)
+    try:
+        backend = _backend()
+    except (ImportError, OSError) as error:
+        raise _failure(f"Send2Trash backend unavailable: {error}") from error
+    if hasattr(os, "statvfs") and os.statvfs(path.parent).f_flag & getattr(os, "ST_RDONLY", 1):
+        raise _failure(f"read-only filesystem: {path}")
+    return {"original_path": str(path), "backend": backend.__module__, "supported": True,
+            "can_trash": None,
+            "note": "Backend available; filesystem capability is confirmed only on apply. Preview performs no move."}
 
 
 def trash(path: Path, env=None) -> dict:
     """Move one path to the system Trash and return an auditable receipt."""
+    if env is not None and any(env.get(k, os.environ.get(k)) != os.environ.get(k)
+                               for k in ("XDG_DATA_HOME", "HOME", "LOCALAPPDATA", "APPDATA")):
+        # The library caches platform paths on import. A caller-specific
+        # environment needs a fresh interpreter, not global os.environ edits.
+        child = subprocess.run([sys.executable, "-B", "-m", __name__, os.fspath(path)],
+                               env={**os.environ, **env}, text=True, capture_output=True)
+        if child.returncode:
+            raise _failure(f"Send2Trash failed: {child.stderr.strip()}")
+        return json.loads(child.stdout)
     original = _identity(path)
     details = probe(path, env)
     path = Path(details["original_path"])
-    sizes = measure(path)
-    environment = _environment(env)
-    executable, backend = details["executable"], details["backend"]
-    if backend == "gio":
-        command = [executable, "trash", "--", str(path)]
-    elif backend == "trash-put":
-        command = [executable, "--", str(path)]
-    elif backend == "macos-trash":
-        command = [executable, str(path)]
-    elif backend == "macos-finder":
-        # Pass the path as argv, never interpolate it into AppleScript.
-        script = 'on run argv\n tell application "Finder" to delete POSIX file (item 1 of argv)\nend run'
-        command = [executable, "-e", script, str(path)]
-    else:
-        raise _failure(f"unknown system Trash backend: {backend}")
+    try:
+        sizes = measure(path)
+    except OSError as error:
+        sizes = {"measurement_error": str(error)}
     if original != _identity(path):
         raise _failure(f"Trash target changed during capability/size inspection: {path}")
-    _run(command, env=environment)
-    return {"original_path": str(path), "backend": backend, **sizes,
+    try:
+        _backend()(str(path))
+    except OSError as error:
+        raise _failure(f"Send2Trash failed for {path}: {error}") from error
+    return {"original_path": str(path), "backend": details["backend"], **sizes,
             "physical_space_note": "Moving to Trash may retain blocks on the same filesystem; no physical space freed is assumed."}
+
+
+if __name__ == "__main__":
+    print(json.dumps(trash(Path(sys.argv[1])), ensure_ascii=False))

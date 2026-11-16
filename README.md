@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-**`qatlib-tools`** 是面向 [Lean 4](https://lean-lang.org/) 形式化工程的 Python 3.11+ 命令行工具集与基础库，提供工作树与缓存管理、GitHub / Gitea 协作接口，以及声明和证明检索。核心运行时仅使用 Python 标准库，**零第三方依赖**，支持在 Linux、macOS 和 Windows 的隔离环境中安装。
+**`qatlib-tools`** 是面向 [Lean 4](https://lean-lang.org/) 形式化工程的 Python 3.11+ 命令行工具集与基础库，提供工作树与缓存管理、GitHub / Gitea 协作接口，以及声明和证明检索。回收站操作使用成熟的 `Send2Trash`，构建进程观察使用 `psutil`，Windows 另安装平台限定的 `pywin32`；支持在 Linux、macOS 和 Windows 的隔离环境中安装。
 
 ## 组件概览
 
@@ -221,19 +221,24 @@ Lake/Lean 与研究目录标记，并按 `common-dir` 汇总全部分支、stash
 `--check-remote` 只读 `ls-remote`；缺失远端对象或浅克隆会保守标为未知，不自动 fetch。
 
 两个清理命令默认仅预览。保留常用 clone 时选 `clean-caches`，整树回收只选明确多余的
-`trash-checkouts`。两者均要求精确检出根，保护最近至少 24 小时有活动、dirty/stash、
-可见 Lean/Lake 进程和 `--protect PATH`；整树回收另检查全部共享分支、忽略文件、
-嵌套仓及仍依赖主 Git 目录的 linked worktree。`.lake/packages` 内的源码独立检查，
-未知/未推成果不被当作可重建缓存。收远端、整合成果和切回 main 由 Agent/操作者判断。
+`trash-checkouts`。两者均列出完整目标、逻辑/分配大小及结构化 `warnings`：近期活动、
+dirty/stash、未推或未知分支、Git 忽略的任务目录、被追踪的 `.lake` 内容、修改的依赖，
+以及 `.lake/task-*` 等非标准目录。文件提示列出具体路径，非标准目录另测整树大小；
+Git 元数据提示共享目标总量，不虚构分支的磁盘大小。这些发现供操作者审阅和归档，
+不会因为命中提示就禁止用户确认后的回收。默认不查询远端；需要 live 引用时加 `--check-remote`。
 
 审阅具体路径和状态并得到用户批准后，才用同一选择列表加 `--apply`。执行会重新预检，
-遇保护项整批拒绝，后端途中失败保留已成功项的回执并停止；仍需操作者协调写者，
+只有活跃 Lean/Lake/构建占用、路径越界（含会破坏未选 worktree 的共享 Git 目录）、
+不存在或非法链接、显式 `--protect` 排除和回收站后端故障才拒绝；`reasons` 列出这些阻断。
+提示项在 `--apply` 下可直接回收，无需第二套覆盖开关。后端途中失败保留已成功项的回执并停止；仍需操作者协调写者，
 无法排除检查后新进程启动的竞态。工具不保存批准，也不自动恢复或清空回收站。
-Linux 优先 gio 本地 VFS，明确不支持时停止；缺 gio 可用 trash-put。macOS 使用
-`/usr/bin/trash` 或 Finder。Windows 暂不支持自动回收：.NET `SendToRecycleBin`
-在非交互环境下会永久删除，交互 Shell 也只尽力回收，因此工具拒绝执行并请用户手动使用原生回收站。
-无可用官方后端
-或后端拒绝时停下询问用户，没有自制目录或永久删除兜底。同盘回收通常保留物理块，
+三端均交给 Send2Trash：Linux 使用 Gio 或库提供的 FreeDesktop Trash 实现（含外盘
+`.Trash/$uid`、`.Trash-$uid`），macOS 使用 Cocoa/CoreServices，Windows 强制使用
+pywin32 的原生 `IFileOperation`，不使用 .NET 或旧 `SHFileOperation` 兜底。Windows
+同时补齐上游取消回调的异常契约，并拒绝已知不安全的长路径情况；其他普通 Windows 路径可以回收。
+库没有通用只读能力探测接口，预览只确认后端可加载、路径和挂载的已知条件，不调用移动函数，
+不创建 Trash 目录；具体文件系统是否接受移动以执行结果为准。失败即报告，没有永久删除后备路径。
+跨盘可能需要复制到用户 Trash 后移动，耗时和临时占用取决于数据量。同盘回收通常保留物理块，
 大小和回执均不代表已经释放磁盘空间；共享 extents/硬链接也不能重复计算为可释放量。
 
 ## 本地开发与测试

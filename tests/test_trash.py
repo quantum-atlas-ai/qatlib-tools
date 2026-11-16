@@ -1,188 +1,178 @@
-"""System Trash dispatch and fail-closed behavior, without moving any files."""
-from contextlib import nullcontext
+"""Send2Trash contracts; no real user data is moved."""
+import os
 from pathlib import Path
 import stat
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+import sys
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from qatlib_env import trash
 
 
-PATH = Path('/example/derived file')
-ENV = {'PATH': '/mock'}
+@pytest.mark.parametrize("system", ["Linux", "Darwin", "Windows"])
+@pytest.mark.parametrize("name", ["derived file", "引号'与\" $HOME; $(touch sentinel)\nnext"])
+def test_paths_are_data_for_all_platforms(tmp_path, monkeypatch, system, name):
+    path = tmp_path / name
+    path.write_text("payload")
+    move = Mock()
+    move.__module__ = "send2trash.native"
+    monkeypatch.setattr(trash.platform, "system", lambda: system)
+    monkeypatch.setattr(trash, "_backend", lambda: move)
+    receipt = trash.trash(path)
+    move.assert_called_once_with(str(path))
+    assert receipt["backend"] == "send2trash.native"
+    assert receipt["apparent_bytes"] == len(b"payload")
+    assert "no physical space freed" in receipt["physical_space_note"]
 
 
-@pytest.fixture(autouse=True)
-def stable_identity(monkeypatch):
-    monkeypatch.setattr(trash, '_identity', lambda path: (1, 2, 3, 4))
+def test_probe_is_read_only_and_does_not_promise_mount_capability(tmp_path, monkeypatch):
+    move = Mock()
+    move.__module__ = "send2trash.native"
+    monkeypatch.setattr(trash, "_backend", lambda: move)
+    before = list(tmp_path.iterdir())
+    result = trash.probe(tmp_path)
+    assert result["supported"] and result["can_trash"] is None
+    assert list(tmp_path.iterdir()) == before
+    move.assert_not_called()
 
 
-def result(stdout='', returncode=0, stderr=''):
-    return SimpleNamespace(stdout=stdout, returncode=returncode, stderr=stderr)
+@pytest.mark.parametrize("error", [PermissionError("no trash permission"), OSError("unsupported mount")])
+def test_backend_failure_never_falls_back(tmp_path, monkeypatch, error):
+    path = tmp_path / "derived"
+    path.write_text("keep")
+    move = Mock(side_effect=error)
+    move.__module__ = "send2trash.native"
+    monkeypatch.setattr(trash, "_backend", lambda: move)
+    with pytest.raises(trash.TrashError, match="Send2Trash failed"):
+        trash.trash(path)
+    assert path.read_text() == "keep"
+    assert move.call_count == 1
 
 
-def linux_which(name, path=None):
-    return {'gio': '/mock/gio', 'trash-put': '/mock/trash-put'}.get(name)
+def test_missing_backend_refuses(tmp_path, monkeypatch):
+    monkeypatch.setattr(trash, "_backend", Mock(side_effect=ImportError("missing pywin32")))
+    with pytest.raises(trash.TrashError, match="backend unavailable"):
+        trash.probe(tmp_path)
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-@patch.object(trash.shutil, 'which', side_effect=linux_which)
-def test_gio_probe_and_trash(_, __, ___):
-    with patch.object(trash.subprocess, 'run', side_effect=[
-            result('attributes:\n  access::can-trash: TRUE\n'), result()]) as run, \
-         patch.object(trash, 'measure', return_value={'apparent_bytes': 42, 'allocated_bytes': 512}):
-        receipt = trash.trash(PATH, ENV)
-    assert receipt['backend'] == 'gio'
-    assert receipt['apparent_bytes'] == 42
-    assert receipt['allocated_bytes'] == 512
-    assert run.call_args_list[0].args[0] == ['/mock/gio', 'info', '--nofollow-symlinks', '-a', 'access::can-trash', '--', str(PATH)]
-    assert run.call_args_list[1].args[0] == ['/mock/gio', 'trash', '--', str(PATH)]
-    assert run.call_args_list[0].kwargs['env']['GIO_USE_VFS'] == 'local'
-    assert 'no physical space freed' in receipt['physical_space_note']
+def test_changed_target_during_size_inspection_refuses(tmp_path, monkeypatch):
+    move = Mock()
+    move.__module__ = "send2trash.native"
+    monkeypatch.setattr(trash, "_backend", lambda: move)
+    monkeypatch.setattr(trash, "_identity", Mock(side_effect=[(1, 2, 3, 4), (1, 3, 3, 4)]))
+    with pytest.raises(trash.TrashError, match="changed during"):
+        trash.trash(tmp_path)
+    move.assert_not_called()
 
 
-@pytest.mark.parametrize('output', ['access::can-trash: FALSE\n', 'attributes:\n',
-                                    'access::can-trash: TRUE\naccess::can-trash: FALSE\n'])
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-@patch.object(trash.shutil, 'which', side_effect=linux_which)
-def test_gio_unsupported_never_falls_back(_, __, ___, output):
-    with patch.object(trash.subprocess, 'run', return_value=result(output)) as run:
-        with pytest.raises(trash.TrashError, match='ask the user'):
-            trash.trash(PATH, ENV)
-    assert run.call_count == 1
+def test_read_only_mount_is_refused(tmp_path, monkeypatch):
+    move = Mock()
+    move.__module__ = "send2trash.native"
+    monkeypatch.setattr(trash, "_backend", lambda: move)
+    monkeypatch.setattr(trash.os, "statvfs", lambda p: SimpleNamespace(f_flag=1), raising=False)
+    monkeypatch.setattr(trash.os, "ST_RDONLY", 1, raising=False)
+    with pytest.raises(trash.TrashError, match="read-only filesystem"):
+        trash.probe(tmp_path)
+    move.assert_not_called()
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-@patch.object(trash.shutil, 'which', side_effect=linux_which)
-def test_gio_move_failure_does_not_retry_other_backend(_, __, ___):
-    with patch.object(trash.subprocess, 'run', side_effect=[result('access::can-trash: TRUE\n'),
-                                                           result(returncode=1, stderr='denied')]) as run, \
-         patch.object(trash, 'measure', return_value={'apparent_bytes': 1, 'allocated_bytes': 512}):
-        with pytest.raises(trash.TrashError, match='denied'):
-            trash.trash(PATH, ENV)
-    assert run.call_count == 2
+def test_windows_uses_modern_backend_and_raises_to_cancel(monkeypatch):
+    class Sink:
+        pass
+
+    class Cancelled(Exception):
+        def __init__(self, **details):
+            self.details = details
+
+    modern = ModuleType("send2trash.win.modern")
+    modern.send2trash = Mock()
+    win = ModuleType("send2trash.win")
+    win.modern = modern
+    sink_module = ModuleType("send2trash.win.IFileOperationProgressSink")
+    sink_module.FileOperationProgressSink = Sink
+    exception = ModuleType("win32com.server.exception")
+    exception.COMException = Cancelled
+    shell = ModuleType("win32com.shell")
+    shell.shellcon = SimpleNamespace(TSF_DELETE_RECYCLE_IF_POSSIBLE=0x80)
+    winerror = ModuleType("winerror")
+    winerror.E_ABORT = -2147467260
+    for name, module in {win.__name__: win, modern.__name__: modern,
+                         sink_module.__name__: sink_module,
+                         exception.__name__: exception, shell.__name__: shell,
+                         "winerror": winerror}.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(trash.platform, "system", lambda: "Windows")
+    assert trash._backend() is modern.send2trash
+    assert Sink().PreDeleteItem(0x80, None) == 0
+    with pytest.raises(Cancelled) as error:
+        Sink().PreDeleteItem(0, None)
+    assert error.value.details["hresult"] == winerror.E_ABORT
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-def test_trash_put_only_when_gio_absent(_, __):
-    with patch.object(trash.shutil, 'which', side_effect=lambda name, path=None: '/mock/trash-put' if name == 'trash-put' else None), \
-         patch.object(trash.subprocess, 'run', return_value=result()) as run, \
-         patch.object(trash, 'measure', return_value={'apparent_bytes': 1, 'allocated_bytes': 512}):
-        receipt = trash.trash(PATH, ENV)
-    assert receipt['backend'] == 'trash-put'
-    assert run.call_args.args[0] == ['/mock/trash-put', '--', str(PATH)]
+def test_windows_long_descendant_is_refused_before_native_call(tmp_path):
+    directory = tmp_path / ("a" * 130)
+    directory.mkdir()
+    (directory / ("b" * 130)).write_text("keep")
+    with pytest.raises(trash.TrashError, match="long path"):
+        trash._windows_path_check(tmp_path)
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-@patch.object(trash.shutil, 'which', return_value=None)
-def test_missing_tools_refuse(_, __, ___):
-    with pytest.raises(trash.TrashError, match='install gio or trash-put'):
-        trash.probe(PATH, ENV)
+def test_measure_hardlinks_and_symlinks(tmp_path):
+    first = tmp_path / "first"
+    first.write_bytes(b"payload")
+    try:
+        os.link(first, tmp_path / "second")
+        (tmp_path / "link").symlink_to(first)
+    except OSError:
+        pytest.skip("hard/symbolic links unavailable")
+    expected = tmp_path.lstat().st_size + first.lstat().st_size + (tmp_path / "link").lstat().st_size
+    assert trash.measure(tmp_path)["apparent_bytes"] == expected
 
 
-@pytest.mark.parametrize('native', [True, False])
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Darwin')
-@pytest.mark.parametrize('name', ['derived file', "引号'与\" $HOME; $(touch sentinel)\nnext"])
-def test_macos_native_or_finder(_, __, native, name):
-    path = Path('/example') / name
-    with patch.object(trash.os.path, 'isfile', return_value=native), \
-         patch.object(trash.os, 'access', return_value=native), \
-         patch.object(trash.shutil, 'which', return_value='/mock/osascript'), \
-         patch.object(trash.subprocess, 'run', return_value=result()) as run, \
-         patch.object(trash, 'measure', return_value={'apparent_bytes': 1, 'allocated_bytes': 512}):
-        receipt = trash.trash(path, ENV)
-    args = run.call_args.args[0]
-    assert receipt['backend'] == ('macos-trash' if native else 'macos-finder')
-    assert args[-1] == str(path)
-    if not native:
-        assert 'POSIX file (item 1 of argv)' in args[2]
-        assert str(path) not in args[2]
+def test_measure_does_not_recurse_windows_junction(monkeypatch):
+    from contextlib import nullcontext
+    def info(path):
+        return SimpleNamespace(st_dev=1, st_ino=1 if str(path) == "/root" else 2,
+                               st_nlink=1, st_size=10, st_blocks=1, st_mode=stat.S_IFDIR,
+                               st_file_attributes=0 if str(path) == "/root" else 0x400)
+    monkeypatch.setattr(Path, "lstat", info)
+    scandir = Mock(return_value=nullcontext([SimpleNamespace(path="/root/junction")]))
+    monkeypatch.setattr(trash.os, "scandir", scandir)
+    assert trash.measure(Path("/root"))["apparent_bytes"] == 20
+    scandir.assert_called_once_with(Path("/root"))
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Windows')
-def test_windows_refuses_unsafe_dotnet_backend_even_with_powershell(_, __):
-    path = Path("/example/it's $important; file")
-    with patch.object(trash.shutil, 'which', return_value='powershell.exe'), \
-         patch.object(trash.subprocess, 'run') as run:
-        with pytest.raises(trash.TrashError, match='can permanently delete'):
-            trash.trash(path, ENV)
-    run.assert_not_called()
+def test_nested_mount_is_measured_and_reported_not_refused(monkeypatch):
+    from contextlib import nullcontext
+    monkeypatch.setattr(Path, "lstat", lambda path: SimpleNamespace(
+        st_dev=1 if str(path) == "/root" else 2, st_ino=1, st_nlink=1,
+        st_size=10, st_blocks=1, st_mode=stat.S_IFDIR if str(path) == "/root" else stat.S_IFREG))
+    monkeypatch.setattr(trash.os, "scandir", lambda path: nullcontext([SimpleNamespace(path="/root/mounted")]))
+    row = trash.measure(Path("/root"))
+    assert row["apparent_bytes"] == 20
+    assert row["nested_mounts"] == ["/root/mounted"]
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Darwin')
-def test_macos_missing_backend_stops(_, __):
-    with patch.object(trash.os.path, 'isfile', return_value=False), \
-         patch.object(trash.shutil, 'which', return_value=None):
-        with pytest.raises(trash.TrashError, match='ask the user'):
-            trash.probe(PATH, ENV)
+def test_windows_path_walk_prunes_junctions(monkeypatch):
+    monkeypatch.setattr(Path, "is_dir", lambda p: True)
+    monkeypatch.setattr(trash, "is_link", lambda p: p.name == "junction")
+    def walk(path, **kwargs):
+        dirs = ["junction"]
+        yield "/root", dirs, []
+        assert "junction" not in dirs
+    monkeypatch.setattr(trash.os, "walk", walk)
+    trash._windows_path_check(Path("/root"))
 
 
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-@patch.object(trash.shutil, 'which', side_effect=linux_which)
-def test_probe_backend_failure_stops(_, __, ___):
-    with patch.object(trash.subprocess, 'run', return_value=result(returncode=1, stderr='unsupported')) as run:
-        with pytest.raises(trash.TrashError, match='unsupported'):
-            trash.probe(PATH, ENV)
-        assert run.call_count == 1
-
-
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Windows')
-def test_windows_refuses_reparse_points(_, __):
-    with patch.object(trash.stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400, create=True), \
-         patch.object(Path, 'lstat', return_value=SimpleNamespace(st_file_attributes=0x400)), \
-         patch.object(Path, 'is_symlink', return_value=False), \
-         patch.object(trash.subprocess, 'run') as run:
-        with pytest.raises(trash.TrashError, match='native Recycle Bin manually'):
-            trash.trash(PATH, ENV)
-        run.assert_not_called()
-
-
-def test_measure_deduplicates_hardlinks_and_does_not_follow_symlinks(monkeypatch):
-    def item(mode, inode, links, size, blocks):
-        return SimpleNamespace(st_mode=mode, st_dev=1, st_ino=inode, st_nlink=links,
-                               st_size=size, st_blocks=blocks)
-    data = {
-        '/root': item(stat.S_IFDIR, 1, 2, 10, 1),
-        '/root/first': item(stat.S_IFREG, 2, 2, 100, 4),
-        '/root/second': item(stat.S_IFREG, 2, 2, 100, 4),
-        '/root/link': item(stat.S_IFLNK, 3, 1, 5, 0),
-    }
-    monkeypatch.setattr(Path, 'lstat', lambda self: data[str(self)])
-    entries = [SimpleNamespace(path=p) for p in ('/root/first', '/root/second', '/root/link')]
-    scandir = Mock(return_value=nullcontext(entries))
-    monkeypatch.setattr(trash.os, 'scandir', scandir)
-    assert trash.measure(Path('/root')) == {'apparent_bytes': 115, 'allocated_bytes': 2560}
-    scandir.assert_called_once_with(Path('/root'))
-
-
-def test_measure_refuses_nested_filesystem(monkeypatch):
-    monkeypatch.setattr(Path, 'lstat', lambda self: SimpleNamespace(
-        st_mode=stat.S_IFDIR, st_dev=1 if str(self) == '/root' else 2,
-        st_ino=1, st_nlink=1, st_size=10, st_blocks=1))
-    monkeypatch.setattr(trash.os, 'scandir', lambda path: nullcontext([SimpleNamespace(path='/root/mount')]))
-    with pytest.raises(trash.TrashError, match='nested filesystem'):
-        trash.measure(Path('/root'))
-
-
-@patch.object(trash.os.path, 'lexists', return_value=True)
-@patch.object(trash.platform, 'system', return_value='Linux')
-@patch.object(trash.shutil, 'which', side_effect=linux_which)
-def test_changed_target_during_probe_does_not_move(_, __, ___, monkeypatch):
-    monkeypatch.setattr(trash, '_identity', Mock(side_effect=[(1, 2, 3, 4), (1, 3, 3, 4)]))
-    with patch.object(trash.subprocess, 'run', return_value=result('access::can-trash: TRUE\n')) as run, \
-         patch.object(trash, 'measure', return_value={'apparent_bytes': 1, 'allocated_bytes': 512}):
-        with pytest.raises(trash.TrashError, match='changed during'):
-            trash.trash(PATH, ENV)
-    assert run.call_count == 1
+def test_caller_environment_uses_isolated_process(tmp_path, monkeypatch):
+    path = tmp_path / "derived"
+    path.write_text("keep")
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout='{"backend":"send2trash.native"}', stderr=""))
+    monkeypatch.setattr(trash.subprocess, "run", run)
+    result = trash.trash(path, {"XDG_DATA_HOME": str(tmp_path / "xdg")})
+    assert result["backend"] == "send2trash.native"
+    assert run.call_args.args[0][-1] == str(path)
+    assert run.call_args.kwargs["env"]["XDG_DATA_HOME"] == str(tmp_path / "xdg")
+    assert path.exists()
