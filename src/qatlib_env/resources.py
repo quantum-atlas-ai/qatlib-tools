@@ -100,7 +100,12 @@ def probe_resources(*, proc_root: Path = Path("/proc"),
             memory[key] = int(fields[0]) * (1024 if len(fields) > 1 and fields[1] == "kB" else 1)
     if "MemTotal" not in memory:
         # Non-Linux platforms have no /proc. Avoid an aggressive CPU-only default.
-        memory = {"MemTotal": 4 * GIB, "MemAvailable": 4 * GIB}
+        try:
+            import psutil
+            virtual = psutil.virtual_memory()
+            memory = {"MemTotal": virtual.total, "MemAvailable": virtual.available}
+        except Exception:
+            memory = {"MemTotal": 4 * GIB, "MemAvailable": 4 * GIB}
     physical = memory["MemTotal"]
     available = memory.get("MemAvailable", memory.get("MemFree", physical))
     count = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
