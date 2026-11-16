@@ -100,6 +100,18 @@ def test_scoped_main_uses_lake_template_root(tmp_path):
     assert "no declarations audited" in generated
 
 
+def test_scoped_base_skips_import_only_library_aggregates(tmp_path, capsys):
+    lake(tmp_path)
+    for file in ("src/Algebra.lean", "test/strict/Checks.lean"):
+        path = tmp_path / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("-- aggregate imports\n")
+    changed = b"src/Algebra.lean\0test/strict/Checks.lean\0"
+    with patch.object(scoped.subprocess, "check_output", return_value=changed):
+        assert scoped.main(["--repo", str(tmp_path), "--base", "HEAD~1"]) == 0
+    assert "skipped=no_changed_modules" in capsys.readouterr().out
+
+
 def test_generic_retirement_checks_exact_git_pin_and_nested_source_directory(tmp_path, capsys):
     upstream, consumer = tmp_path / "upstream", tmp_path / "consumer"
     for root, name in ((upstream, "Provider"), (consumer, "Consumer")):

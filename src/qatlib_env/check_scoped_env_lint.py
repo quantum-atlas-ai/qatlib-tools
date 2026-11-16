@@ -48,7 +48,8 @@ def selected_modules(repo: Path, base: str, layouts) -> list[str]:
             if not path.is_relative_to(directory):
                 continue
             module = ".".join(path.relative_to(directory).with_suffix("").parts)
-            if any(module == root or module.startswith(root + ".") for root in roots):
+            # Import-only library aggregates have no own declarations to audit.
+            if any(module.startswith(root + ".") for root in roots):
                 result.append(module)
                 break
     return result
