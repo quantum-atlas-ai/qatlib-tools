@@ -186,7 +186,8 @@ def checkout_facts(path, *, inspect_ignored=False, semantic=None):
         if inspect_ignored:
             row["ignored_paths"] = [p for p in _read_git(path, "ls-files", "--others", "--ignored",
                                    "--exclude-standard", "--directory", "-z", "--", ".",
-                                   ":(exclude).lake").split("\0") if p]
+                                   ":(exclude).lake").split("\0")
+                                    if p and Path(p).parts[0] != ".lake"]
             row["ignored_count"] = len(row["ignored_paths"])
         recent = [path, Path(row["git_dir"]), Path(row["git_dir"]) / "HEAD",
                   Path(row["git_dir"]) / "index", Path(row["git_dir"]) / "logs/HEAD",

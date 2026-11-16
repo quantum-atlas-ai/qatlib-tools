@@ -99,7 +99,8 @@ def test_hidden_git_flags_are_warnings_and_paths_are_not_truncated(monkeypatch, 
         if args == ("rev-parse", "--path-format=absolute", "--git-common-dir"): return "/common"
         if args == ("ls-files", "-v", "-z"): return flag + " tracked\0"
         if args[0] == "status": return "\0".join(states) + "\0"
-        if args[:3] == ("ls-files", "--others", "--ignored"): return "ignored-task/\0"
+        # Git --directory may still collapse an excluded .lake to this entry.
+        if args[:3] == ("ls-files", "--others", "--ignored"): return ".lake/\0ignored-task/\0"
         if args[0] == "log": return "1"
         raise AssertionError(args)
     monkeypatch.setattr(inventory, "_read_git", read)
