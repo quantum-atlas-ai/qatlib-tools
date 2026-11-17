@@ -167,8 +167,8 @@ exit 0
             self.assertTrue((source / "src" / package / "__init__.py").is_file(), package)
             self.assertFalse((source / "src" / package / "pyproject.toml").exists(), package)
         self.assertEqual((source / "README.md").read_bytes(), (SCRIPT.parents[2] / "README.md").read_bytes())
-        for resource in ("qatlib_env/setup_runner.sh", "qatlib_search/ExportSearchIndex.lean",
-                         "qatlib_search/retrieval-report.schema.json"):
+        for resource in ("qatlib_env/setup_runner.sh", "qatlib_search/retrieve.py",
+                         "qatlib_search/lean_source.py"):
             self.assertEqual((source / "src" / resource).read_bytes(),
                              (SCRIPT.parent.parent / resource).read_bytes())
         self.assertIn("--no-deps --no-build-isolation " + str(source), calls[-1])

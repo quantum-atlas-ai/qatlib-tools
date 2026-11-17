@@ -84,6 +84,36 @@ def _ancestors(root: Path, relative: str) -> list[Path]:
         child = child.parent
 
 
+def _v2_memory_headrooms(directory: Path, entry: dict[str, Any]) -> list[int]:
+    """Keep charged memory as the admission bound, including file cache.
+
+    LRU counters do not promise reclaimable capacity. Missing or invalid usage
+    must not turn a known finite limit into an entirely unused allocation.
+    These reads are a snapshot, not a reservation; kernel caps still apply.
+    """
+    finite = []
+    try:
+        for name in ("memory.max", "memory.high"):
+            raw = _read(directory / name)
+            if raw is None or raw == "max":
+                continue
+            if not raw.isascii() or not raw.isdecimal():
+                raise ValueError(f"invalid {name}")
+            finite.append(int(raw))
+            entry[name] = int(raw)
+        if not finite:
+            return []
+        raw = _read(directory / "memory.current")
+        if raw is None or not raw.isascii() or not raw.isdecimal():
+            raise ValueError("missing or invalid memory.current")
+        current = int(raw)
+        entry["memory.current"] = current
+        return [max(0, value - current) for value in finite]
+    except (OSError, ValueError) as error:
+        entry["memory.error"] = str(error)
+        return [0]
+
+
 def probe_resources(*, proc_root: Path = Path("/proc"),
                     cgroup_root: Path = Path("/sys/fs/cgroup"),
                     cpu_count: int | None = None, affinity: set[int] | None = None) -> HostResources:
@@ -152,15 +182,17 @@ def probe_resources(*, proc_root: Path = Path("/proc"),
                         allowed.intersection_update(cpuset)
                         entry["cpuset"] = sorted(cpuset)
                 if "memory" in kinds:
-                    current = int(_read(directory / ("memory.current" if v2 else "memory.usage_in_bytes")) or 0)
-                    names = ("memory.max", "memory.high") if v2 else ("memory.limit_in_bytes", "memory.soft_limit_in_bytes")
-                    for name in names:
-                        raw = _read(directory / name)
-                        if raw and raw != "max" and (0 <= int(raw) if v2 else 0 < int(raw)) and int(raw) < 2 ** 60:
-                            value = int(raw)
-                            headrooms.append(max(0, value - current))
-                            entry[name] = value
-                            entry["memory.current"] = current
+                    if v2:
+                        headrooms.extend(_v2_memory_headrooms(directory, entry))
+                    else:
+                        current = int(_read(directory / "memory.usage_in_bytes") or 0)
+                        for name in ("memory.limit_in_bytes", "memory.soft_limit_in_bytes"):
+                            raw = _read(directory / name)
+                            if raw and raw != "max" and 0 < int(raw) < 2 ** 60:
+                                value = int(raw)
+                                headrooms.append(max(0, value - current))
+                                entry[name] = value
+                                entry["memory.current"] = current
                 if len(entry) > 1:
                     limits["cgroups"].append(entry)
     quota_count = math.floor(min(quotas)) if quotas else count

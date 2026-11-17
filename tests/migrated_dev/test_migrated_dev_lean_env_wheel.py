@@ -29,19 +29,20 @@ class WheelResourcesTests(unittest.TestCase):
                     self.assertIn(module + "/__init__.py", names)
                     self.assertNotIn(module + "/pyproject.toml", names)
                 for resource in ("qatlib_search/ExportSearchIndex.lean", "qatlib_search/retrieval-report.schema.json"):
-                    self.assertIn(resource, names)
+                    self.assertNotIn(resource, names)
+                self.assertIn("qatlib_search/retrieve.py", names)
                 entrypoints, = (name for name in names if name.endswith(".dist-info/entry_points.txt"))
                 entrypoint_text = wheel.read(entrypoints)
                 self.assertIn(b"qatlib-env = qatlib_env.__main__:main", entrypoint_text)
                 self.assertIn(b"qatlib-forge = qatlib_forge.__main__:main", entrypoint_text)
-                self.assertIn(b"qatlib-search = qatlib_search.__main__:main", entrypoint_text)
+                self.assertIn(b"qatlib-retrieve = qatlib_search.retrieve:main", entrypoint_text)
+                self.assertNotIn(b"qatlib-search =", entrypoint_text)
             source, = Path(directory).glob("qatlib_tools-*.tar.gz")
             with tarfile.open(source) as sdist:
                 members = {"/".join(Path(name).parts[1:]) for name in sdist.getnames()}
                 self.assertIn("pyproject.toml", members)
                 self.assertEqual({name for name in members if name.endswith("README.md")}, {"README.md"})
-                for resource in ("README.md", "src/qatlib_search/ExportSearchIndex.lean",
-                                 "src/qatlib_search/retrieval-report.schema.json"):
+                for resource in ("README.md", "src/qatlib_search/retrieve.py"):
                     self.assertIn(resource, members)
                 for module in ("qatlib_env", "qatlib_forge", "qatlib_search"):
                     self.assertNotIn(module + "/pyproject.toml", members)

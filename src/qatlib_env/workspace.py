@@ -1055,7 +1055,12 @@ def main(argv=None):
         manual_path = Path(__file__).with_name("_manual.md")
         if not manual_path.is_file():
             manual_path = Path(__file__).resolve().parents[2] / "README.md"
-        print(manual_path if args.path else manual_path.read_text())
+        if args.path:
+            print(manual_path)
+        elif hasattr(sys.stdout, "buffer"):
+            sys.stdout.buffer.write(manual_path.read_bytes())
+        else:
+            sys.stdout.write(manual_path.read_bytes().decode("utf-8"))
         return 0
     if args.command == "config":
         print(json.dumps(resources.resolve_config(project, cli).explain(), indent=2))
