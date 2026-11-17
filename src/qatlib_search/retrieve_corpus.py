@@ -10,7 +10,7 @@ import re
 import subprocess
 import tomllib
 
-from .doc_references import parse_bibliography
+from .doc_references import parse_bibliography_entries
 from .paths import project_root
 
 
@@ -77,6 +77,7 @@ def discover(project: str | Path | None = None) -> Corpus:
     warnings: list[str] = []
     repos: list[dict] = []
     bib: set[str] = set()
+    bib_entries: dict[str, tuple[str, Path]] = {}
 
     def read(path: Path, owner: Path) -> bytes:
         if path.is_symlink() or not path.resolve().is_relative_to(owner):
@@ -124,10 +125,16 @@ def discover(project: str | Path | None = None) -> Corpus:
         read(path / 'lake-manifest.json', path)
         bib_text = read(path / 'docs/references.bib', path).decode('utf-8')
         if bib_text:
-            keys, errors = parse_bibliography(bib_text)
+            entries, errors = parse_bibliography_entries(
+                bib_text, str(path / 'docs/references.bib'), allow_empty=pin is None)
             if errors:
                 raise ValueError(f'{path}: invalid root bibliography: {errors[0].message}')
-            bib.update(keys)
+            for key, entry in entries.items():
+                previous = bib_entries.get(key)
+                if previous and previous[0] != entry:
+                    raise ValueError(f"conflicting-bib-key '{key}': {path} differs from {previous[1]}")
+                bib_entries[key] = (entry, path)
+            bib.update(entries)
         repos.append(dict(repo=config.get('name', path.name), root=str(path), revision=revision,
                           tree=tree, locked=bool(pin), libraries=layouts))
 

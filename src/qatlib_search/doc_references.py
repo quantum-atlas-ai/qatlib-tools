@@ -22,6 +22,7 @@ from qatlib_search import lean_declarations, lean_source
 
 SCHEMA = 1
 BIB_ENTRY_RE = re.compile(r"(?m)^\s*@([A-Za-z]+)\s*[({]\s*([^,\s]+)\s*,")
+_BIB_START_RE = re.compile(r"(?m)^[ \t]*@([A-Za-z]+)\s*([({])")
 REF_LINK_RE = re.compile(r"\[([^\]\n]+)\]\[([A-Za-z][A-Za-z0-9_:-]*)\]")
 STANDALONE_RE = re.compile(r"(?<![\w\]`])\[([A-Z][A-Za-z0-9_:-]{2,})(?:,([^\]\n]*))?\](?!\s*\()")
 INLINE_RE = re.compile(r"(?<!`)(`+)([^`\n]+)\1(?!`)")
@@ -191,21 +192,90 @@ class Diagnostic:
         return f"{self.path}:{self.line}: [{self.code}] {self.message}"
 
 
-def parse_bibliography(text: str, path: str = "docs/references.bib") -> tuple[set[str], list[Diagnostic]]:
-    keys: set[str] = set()
+def _bib_entry_end(text: str, start: int, opening: str) -> int | None:
+    """Find the matching outer delimiter, preserving nested and quoted values."""
+    braces = int(opening == "{")
+    quoted = escaped = comment = False
+    for offset in range(start, len(text)):
+        char = text[offset]
+        if comment:
+            comment = char != "\n"
+        elif escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "%" and not quoted and braces == int(opening == "{"):
+            comment = True
+        elif char == '"':
+            if braces == int(opening == "{"):
+                quoted = not quoted
+        elif char == "{":
+            braces += 1
+        elif char == "}":
+            braces -= 1
+            if opening == "{" and not braces and not quoted:
+                return offset + 1
+        elif char == ")" and opening == "(" and not braces and not quoted:
+            return offset + 1
+    return None
+
+
+def parse_bibliography_entries(
+    text: str, path: str = "docs/references.bib", *, allow_empty: bool = False
+) -> tuple[dict[str, str], list[Diagnostic]]:
+    """Read the entry text separately from surrounding commentary."""
+    entries: dict[str, str] = {}
     errors: list[Diagnostic] = []
-    # BibTeX comments cannot introduce entries or duplicate keys.
-    cleaned = re.sub(r"(?m)(?<!\\)%[^\n]*", "", text)
-    for match in BIB_ENTRY_RE.finditer(cleaned):
-        if match[1].lower() in {"comment", "preamble", "string"}:
+    end = 0
+    for header in _BIB_START_RE.finditer(text):
+        start = header.start(1) - 1
+        if start < end:
+            continue
+        line = text.count("\n", 0, start) + 1
+        end = _bib_entry_end(text, header.end(), header[2])
+        if end is None:
+            errors.append(Diagnostic("error", "invalid-bib-entry", path, line, "unclosed BibTeX entry"))
+            break
+        if header[1].lower() in {"comment", "preamble", "string"}:
+            continue
+        match = BIB_ENTRY_RE.match(text, header.start())
+        if match is None or match.end() > end:
+            errors.append(Diagnostic("error", "invalid-bib-entry", path, line, "missing BibTeX citation key"))
             continue
         key = match[2]
-        if key in keys:
-            errors.append(Diagnostic("error", "duplicate-bib-key", path, 1, f"duplicate BibTeX key '{key}'"))
-        keys.add(key)
-    if not keys:
+        if key in entries:
+            errors.append(Diagnostic("error", "duplicate-bib-key", path, line, f"duplicate BibTeX key '{key}'"))
+        else:
+            entries[key] = text[start:end]
+    if not entries and not allow_empty and not errors:
         errors.append(Diagnostic("error", "empty-bibliography", path, 1, "no BibTeX entries parsed"))
-    return keys, errors
+    return entries, errors
+
+
+def parse_bibliography(text: str, path: str = "docs/references.bib") -> tuple[set[str], list[Diagnostic]]:
+    entries, errors = parse_bibliography_entries(text, path)
+    return set(entries), errors
+
+
+def merge_bibliographies(
+    baseline: str, increment: str, *, baseline_path: str, increment_path: str,
+    require_thin: bool = False,
+) -> tuple[dict[str, str], list[Diagnostic]]:
+    """Merge equal keys only when their entry text matches exactly."""
+    base, base_errors = parse_bibliography_entries(baseline, baseline_path)
+    delta, delta_errors = parse_bibliography_entries(increment, increment_path, allow_empty=True)
+    conflicts = [
+        Diagnostic("error", "conflicting-bib-key", increment_path, 1,
+                   f"BibTeX key '{key}' differs from {baseline_path}")
+        for key in sorted(base.keys() & delta.keys()) if base[key] != delta[key]
+    ]
+    copies = [
+        Diagnostic("error", "published-bib-key", increment_path, 1,
+                   f"remove BibTeX key '{key}'; it is already present in {baseline_path}")
+        for key in sorted(base.keys() & delta.keys()) if require_thin and base[key] == delta[key]
+    ]
+    entries = base | {key: value for key, value in delta.items() if key not in base}
+    return entries, base_errors + delta_errors + conflicts + copies
 
 
 def citation_references(doc: str, start_line: int = 1) -> list[Reference]:

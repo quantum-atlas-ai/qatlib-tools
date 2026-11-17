@@ -10,6 +10,28 @@ from .project import primary_library
 from qatlib_search.promotion import check_duplicates, locked_revision
 
 
+def merge_bibliography(project: Path, increment: Path, *, write: bool) -> dict:
+    from qatlib_search.doc_references import merge_bibliographies, parse_bibliography_entries
+    target = project / "docs/references.bib"
+    baseline = target.read_bytes().decode("utf-8")
+    entries, errors = merge_bibliographies(
+        baseline, increment.read_bytes().decode("utf-8"),
+        baseline_path=str(target), increment_path=str(increment),
+    )
+    result = {"action": "merge-bibliography", "target": str(target),
+              "errors": [str(error) for error in errors]}
+    if not errors:
+        existing, _ = parse_bibliography_entries(baseline, str(target))
+        added = [key for key in entries if key not in existing]
+        if write and added:
+            # Retain the target's bytes, including comments and final newlines.
+            separator = "" if baseline.endswith("\n\n") else "\n" if baseline.endswith("\n") else "\n\n"
+            addition = "\n\n".join(entries[key] for key in added)
+            target.write_bytes((baseline + separator + addition + "\n").encode("utf-8"))
+        result.update(added=added, total=len(entries), written=bool(write and added))
+    return result
+
+
 def single_root(project: Path, override: str | None) -> tuple[Path, str]:
     """Return a source base and one library root, including Lake srcDir."""
     if override:
@@ -43,6 +65,8 @@ def dependency(project: Path, package: str, source: Path | None) -> Path:
 
 def execute(project: Path, args, *, resource_cli: dict | None = None) -> dict:
     project = project.resolve()
+    if args.action == "merge-bibliography":
+        return merge_bibliography(project, args.increment, write=args.write)
     if args.action == "smoke":
         from .smoke import run
         return run(project, args.probe, args.migration_map,
@@ -82,6 +106,9 @@ def add_parser(commands):
     smoke = actions.add_parser("smoke", help="run small module-mode consumers without building dependencies")
     smoke.add_argument("--probe", type=Path, action="append", required=True)
     smoke.add_argument("--migration-map", type=Path, help="TOML [[rename]] old/new/reason records")
+    bibliography = actions.add_parser("merge-bibliography", help="check and append new BibTeX entries")
+    bibliography.add_argument("--increment", type=Path, required=True, help="source Dev bibliography")
+    bibliography.add_argument("--write", action="store_true", help="update the destination checkout")
 
 
 def cli(project: Path, args, *, resource_cli: dict | None = None) -> int:

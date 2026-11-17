@@ -376,6 +376,15 @@ def test_locked_dependency_discovery_bibliography_and_pin(corpus):
     row = query(corpus, 'up', repo='Upstream')['results'][0]
     assert row['revision'] == revision
     assert row['cite_keys'] == ['Up2026']
+    local_bib = project / 'docs/references.bib'
+    original_bib = local_bib.read_bytes()
+    local_bib.write_text('% All local references have been promoted.\n')
+    assert discover(project).bibliography == {'Up2026'}
+    assert build(corpus, changed=True)['declarations'] > 0
+    local_bib.write_text('@article{Up2026, title={Different}}\n')
+    with pytest.raises(ValueError, match='conflicting-bib-key'):
+        discover(project)
+    local_bib.write_bytes(original_bib)
     (upstream / 'Upstream/Basic.lean').write_text('theorem forged : True := True.intro\n')
     with pytest.raises(ValueError, match='Git blob'):
         build(corpus, changed=True)
