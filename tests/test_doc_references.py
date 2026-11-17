@@ -72,6 +72,54 @@ Normal text [Known2020].
         result = self.check({}, {"Lib/Main.lean": "/-! [Known2020, Theorem 2.1] -/"})
         self.assertEqual(self.codes(result), ["citation-locator"])
 
+    def test_math_brackets_are_not_citations_and_diagnostic_lines_are_preserved(self):
+        source = "First\n$[U_jk, U_kk]$ and \\([MissingKey]\\)\n$$[E_n]$$\n\\[[H_0,H_1]\\]\n[MissingKey]\n"
+        refs = docs.citation_references(source)
+        self.assertEqual([(r.target, r.line) for r in refs], [("MissingKey", 5)])
+        self.assertEqual(docs.citation_references("Costs $5; see [MissingKey].")[0].target, "MissingKey")
+        self.assertEqual(docs.citation_references("[U_jk, U_kk], [E_n, E_m], [H_0,H_1], [K_u]"), [])
+
+    def test_typed_source_excerpt_has_source_citation_scope_only(self):
+        source = ('<span data-source-excerpt="true">[HK73], [NS02, Theorem 1], '
+                  '`Retired.foo` at `Lib/Missing.lean`; c003</span>\n'
+                  '[MissingKey], Theorem 1.\n')
+        result = self.check({}, {"docs/reader.md": source})
+        self.assertCountEqual(self.codes(result), ["retired-root", "missing-lean-path", "internal-identifier", "undefined-citation"])
+        citation = [r for r in result if r.code == "undefined-citation"][0]
+        self.assertEqual(citation.line, 2)
+        self.assertIn("MissingKey", citation.message)
+
+    def test_unbalanced_typed_excerpt_is_not_a_blanket_suppression(self):
+        with self.assertRaisesRegex(ValueError, "unterminated"):
+            docs.analyze_document('<span data-source-excerpt="true">[MissingKey]', "docs/reader.md")
+
+    def test_unrelated_markdown_inequalities_cannot_swallow_a_typed_excerpt(self):
+        text = ('A note with x<epsilon and a raw <unfinished inequality.\n'
+                '<span data-source-excerpt="true">[HK73]</span>\n'
+                '[MissingKey]\n')
+        result = self.check({}, {"docs/reader.md": text})
+        self.assertEqual(self.codes(result), ["undefined-citation"])
+        self.assertIn("MissingKey", result[0].message)
+
+    def test_unbalanced_source_backticks_cannot_hide_the_excerpt_closing_tag(self):
+        text = '<span data-source-excerpt="true">A literal ` and [HK73]</span> | `Lib.value` | [MissingKey]'
+        refs = docs.analyze_document(text, "docs/reader.md").references
+        self.assertEqual([r.target for r in refs if r.kind == "citation"], ["MissingKey"])
+        self.assertEqual([r.target for r in refs if r.kind == "name"], ["Lib.value"])
+        self.assertEqual(docs.strip_source_excerpts('Use `<span data-source-excerpt="true">` literally.'),
+                         'Use `<span data-source-excerpt="true">` literally.')
+
+    def test_line_map_handles_empty_final_lines_and_unicode_offsets(self):
+        text = "αβ\nline\n"
+        locations = docs.SourceLines(text)
+        self.assertEqual([locations.line(n) for n in (0, 2, 3, 7, 8)], [1, 1, 2, 2, 3])
+        self.assertEqual(locations.context(1), "αβ")
+
+    def test_masked_example_padding_is_removed_without_changing_active_escaped_names(self):
+        text = "```lean\n" + "x" * 10000 + "\n```\nUses `Lib.«two  spaces»`.\n"
+        result = docs.analyze_document(text, "docs/reader.md")
+        self.assertEqual([(r.target, r.line) for r in result.references], [("Lib.«two  spaces»", 4)])
+
     def test_unchanged_consumer_is_checked_after_provider_deletion(self):
         before = {"Lib/Provider.lean": "namespace Lib\ndef original := 1\nend Lib\n",
                   "Lib/Consumer.lean": "/-! Uses `Lib.original`. -/"}
@@ -135,6 +183,7 @@ end Lib.Example
         link = "[Source](https://example.org/Lib/Provider.lean#L42); `https://example.org/Lib/Provider.lean`"
         result = self.check({}, {"Lib/Main.lean": "/-! " + link + " -/", "docs/reader.md": link})
         self.assertEqual(self.codes(result), [])
+        self.assertEqual(self.codes(self.check({}, {"docs/reader.md": "A `.lean` file extension."})), [])
 
     def test_removed_module_path_checks_unchanged_consumer(self):
         old = {"Lib/Provider.lean": "def provider := 1\n",
@@ -197,6 +246,41 @@ end Lib.Example
             raw["payload"]["files"]["Lib/Main.lean"]["declarations"] = {"invented": "def"}
             path.write_text(json.dumps(raw))
             self.assertIsNone(docs.read_cache(path, layer.identity))
+        finally:
+            trash(root)
+
+    def test_per_file_cache_reuses_unchanged_content_across_trees_and_reparses_one_edit(self):
+        root = Path(tempfile.mkdtemp(prefix="doc-reference-files-"))
+        try:
+            sources = {"Lib/Main.lean": "namespace Lib\ndef value := 1\nend Lib\n",
+                       "docs/reader.md": "Uses `Lib.value`.\n"}
+            def cached(inputs, tree, **kwargs):
+                identity = docs.input_identity(inputs, toolchain="lean4:test", manifest="{}", tree=tree,
+                                               internal_patterns=POLICY)
+                stats = {}
+                layer = docs.cached_layer(inputs, identity, root, internal_patterns=POLICY,
+                                          statistics=stats, **kwargs)
+                return layer, stats
+            first, stats = cached(sources, "first")
+            self.assertEqual(stats["files_parsed"], 2)
+            _, stats = cached(sources, "first")
+            self.assertEqual(stats, {"layer_hits": 1, "file_hits": 0, "files_parsed": 0})
+            second, stats = cached(sources, "second")
+            self.assertNotEqual(first.identity, second.identity)
+            self.assertEqual(stats, {"layer_hits": 0, "file_hits": 2, "files_parsed": 0})
+            modified = {**sources, "Lib/Main.lean": sources["Lib/Main.lean"].replace("value", "renamed")}
+            changed, stats = cached(modified, "edit")
+            self.assertEqual(stats, {"layer_hits": 0, "file_hits": 1, "files_parsed": 1})
+            self.assertEqual(self.codes(docs.check_changes(first, changed, bib_keys={"Known2020"})), ["deleted-declaration"])
+            _, stats = cached(sources, "declaration-mode", prefix="dependency", documentation=False)
+            self.assertEqual(stats["files_parsed"], 1)  # Markdown mode is shared; Lean mode differs.
+            for path in (root / "files").glob("*.json"):
+                envelope = json.loads(path.read_text())
+                if envelope["payload"]["identity"]["path"] == "docs/reader.md":
+                    envelope["checksum"] = "corrupt"
+                    path.write_text(json.dumps(envelope))
+            _, stats = cached(sources, "fresh-tree")
+            self.assertEqual(stats["files_parsed"], 1)
         finally:
             trash(root)
 
