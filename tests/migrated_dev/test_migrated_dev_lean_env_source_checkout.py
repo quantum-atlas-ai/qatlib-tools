@@ -66,7 +66,7 @@ class SourceCheckoutTests(unittest.TestCase):
         self.assertFalse(workspace.usable_git_mirror(self.package, self.locked, self.project, self.env))
         self.assertEqual(ci.public_repo(self.project, self.env), self.package)
         self.assertEqual(ci.bibliography(self.project, self.env), self.package / "docs/references.bib")
-        self.assertEqual(self.git(self.bare, "rev-parse", "--is-bare-repository").strip(), "true")
+        self.assertEqual(self.git(self.root, "--git-dir=" + str(self.bare), "rev-parse", "--is-bare-repository").strip(), "true")
 
     def test_stale_checkout_does_not_fall_back_to_a_bare_mirror(self):
         (self.project / "lake-manifest.json").write_text(json.dumps({

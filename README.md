@@ -234,6 +234,12 @@ qatlib-search query .cache/search-index.json 'gram' --kind theorem --limit 10
 
 共享解析器支持嵌套块注释和 `«…»` 转义导入；`lean_declarations`、`lean_doc_source` 提取声明及文档，`promotion`、`promotion_closure` 处理跨包查重与依赖闭包。检索命中表示源码候选，使用前仍需检查完整类型、前提与目标工具链下的 Lean 验证结果。
 
+`qatlib_search.doc_references` 提供不调用 Lean 的增量文档引用核心。项目适配器传入基线/当前源码、书目键、锁定依赖层，以及项目自己的退役根和内部标识规则。它复用 `lean_source` 的同一词法器区分嵌套注释、普通/原始字符串与转义名称，排除 `#guard_msgs` 诊断和 Markdown 围栏示例；普通注释只检查标识规则。声明删除和书目键删除会反查未改动的文档消费者，文件移动但 FQN 不变不视作声明删除。
+
+确定的旧声明/模块删除、坏 Lean 路径、新增无效书目键和项目禁止的标识为错误；未知完整名称及可能转成结构投影的名称仅提示，namespace 和局部变量不冒充声明。源码出现词法索引不支持的生成命令会明确报告索引未完成。该门禁检查显式源码证据，真实生成声明、网页跳转和目标锚点仍须由实际 API 文档构建核验。
+
+源码与依赖分别建立 `LayerIndex`，缓存身份绑定解析器源码、工具链、manifest、受测树、源内容/精确 Git blob 集合与策略。`read_cache` 拒收身份过期或 payload 校验失败的缓存，由适配器从原始源码重建；缓存应放项目已有忽略的区域。稳定依赖层可以按干净且精确锁定的 Git tree 复用，不因业务源码改名重扫整个依赖树；缺失依赖源码时适配器必须报告验证未运行并失败。
+
 </details>
 
 <details>
