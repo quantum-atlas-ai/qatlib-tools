@@ -254,7 +254,8 @@ class _Tree:
 
 def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
         grace=2.0, capture_output=False, text=False, check=False, input=None,
-        stdout=None, stderr=None, process_callback=None, cleanup_callback=None, **kwargs) -> subprocess.CompletedProcess:
+        stdout=None, stderr=None, process_callback=None, cleanup_callback=None,
+        _guard_parent=True, **kwargs) -> subprocess.CompletedProcess:
     """A sequential, main-thread ``subprocess.run`` with process-tree ownership.
 
     On Linux, a subreaper also collects double-forked and setsid descendants.
@@ -321,6 +322,13 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
             handlers[signum] = signal.signal(signum, cancelled)
     try:
         actual_command = command
+        if sys.platform.startswith("linux") and _guard_parent:
+            if isinstance(command, (str, bytes)) or kwargs.get("shell") or kwargs.get("executable"):
+                raise ValueError("Linux parent-death supervision requires an argument list without shell/executable overrides")
+            # A separate subreaper survives this supervisor's SIGKILL. Setting
+            # PDEATHSIG on the workload itself would lose its detached children.
+            actual_command = [sys.executable, str(Path(__file__).with_name("parent_guard.py")),
+                              str(os.getpid()), str(grace), *command]
         if os.name == "nt" and process_callback is not None:
             if isinstance(command, (str, bytes)) or kwargs.get("shell") or kwargs.get("executable"):
                 raise ValueError("Windows Job launch requires an argument list without shell/executable overrides")
