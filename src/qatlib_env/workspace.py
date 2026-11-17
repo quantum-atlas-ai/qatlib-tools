@@ -45,8 +45,18 @@ def command_runtime_environment(project, env, argv):
         effective = command_environment(project, effective, argv)
     executable = Path(argv[0]).stem if argv else ""
     if effective.get("QATLAS_LEAN_THREADS") and (_is_lake(argv) or executable.startswith(("python", "pypy")) or executable in {"bash", "sh", "elan"}):
-        from qatlib_env.compiler import environment as compiler_environment
-        effective = compiler_environment(project, effective)
+        if sys.platform == "win32":
+            # The runtime overlay wraps the toolchain in POSIX symlink shims.
+            # Native Lake uses LEAN_NUM_THREADS; it has no per-compiler -M or
+            # heavy-slot wrapper. Do not silently accept a slot contract that
+            # this path cannot enforce. Aggregate caps belong to the runner.
+            if effective.get("QATLAS_HEAVY_PATTERNS", "BalancedGram").strip(", \t"):
+                raise ValueError("Windows runtime cannot enforce heavy_patterns/heavy_jobs without the POSIX compiler overlay; "
+                                 "set heavy_patterns=[] (QATLAS_HEAVY_PATTERNS='') to select aggregate Job Object limits")
+            effective["LEAN_NUM_THREADS"] = effective["QATLAS_LEAN_THREADS"]
+        else:
+            from qatlib_env.compiler import environment as compiler_environment
+            effective = compiler_environment(project, effective)
     return effective
 
 
@@ -124,6 +134,34 @@ def _backend_command(argv, effective, *, building, require_limits=False):
     return list(argv)
 
 
+@contextmanager
+def _windows_job_scope(effective, *, building):
+    """One required Job contract for normal builds and cache bootstrap builds."""
+    if not building or sys.platform != "win32":
+        yield None, None
+        return
+    if effective.get("QATLAS_USE_JOB_OBJECT", "1") != "1":
+        raise ValueError("Windows build/bootstrap requires a Windows Job Object; QATLAS_USE_JOB_OBJECT cannot disable it")
+    from qatlib_env.backends.windows import JobObject
+    job = JobObject(f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    try:
+        raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
+        memory_bytes = raw_memory if raw_memory > 65536 else raw_memory * 1024 * 1024
+        cpu = int(effective["QATLAS_JOBS"]) * int(effective["QATLAS_LEAN_THREADS"])
+        cpu_percent = min(float(effective.get("QATLAS_CPU_PERCENT", "100")), 100 * cpu / (os.cpu_count() or 1))
+        job.configure(memory_bytes=max(2048 * 1024 * 1024, memory_bytes), cpu_percent=cpu_percent)
+
+        def attach(child):
+            if not job.attach_pid(child.pid):
+                raise OSError("cannot attach child to the required Windows Job Object")
+
+        print("RESOURCE_CONTROL Windows Job Object: aggregate CPU/memory limits; psutil module timeouts; "
+              "per-compiler -M and heavy-module slots are unavailable", file=sys.stderr)
+        yield attach, job.close
+    finally:
+        job.close()
+
+
 def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
     """Supervise every command, including Python/shell drivers spawning Lake."""
     project = Path(cwd)
@@ -145,28 +183,9 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
         argv = compiler_command(argv, jobs=int(effective["QATLAS_LEAN_THREADS"]),
             memory_mib=max(2048, int(effective["QATLAS_MEMORY_BUDGET"]) // 1024**2 // int(effective["QATLAS_JOBS"])))
     build_started_ns = time.time_ns() if building else None
-    job = None
-    process_callback = None
-    if building and sys.platform == "win32" and effective.get("QATLAS_USE_JOB_OBJECT", "1") == "1":
-        from qatlib_env.backends.windows import JobObject
-        job = JobObject(f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
-        raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
-        memory_bytes = raw_memory if raw_memory > 65536 else raw_memory * 1024 * 1024
-        cpu = int(effective["QATLAS_JOBS"]) * int(effective["QATLAS_LEAN_THREADS"])
-        cpu_percent = min(float(effective.get("QATLAS_CPU_PERCENT", "100")), 100 * cpu / (os.cpu_count() or 1))
-        try:
-            job.configure(memory_bytes=max(2048 * 1024 * 1024, memory_bytes), cpu_percent=cpu_percent)
-        except BaseException:
-            job.close()
-            raise
-        def attach(child):
-            if not job.attach_pid(child.pid):
-                raise OSError("cannot attach child to the required Windows Job Object")
-        process_callback = attach
-    elif building and sys.platform == "win32" and plan and plan["reasons"]:
-        raise ValueError("heavy local execution requires a Windows Job Object")
     try:
-        with _pool_scope(effective, building=building):
+        with _pool_scope(effective, building=building), \
+                _windows_job_scope(effective, building=building) as (process_callback, cleanup_callback):
             # Recheck outer cgroup headroom after any pool admission wait.
             command = _backend_command(argv, effective, building=building, require_limits=bool(plan and plan["reasons"]))
             return supervisor.run(
@@ -176,10 +195,9 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
                 timeout=float(effective.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
                 module_timeout=float(effective.get("QATLAS_MODULE_TIMEOUT", "1800")) or None,
                 process_callback=process_callback,
+                cleanup_callback=cleanup_callback,
             ).stdout
     finally:
-        if job is not None:
-            job.close()
         if building and (project / "lean-toolchain").is_file():
             from qatlib_env import checkpoint
             try:

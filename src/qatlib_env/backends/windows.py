@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import sys
+import uuid
 
 
 class JobObject:
@@ -79,6 +81,22 @@ class JobObject:
             import ctypes
             ctypes.windll.kernel32.CloseHandle(self.handle)
             self.handle = None
+
+
+class LaunchGate:
+    """Hold a stdlib-only launcher until its process is attached to a Job."""
+    def __init__(self, command):
+        import win32event
+        name = "Local\\qatlib-launch-" + uuid.uuid4().hex
+        self.event = win32event.CreateEvent(None, True, False, name)
+        self.command = [sys.executable, str(Path(__file__).with_name("windows_launcher.py")), name, *command]
+
+    def release(self):
+        import win32event
+        win32event.SetEvent(self.event)
+
+    def close(self):
+        self.event.Close()
 
 
 def windows_limits(command: list[str], *, memory_mib: int, cpu_percent: int = 100) -> list[str]:
