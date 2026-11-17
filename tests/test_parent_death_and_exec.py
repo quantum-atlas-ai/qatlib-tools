@@ -17,7 +17,7 @@ from qatlib_search.index import SearchIndex
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux guardian")
-@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGKILL])
+@pytest.mark.parametrize("signum", [signal.SIGTERM, getattr(signal, "SIGKILL", 9)])
 def test_guardian_preserves_workload_signal_exit(signum):
     command = [sys.executable, "-c", f"import os; os.kill(os.getpid(), {int(signum)})"]
     assert supervisor.run(command).returncode == -signum
