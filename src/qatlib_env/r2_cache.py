@@ -371,7 +371,7 @@ def _verify_artifact_hashes(repo: Path, paths: dict[str, Path], env: dict[str, s
             raise ValueError("artifact paths containing newlines are unsupported")
         # newline="\n": the Lean helper splits lines on "\n"; the default
         # Windows text-mode translation would leave "\r" on every path.
-        listing.write_text("".join(str(paths[name]) + "\n" for name in names), newline="\n")
+        listing.write_text("".join(str(paths[name]) + "\n" for name in names), encoding="utf-8", newline="\n")
         helper = root / "hash.lean"
         helper.write_text('''import Lake
 open Lake System

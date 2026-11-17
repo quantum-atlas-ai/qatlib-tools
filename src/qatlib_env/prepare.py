@@ -1,7 +1,7 @@
 """Idempotent, lock-bound workspace preparation and explicit cache diagnostics."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -25,10 +25,12 @@ class CacheError(ValueError):
 
 
 def validate_cache(cache: Path) -> None:
+    if workspace.redirected_directory(cache):
+        raise CacheError(f"cache storage must not be symlinked/reparse-point: {cache}")
     cache.mkdir(parents=True, exist_ok=True)
     for directory in (cache, cache / "artifacts", cache / "outputs"):
-        if directory.is_symlink():
-            raise CacheError(f"cache storage must not be symlinked: {directory}")
+        if workspace.redirected_directory(directory):
+            raise CacheError(f"cache storage must not be symlinked/reparse-point: {directory}")
         if directory.exists():
             mode = stat.S_IMODE(directory.stat().st_mode)
             if not mode & 0o444 or not mode & 0o222 or not mode & 0o111:
@@ -55,10 +57,18 @@ def identity(project: Path, env: dict) -> str:
 
 
 def _cache_run(command, project, env):
+    # lake exe cache get can compile its bootstrap executable. On Windows it
+    # needs the same normalized budgets, pool and Job as a regular build.
+    windows = sys.platform == "win32"
+    if windows:
+        env = workspace.resources.resolve_config(project, env=env).environment(env)
     effective = workspace.command_runtime_environment(project, env, command)
-    result = supervisor.run(command, cwd=project, env=effective, capture_output=True, text=True,
-                            timeout=float(effective.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
-                            module_timeout=float(effective.get("QATLAS_MODULE_TIMEOUT", "1800")) or None)
+    with workspace._pool_scope(effective, building=windows), \
+            workspace._windows_job_scope(effective, building=windows) as (attach, cleanup):
+        result = supervisor.run(command, cwd=project, env=effective, capture_output=True, text=True,
+                                timeout=float(effective.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
+                                module_timeout=float(effective.get("QATLAS_MODULE_TIMEOUT", "1800")) or None,
+                                process_callback=attach, cleanup_callback=cleanup)
     if result.returncode:
         # Preserve useful diagnostics without echoing authentication/config text.
         details = (result.stderr or "") + (result.stdout or "")
@@ -241,57 +251,83 @@ def _restore_artifacts(project: Path, manifest: Path, service: dict, scope: str,
 
 def _publish_native_mappings(staged: Path, cache: Path) -> int:
     """Promote validated native per-module JSON atomically, without scope links."""
+    with ExitStack() as directories:
+        def pin(path, *, create=False):
+            handle = None
+            if os.name == "nt":
+                from qatlib_env.backends.windows_paths import locked_directory
+                try:
+                    handle = directories.enter_context(locked_directory(path, create=create))
+                except (OSError, ValueError) as error:
+                    raise CacheError(f"cache directory is inaccessible or symlinked/reparse-point: {path}") from error
+            else:
+                if workspace.redirected_directory(path):
+                    raise CacheError(f"cache directory must not be symlinked/reparse-point: {path}")
+                if create:
+                    path.mkdir(exist_ok=True)
+            if not path.is_dir():
+                raise CacheError(f"cache directory is not regular: {path}")
+            return handle
+
+        pin(cache)
+        pin(staged)
+        pin(staged / "outputs")
+        return _publish_pinned_mappings(staged, cache, pin)
+
+
+def _publish_pinned_mappings(staged: Path, cache: Path, pin) -> int:
     outputs = staged / "outputs"
-    if outputs.is_symlink() or not outputs.is_dir():
-        raise CacheError("native cache add produced no regular outputs directory")
     mappings = []
-    for path in sorted(outputs.rglob("*")):
-        if path.is_symlink():
-            raise CacheError("native cache add produced symlinked output mappings")
-        if path.is_dir():
-            continue
-        relative = path.relative_to(outputs)
-        if len(relative.parts) != 2 or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", relative.parts[0]) \
-                or not re.fullmatch(r"[0-9a-f]{16}\.json", relative.parts[1]) or not path.is_file():
+    # Inspect namespaces before traversing: rglob can enter Windows junctions.
+    for namespace in sorted(outputs.iterdir()):
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", namespace.name):
             raise CacheError("native cache add produced an unsafe output mapping path")
-        try:
-            record = json.loads(path.read_bytes())
-        except (OSError, ValueError) as error:
-            raise CacheError("native cache add produced invalid output JSON") from error
-        if not isinstance(record, dict) or record.get("schemaVersion") != "2026-02-25" \
-                or "data" not in record or not isinstance(record.get("service"), (str, type(None))) \
-                or any(key in record and not isinstance(record[key], str) for key in ("repo", "scope")):
-            raise CacheError("native cache add produced an unsupported output schema")
-        mappings.append((path, relative.parts[0], relative.parts[1]))
+        pin(namespace)
+        for path in sorted(namespace.iterdir()):
+            if workspace.redirected_directory(path) or not path.is_file() \
+                    or not re.fullmatch(r"[0-9a-f]{16}\.json", path.name):
+                raise CacheError("native cache add produced an unsafe or symlinked output mapping path")
+            try:
+                raw = path.read_bytes()
+                record = json.loads(raw)
+            except (OSError, ValueError) as error:
+                raise CacheError("native cache add produced invalid output JSON") from error
+            if not isinstance(record, dict) or record.get("schemaVersion") != "2026-02-25" \
+                    or "data" not in record or not isinstance(record.get("service"), (str, type(None))) \
+                    or any(key in record and not isinstance(record[key], str) for key in ("repo", "scope")):
+                raise CacheError("native cache add produced an unsupported output schema")
+            mappings.append((path, namespace.name, path.name, raw))
     if not mappings:
         raise CacheError("native cache add produced no module output mappings")
     shared = cache / "outputs"
-    if shared.is_symlink():
-        raise CacheError("cache outputs directory must not be symlinked")
-    shared.mkdir(exist_ok=True)
+    pin(shared, create=True)
     if os.name == "nt":
-        # Directory descriptors are POSIX-only. Apply the same namespace and
-        # regular-file checks through paths; os.replace stays atomic because
-        # staging and outputs share the cache volume.
-        for source, namespace, name in mappings:
+        # All ancestors are held without write/delete sharing through replace.
+        # A path recheck alone would leave a directory-substitution race.
+        from qatlib_env.backends.windows_paths import replace_mapping
+        for source, namespace, name, raw in mappings:
             namespace_dir = shared / namespace
-            if namespace_dir.is_symlink():
-                raise CacheError(f"cache output namespace is symlinked: {namespace}")
-            namespace_dir.mkdir(exist_ok=True)
+            try:
+                namespace_handle = pin(namespace_dir, create=True)
+            except CacheError as error:
+                raise CacheError(f"cache output namespace is inaccessible or symlinked/reparse-point: {namespace}") from error
             target = namespace_dir / name
             try:
                 info = target.stat(follow_symlinks=False)
             except FileNotFoundError:
                 info = None
-            if info is not None and not stat.S_ISREG(info.st_mode):
+            if info is not None and (not stat.S_ISREG(info.st_mode) or workspace.redirected_directory(target)):
                 raise CacheError(f"cache output mapping is not a regular file: {namespace}/{name}")
-            os.replace(source, target)
+            try:
+                replace_mapping(source, namespace_handle, name, raw)
+            except ValueError as error:
+                raise CacheError(str(error)) from error
         return len(mappings)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     # Directory descriptors keep the destination anchored even if a path is
     # replaced after inspection. Never follow an existing namespace symlink.
     with _mapping_directory(shared, flags) as outputs_fd:
-        for source, namespace, name in mappings:
+        for source, namespace, name, _raw in mappings:
             try:
                 os.mkdir(namespace, dir_fd=outputs_fd)
             except FileExistsError:
@@ -328,7 +364,11 @@ def _register_mappings(command: list[str], project: Path, env: dict) -> None:
     cache = Path(env["LAKE_CACHE_DIR"])
     # Same-filesystem staging is outside outputs/, so running Lake builds can
     # never discover temporary registrations while the native writer truncates.
-    with tempfile.TemporaryDirectory(prefix="qatlas-mappings-", dir=cache) as temporary:
+    with ExitStack() as guard:
+        if os.name == "nt":
+            from qatlib_env.backends.windows_paths import locked_directory
+            guard.enter_context(locked_directory(cache))
+        temporary = guard.enter_context(tempfile.TemporaryDirectory(prefix="qatlas-mappings-", dir=cache))
         staged = Path(temporary)
         _cache_run(command, project, {**env, "LAKE_CACHE_DIR": str(staged)})
         _publish_native_mappings(staged, cache)

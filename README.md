@@ -141,6 +141,12 @@ uv pip install -e '.[validation]'
 
 本机构建使用带心跳的租约账本控制并发准入。Linux 在支持时使用 `systemd --user` cgroup v2 scope，Windows 使用 Job Object，macOS 在可用时使用 `taskpolicy` 调整调度优先级；各平台能力不同，macOS 不提供聚合内存硬上限。编译器包装层通过 `LEAN_SYSROOT` 覆盖和 `LAKE_OVERRIDE_LEAN` 注入线程数 `-j` 与内存参数 `-M`，其中 `-M` 最低为 `2048 MiB`。
 
+Windows 跳过 POSIX 编译器包装，通过 `LEAN_NUM_THREADS` 设置线程数。普通受管构建和可能编译程序的缓存 bootstrap 都要求 Job Object，并在启动实际命令前完成附加；配置或附加失败即拒绝执行，不能通过 `QATLAS_USE_JOB_OBJECT=0` 关闭。Job Object 提供整个进程树的 CPU/内存硬限制，无法提供 Lake 内每个编译器的 `-M` 分配或重模块槽位。因此 Windows 必须显式设置 `heavy_patterns=[]`（环境变量 `QATLAS_HEAVY_PATTERNS=''`）选择聚合限制，否则在执行前报错；`heavy_jobs` 在此模式下没有槽位控制作用。直接调用 `lean` 仍会添加显式的 `-j`/`-M` 参数。
+
+所有平台保留 stage 总时限；Windows/macOS 使用核心依赖 `psutil` 观察实际 Lean 进程并执行正值 `module_timeout`，以首次观察到该模块进程的时间计时（轮询间隔约 50 ms）。不能读取受管进程时会报错。清理保留已观察子进程的创建时间，避免 PID 复用误杀；Windows 受管构建还通过关闭 Job 清理未被轮询捕获的子孙。独立调用 `supervisor.run` 而未提供 Job 回调时，非 Linux 后端只能清理已观察到的进程，无法保证捕获在两次轮询间完成派生并退出的父进程。
+
+Windows 原生缓存映射发布持有 cache、staging、outputs、namespace 及其所有祖先的目录句柄，拒绝 symlink/junction/reparse point，并在原子替换完成前禁止目录写入和删除共享。源文件也以句柄锁定并复核已验证的 JSON 字节，最终通过 `SetFileInformationByHandle(FileRenameInfo)` 相对目标 namespace 句柄执行替换。已有不兼容句柄、重定向目录或无法打开的祖先都会使发布失败；共享缓存目录必须允许这种受约束访问。映射替换原子性不等于整个多模块发布事务的原子性。
+
 以下工作树与构建示例应在已有的 Lean Git 项目中执行，并将模块名换成项目中的真实目标：
 
 ```bash

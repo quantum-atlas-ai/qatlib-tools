@@ -12,6 +12,8 @@ import sys
 import threading
 import time
 
+import psutil
+
 
 class ProcessCancelled(subprocess.SubprocessError):
     def __init__(self, signum: int, command):
@@ -27,7 +29,7 @@ class _Process:
     parent: int
     group: int
     session: int
-    started: int
+    started: int | float
     state: str
     command: tuple[str, ...]
 
@@ -93,7 +95,7 @@ def _send(pid: int, signum: int, started: int | None = None) -> None:
 def _is_lean(process: _Process) -> bool:
     # Python admission wrappers are not Lean processes. Their queueing time is
     # bounded by the stage timeout; module timeout begins after exec(real lean).
-    if not process.command or Path(process.command[0]).name not in ("lean", "lean.exe"):
+    if not process.command or Path(process.command[0]).name.casefold() not in ("lean", "lean.exe"):
         return False
     return any(part.endswith(".lean") for part in process.command[1:])
 
@@ -103,11 +105,12 @@ class _Tree:
         self.process = process
         self.baseline = baseline
         self.owned: dict[int, _Process] = {}
-        self.module_started: dict[tuple[int, int], float] = {}
+        self.module_started: dict[tuple[int, int | float], float] = {}
+        self.root_started = None
 
     def update(self) -> dict[int, _Process]:
         if not sys.platform.startswith("linux"):
-            return {}
+            return self._portable_update()
         roots = {self.process.pid, *self.owned, *(_children(os.getpid()) - self.baseline)}
         all_processes = _processes(roots)
         changed = True
@@ -128,15 +131,78 @@ class _Tree:
                 self.module_started.setdefault((pid, item.started), time.monotonic())
         return live
 
+    def _portable_update(self) -> dict[int, _Process]:
+        # Keep identities after reparenting; a reused PID is never adopted as a
+        # previously owned child. Only walk known roots, never global names.
+        pending = {pid: item.started for pid, item in self.owned.items()}
+        pending.setdefault(self.process.pid, self.root_started)
+        live, seen = {}, set()
+        while pending:
+            pid, expected = pending.popitem()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            try:
+                process = psutil.Process(pid)
+                with process.oneshot():
+                    started = process.create_time()
+                    if expected is not None and started != expected:
+                        continue
+                    if pid == self.process.pid:
+                        self.root_started = started
+                    zombie = process.status() == psutil.STATUS_ZOMBIE
+                    item = _Process(pid, process.ppid(), 0, 0, started, "Z" if zombie else "R",
+                                    () if zombie else tuple(process.cmdline()))
+                self.owned[pid] = live[pid] = item
+                if _is_lean(item):
+                    self.module_started.setdefault((pid, started), time.monotonic())
+                for child in (() if zombie else process.children()):
+                    if child.pid not in seen:
+                        pending[child.pid] = child.create_time()
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            except psutil.AccessDenied as error:
+                raise RuntimeError(f"cannot observe owned process {pid}; module timeout/cleanup cannot be enforced") from error
+        return live
+
+    def _portable_cleanup(self, grace: float) -> None:
+        def send(live, *, kill):
+            for pid, item in reversed(list(live.items())):
+                if item.state == "Z":
+                    continue
+                try:
+                    process = psutil.Process(pid)
+                    if process.create_time() == item.started:
+                        (process.kill if kill else process.terminate)()
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    pass
+
+        live = self.update()
+        send(live, kill=False)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            self.process.poll()
+            live = self.update()
+            self._reap(live)
+            if not any(item.state != "Z" for item in live.values()):
+                break
+            time.sleep(0.02)
+        deadline = time.monotonic() + max(2.0, grace)
+        while True:
+            live = self.update()
+            self._reap(live)
+            if not any(item.state != "Z" for item in live.values()):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("process cleanup failed; remaining owned PIDs: " + ", ".join(map(str, live)))
+            send(live, kill=True)
+            self.process.poll()
+            time.sleep(0.01)
+        self.process.wait(timeout=max(2.0, grace))
+
     def cleanup(self, grace: float) -> None:
-        if os.name == "nt":
-            # taskkill is the native process-tree primitive; the supervisor owns
-            # exactly this new process group, never a globally matched process.
-            killer = subprocess.Popen(["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            killer.wait()
-            self.process.wait()
-            return
+        if not sys.platform.startswith("linux"):
+            return self._portable_cleanup(grace)
         live = self.update()
         try:
             os.killpg(self.process.pid, signal.SIGTERM)
@@ -175,6 +241,8 @@ class _Tree:
             raise RuntimeError("process cleanup failed; remaining owned PIDs: " + ", ".join(map(str, remaining)))
 
     def _reap(self, live: dict[int, _Process]) -> None:
+        if os.name == "nt":
+            return
         for pid in live:
             if pid == self.process.pid:
                 continue
@@ -186,10 +254,13 @@ class _Tree:
 
 def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
         grace=2.0, capture_output=False, text=False, check=False, input=None,
-        stdout=None, stderr=None, process_callback=None, **kwargs) -> subprocess.CompletedProcess:
+        stdout=None, stderr=None, process_callback=None, cleanup_callback=None, **kwargs) -> subprocess.CompletedProcess:
     """A sequential, main-thread ``subprocess.run`` with process-tree ownership.
 
     On Linux, a subreaper also collects double-forked and setsid descendants.
+    Other platforms poll psutil identities, retaining observed children after
+    their parent exits. Windows callers with resource callbacks launch behind
+    a gate, attaching the Job Object before any requested command can run.
     SIGTERM/SIGINT handlers are scoped to this call. No PID-name matching or
     global killing occurs. Timeout diagnostics include the offending module.
     """
@@ -220,6 +291,23 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
     process = None
     tree = None
     cancellation = None
+    gate = None
+
+    def cleanup():
+        nonlocal cleanup_callback
+        if cleanup_callback is not None:
+            callback, cleanup_callback = cleanup_callback, None
+            callback()
+        if tree is not None:
+            try:
+                tree.cleanup(grace)
+            except BaseException:
+                # Observation can fail before attachment. The launcher is
+                # still gated; use Popen's own handle to stop it in that case.
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=max(2.0, grace))
+                raise
 
     def cancelled(signum, _frame):
         # Raising inside Popen can lose the newly forked child before Python has
@@ -232,12 +320,24 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
         for signum in (signal.SIGTERM, signal.SIGINT):
             handlers[signum] = signal.signal(signum, cancelled)
     try:
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=stdout, stderr=stderr,
+        actual_command = command
+        if os.name == "nt" and process_callback is not None:
+            if isinstance(command, (str, bytes)) or kwargs.get("shell") or kwargs.get("executable"):
+                raise ValueError("Windows Job launch requires an argument list without shell/executable overrides")
+            from qatlib_env.backends.windows import LaunchGate
+            gate = LaunchGate(command)
+            actual_command = gate.command
+        started = time.monotonic()
+        process = subprocess.Popen(actual_command, cwd=cwd, env=env, stdout=stdout, stderr=stderr,
                                    text=text, **kwargs)
         tree = _Tree(process, baseline)
+        tree.update()
         if process_callback is not None:
             process_callback(process)
-        started = time.monotonic()
+        if cancellation is not None:
+            raise ProcessCancelled(cancellation, command)
+        if gate is not None:
+            gate.release()
         pending_input = input
         while True:
             if cancellation is not None:
@@ -247,7 +347,7 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
             # communicate() alone then waits for EOF until the *stage* timeout.
             # Reap descendants as soon as the direct parent has exited instead.
             if process.poll() is not None:
-                tree.cleanup(grace)
+                cleanup()
                 output, errors = process.communicate()
                 break
             elapsed = time.monotonic() - started
@@ -280,9 +380,10 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
         for signum in handlers:
             signal.signal(signum, signal.SIG_IGN)
         try:
-            if tree is not None:
-                tree.cleanup(grace)
+            cleanup()
         finally:
+            if gate is not None:
+                gate.close()
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
             if previous_subreaper is not None:

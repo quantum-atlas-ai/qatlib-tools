@@ -359,7 +359,7 @@ def authenticated(env, key):
         options = 'connect-timeout = 15\nmax-time = 120\nretry = 3\nretry-all-errors\n'
         if key:
             options += 'aws-sigv4 = "aws:amz:auto:s3"\nuser = ' + json.dumps(key) + '\n'
-        path.write_text(options, newline="\n")
+        path.write_text(options, encoding="utf-8", newline="\n")
         path.chmod(0o600)
         yield {**native_key_environment(env, key), "CURL_HOME": directory}
 
