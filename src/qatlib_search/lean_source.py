@@ -6,6 +6,7 @@ Migrated from the original verification/rules.py lexical utilities.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 _LEAN_LETTER_LIKE = (r"\u03b1-\u03ba\u03bc-\u03c9\u0391-\u039f\u03a1-\u03a2\u03a4-\u03a9"
                      r"\u03ca-\u03fb\u1f00-\u1ffe\u2100-\u214f\U0001d49c-\U0001d59f"
@@ -28,11 +29,21 @@ STRING_DELIMITER = re.compile(r'\\[\s\S]|"')
 
 NON_NEWLINES = re.compile(r'[^\n]+')
 
-def mask_comments(text: str, *, preserve_escaped_identifiers: bool = False) -> str:
+@dataclass(frozen=True)
+class CommentSpan:
+    """A top-level comment range in the original source, including delimiters."""
+    start: int
+    end: int
+    kind: str
+
+
+def mask_comments(text: str, *, preserve_escaped_identifiers: bool = False,
+                  comment_spans: list[CommentSpan] | None = None) -> str:
     """Mask Lean comments/literals and escaped identifiers, retaining offsets/newlines."""
     out = []
     i = depth = 0
     quoted = False
+    block_start = 0
     while i < len(text):
         # Search in C over ordinary text instead of visiting every proof character
         # in Python. Only comment/string delimiters need state transitions.
@@ -49,6 +60,10 @@ def mask_comments(text: str, *, preserve_escaped_identifiers: bool = False) -> s
             depth += 1 if token == '/-' else -1
             out.append('  ')
             i += 2
+            if not depth and comment_spans is not None:
+                marker = text[block_start:block_start + 3]
+                kind = 'doc' if marker in {'/--', '/-!'} else 'block'
+                comment_spans.append(CommentSpan(block_start, i, kind))
         elif quoted:
             if token == '"':
                 quoted = False
@@ -56,6 +71,7 @@ def mask_comments(text: str, *, preserve_escaped_identifiers: bool = False) -> s
             out.append(NON_NEWLINES.sub(lambda m: ' ' * len(m[0]), token))
             i += len(token)
         elif token == '/-':
+            block_start = i
             depth = 1
             out.append('  ')
             i += 2
@@ -64,6 +80,8 @@ def mask_comments(text: str, *, preserve_escaped_identifiers: bool = False) -> s
             if j == -1:
                 j = len(text)
             out.append(' ' * (j - i))
+            if comment_spans is not None:
+                comment_spans.append(CommentSpan(i, j, 'line'))
             i = j
         elif token.startswith("'"):
             out.append(NON_NEWLINES.sub(lambda m: ' ' * len(m[0]), token))
@@ -91,6 +109,13 @@ def mask_comments(text: str, *, preserve_escaped_identifiers: bool = False) -> s
     if depth or quoted:
         raise ValueError('unterminated Lean block comment or string')
     return ''.join(out)
+
+
+def comments(text: str) -> list[CommentSpan]:
+    """Read comment ranges with the same nested-comment/literal lexer as code."""
+    spans: list[CommentSpan] = []
+    mask_comments(text, comment_spans=spans)
+    return spans
 
 def mask_static_tactic_macros(text: str) -> str:
     """Hide static tactic macros and parameterized term application macros.
