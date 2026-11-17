@@ -35,13 +35,14 @@ for package in ("qatlib_env", "qatlib_forge", "qatlib_search"):
     for entry in pkgutil.iter_modules(module.__path__):
         if entry.name != "__main__": import_module(package + "." + entry.name)
 assets = resources.files("qatlib_search")
-assert "import Lean" in assets.joinpath("ExportSearchIndex.lean").read_text()
-assert isinstance(json.loads(assets.joinpath("retrieval-report.schema.json").read_text()), dict)
+assert assets.joinpath("retrieve.py").is_file()
+assert not assets.joinpath("ExportSearchIndex.lean").is_file()
+assert not assets.joinpath("retrieval-report.schema.json").is_file()
 assert resources.files("qatlib_env").joinpath("setup_runner.sh").is_file()
 from qatlib_env.workspace import main
 assert main(["docs"]) == 0
 entrypoints = {entry.name: entry for entry in metadata.distribution("qatlib-tools").entry_points}
-for name in ("qatlib-env", "qatlib-forge", "qatlib-search"):
+for name in ("qatlib-env", "qatlib-forge", "qatlib-retrieve"):
     assert callable(entrypoints[name].load())
 print("PACKAGE_SMOKE_OK:", sys.argv[1])
 """
@@ -53,8 +54,8 @@ print("PACKAGE_SMOKE_OK:", sys.argv[1])
                            cwd=temporary, env=env, check=True)
             result = subprocess.run([str(bin_dir / "qatlib-env"), "docs"], cwd=temporary,
                                     env=env, check=True, capture_output=True)
-            assert result.stdout == (source / "README.md").read_bytes() + b"\n"
-            for cli in ("qatlib-env", "qatlib-forge", "qatlib-search"):
+            assert result.stdout == (source / "README.md").read_bytes()
+            for cli in ("qatlib-env", "qatlib-forge", "qatlib-retrieve"):
                 subprocess.run([str(bin_dir / cli), "--help"], cwd=temporary, env=env, check=True)
     return 0
 

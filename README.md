@@ -3,457 +3,272 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-**`qatlib-tools`** 是面向 [Lean 4](https://lean-lang.org/) 形式化工程的 Python 3.11+ 命令行工具集与基础库，提供工作树与缓存管理、GitHub / Gitea 协作接口，以及声明和证明检索。回收站操作使用成熟的 `Send2Trash`，构建进程观察使用 `psutil`，Windows 另安装平台限定的 `pywin32`；支持在 Linux、macOS 和 Windows 的隔离环境中安装。
+`qatlib-tools` 帮助 Lean 项目共同开发、验证和消费同一套数学接口。这个仓库也是一份工程手册，记录实际遇到的构建、缓存和文档问题，方便在下次遇到相同症状时找到原因和处理步骤。安装后运行 `qatlib-env docs`，就能离线阅读本页。
 
-## 组件概览
-
-| 命令行入口 | Python 包 | 主要用途 |
-| :--- | :--- | :--- |
-| `qatlib-env` | `qatlib_env` | Lean 工作树、依赖镜像、编译产物缓存、本机构建资源池与云端 CI |
-| `qatlib-forge` | `qatlib_forge` | GitHub / Gitea 仓库、PR、Issue、工作流日志与制品接口 |
-| `qatlib-search` | `qatlib_search` | Lean 源码解析、依赖闭包分析、声明与证明索引和查询 |
-
-## 项目发现
-
-工具从目标 `lakefile.toml` 的 `defaultTargets`、`[[lean_lib]].name`、`roots` 与 `srcDir` 读取库根和源码目录，并按每个库的真实目录选择变更模块。辅助测试库由非默认、独立源码目录的库推导；有歧义时显式选择。仓库身份取自 `origin`，缓存与 CI 参数沿用项目的 `lake-cache.toml` 和工作流。
-
-个人资源预算放 `~/.qatlib/env.toml`，`qatlib-env config explain` 显示实际配置及来源。库名、机器名和私有仓库名由消费项目提供。
-
-## 升锁与清退核验
-
-项目流程确认上游接口与缓存就绪后，在隔离分支执行：
-
-```bash
-qatlib-env promotion bump-lock --package Upstream
-qatlib-env promotion verify-lock --package Upstream
-qatlib-env promotion check-retired --package Upstream
+```text
+成果晋升   下游研究仓 → example-library → qatlib-staging → qatlib
+正式消费   下游研究仓、example-library 分别通过精确锁消费 qatlib
+共用工具   各仓按需固定 qatlib-tools 版本
 ```
 
-`bump-lock` 只更新指定直接依赖，并核验完整 SHA 与实际源码。另两个命令只读；`check-retired` 比较规范化库根后的公开 FQN 和整文件重复。消费者切换、源码回收、PR 与发布由项目流程衔接。
+下游研究仓探索问题，`example-library` 整理可复用成果、维护元数据，是持续晋升并清退旧源的薄中转仓。`qatlib-staging` 接收整文件闭包并验证，`qatlib` 发布正式接口和对应缓存。箭头表示成果的交接方向，各仓仍按自己的接收合同决定迁移范围。
 
-## 下游 CI
+| 入口 | 用途 |
+| --- | --- |
+| `qatlib-env` | 环境准备、受控构建、缓存、冲突和晋升检查，以及离线手册 |
+| `qatlib-retrieve` | 本地只读查看 Lean 声明、书写签名、前提说明和文献引用 |
+| `qatlib-forge` | 既有 GitHub / Gitea 协作脚本使用的 PR、Issue、运行与日志入口 |
 
-下游仓库保留薄入口：Lint 运行源码导入规则、跨库防撞车、晋升查重与项目静态检查；Build 执行受控编译和内核公理审计，PR 再对变更模块运行 EnvLint。`qatlib-env conflicts --package Upstream` 对照锁定上游的模块路径、公开声明 FQN 与全局记号／语法注册，使用源码清单，适合放进轻量 Lint。项目自己的数学合同、元数据与公理白名单仍由项目维护。
+共享 Python 包 `qatlib_search` 继续为各仓提供词法、文档引用与晋升门禁的基础函数。项目接收政策、数学合同和元数据由项目自身维护。
 
-晋升接收与预发阶段可用 `qatlib-env promotion smoke --probe verification/Consumer.lean` 运行少量真实消费者，提前核查公开可见性、所需定义展开和计算性。无意退化在晋升单中修复后再合；有意重命名记录显式迁移映射，由消费者升锁时适配。
+[五分钟上手](#quickstart) · [跨仓晋升](#promotion) · [工程实战手记](#field-notes) · [CLI 速查](#cli-reference) · [配置优先级](#configuration) · [Runner 部署](#runner)
 
-<details>
-<summary>薄 CI、共享缓存与消费冒烟示例</summary>
+<a name="quickstart"></a>
 
-先在隔离 Python 环境安装项目锁定的工具版本，并准备精确锁对应的上游源码。纯文档改动运行静态检查；Lean、依赖锁和验证逻辑的改动进入相应构建门禁。
+## 五分钟上手
 
-防撞车比较真实模块名与完整 FQN，区分 module 默认私有、显式 public/private 和 public section；晋升查重另按库根归一化比较副本。防撞车的声明清单覆盖显式声明头，构造器、投影、deriving、自动 parser 名和任意环境扩展仍需编译器验证；不支持的动态生成会要求导出索引。全局语法按类别与字面终结符序列保守报告重叠，合法重载也可能需人工处理；local/scoped 注册不当作全局冲突。
+下面在已有访问权限的 `example-library` 检出中操作。准备 Git、Python 3.11 及以上、`uv` 和 Elan，确认项目的 `lean-toolchain` 可用。私有依赖的 SSH 密钥或 HTTPS credential helper 要能被 Git 使用。示例对应 Lean 4.35.0 下的 `RootCountOrder` 模块，首次准备大库缓存的时间由本机已有工件和网络决定。
 
-```yaml
-# 以下步骤放入项目自己的 workflow，依赖名换成实际 Lake 包名。
-- name: Lightweight source checks
-  run: |
-    qatlib-env conflicts --package Upstream
-    qatlib-env promotion check-retired --package Upstream
-- name: Controlled build and kernel audit
-  run: qatlib-env ci build --allow-local-heavy
-- name: Changed-module environment audit
-  if: github.event_name == 'pull_request'
-  run: python -m qatlib_env.check_scoped_env_lint --base "$BASE_SHA"
-- name: Small public-interface consumers
-  continue-on-error: true
-  run: qatlib-env promotion smoke --probe verification/Consumer.lean
-```
+### 1. 装入项目锁定的工具
 
-`--allow-local-heavy` 是该次 CI 调用的明确许可，仍服从 Runner 池、cgroup／Job Object 和超时。`BASE_SHA` 由 workflow 的 PR 事件设置并拉取。Build 的项目入口应调用原生 test driver 审计真实声明，公理集合由项目合同决定。
-
-- 每个 worktree 保留自己的 `.lake`；共享的是工具管理的内容寻址工件缓存与依赖对象镜像，不跨工作树软链 `.lake`。
-- 先核精确 Git 锁、实际 checkout 和工具链，再恢复缓存；对象镜像不等于可读取的源码 checkout。缓存命中也不替代消费者验证或内核审计。
-- 定向升锁指定依赖，避免无包名的 `lake update` 刷新全部依赖；单文件用受管的 `lake --no-build lean <File.lean>`，不借 `lake env lean` 改变检查路径。
-- `jobs` 表示进程数，`LEAN_NUM_THREADS`／`lean_threads` 表示每进程线程；CPU 请求按两者乘积计，内存同时受单进程限额与共享池上限约束。
-- 依赖凭据按目标选择。若需沿用已有变量名，用 `QATLIB_CACHE_KEY_VARIABLES='{"MyPackage":"LAKE_MY_CACHE_KEY"}'` 显式映射包名到变量名；值由 CI secret 注入，依赖不继承当前包的通用写密钥。多个直接源码依赖时，用 `QATLIB_SOURCE_PACKAGE` 明确检查对象。
-
-消费探针使用窄导入，独立重述所需类型，并分别验证计算与展开合同：
-
-```lean
-module
-import Upstream.Small
-
-example : Nat → Nat := Upstream.compute
-def executable : Nat := Upstream.compute 1
-#eval executable
--- 仅当 API 承诺可展开时，添加 example ... := by rfl 或 simp [Upstream.compute]。
-```
-
-普通 `def` 消费与小输入执行能发现意外的计算性丢失；`module` 与普通 import 检查外部公开接口。探针不使用 `import all` 或 `noncomputable` 补洞。JSON 回执保留受测 HEAD、工具链、诊断、耗时与 `PASS`／`REGRESSION`／`NOT-RUN`；缺缓存、资源或工具链不能写成通过。初期单独报告 smoke，不把下游全库历史用法设成上游 Required Check；发现无意退化仍须在晋升评审中修好。
-
-有意改名可随 PR 保存小型 TOML 迁移表，通过 `--migration-map migration.toml` 带入回执：
-
-```toml
-[[rename]]
-old = "Upstream.oldName"
-new = "Upstream.New.name"
-reason = "按新的模块职责整理接口"
-```
-
-映射记录迁移理由，不自动吞掉失败或要求保留旧别名。消费者实际回接锁时仍须编译自己的受影响用例。
-
-</details>
-
-<details>
-<summary>安装与认证</summary>
-
-需要 **Python 3.11 及以上版本**与 [`uv`](https://docs.astral.sh/uv/)。运行 Lean 构建还需要目标项目指定的 Lean / Lake 工具链和 Git。
-
-GitHub 源仓为私有仓库，远程安装前需为 Git 配置有读取权限的认证。HTTPS 使用 Git credential helper，SSH 使用已授权的密钥；仅设置一个 API token 环境变量不等于已配置 Git 认证。其他托管实例的镜像也可能要求登录，请使用维护者提供的地址与访问方式。
-
-```bash
-# 从已获授权的 GitHub 源仓安装三套 CLI
-uv tool install git+https://github.com/quantum-atlas-ai/qatlib-tools.git
-
-# 或在本地检出目录中安装
-uv tool install .
-
-# 作为项目依赖写入 pyproject.toml
-uv add git+https://github.com/quantum-atlas-ai/qatlib-tools.git
-```
-
-需要复现环境时，在 Git URL 末尾加上 `@` 和完整提交 SHA。可选 extra `validation` 提供 `jsonschema>=4`，用于完整的 JSON Schema 校验；未安装时使用内置结构校验。在本地检出目录中可执行：
+从 `example-library` 根目录运行，`python/pyproject.toml` 的直接依赖会拉取指定提交的 `qatlib-tools`。本教程需要该锁已采用提供 `qatlib-retrieve` 的版本。维护者审核工具升锁时，可先用待审提交的 wheel 在单独环境验证本页命令。
 
 ```bash
 uv venv .venv
-uv pip install -e '.[validation]'
+uv pip install --python .venv/bin/python ./python
+source .venv/bin/activate
+qatlib-env --help
+qatlib-retrieve --help
 ```
 
-</details>
+Windows PowerShell 可用 `.venv\Scripts\Activate.ps1` 激活，并将安装命令中的 Python 路径改为 `.venv\Scripts\python.exe`。若只想给已准备好的 Lean 项目加上新版工具，可在独立环境中安装按完整 SHA 构建的 wheel。此时用 `uv pip install --python <环境的Python> /path/to/qatlib_tools-*.whl`，并核对 wheel 所对应的提交。
 
-<details>
-<summary>工作区、缓存、资源池与 CI 命令</summary>
+### 2. 配置个人构建预算
 
-`qatlib-env` 的主要命令包括：
-
-- `env`、`shell`：输出目标项目的运行环境。
-- `worktree`：创建工作树；`--no-bootstrap` 可跳过创建后的缓存准备。
-- `bootstrap`、`prepare`：准备锁定的依赖并恢复可用缓存；`--offline` 用于离线准备。
-- `run -- <命令>`、`check [模块…]`：运行受管命令，或执行项目的检查与构建。
-- `config explain`、`cache explain`、`cache upload`：查看资源配置与缓存状态，或显式上传已验证缓存。
-- `docs [--path]`：查看安装包手册，或输出手册位置。
-- `promotion bump-lock|verify-lock|check-retired --package <依赖名>`：供下游薄 skill 调用的定向升锁、精确源码与副本清退核验；`--source`、`--source-root`、`--public-root` 可覆盖自动选择。多默认库须显式选择。词法查重不比较类型等价，实际消费者仍须编译验证。
-- `clean-setup`、`gc`、`maintain-mirror`：检查或清理派生产物、维护本机依赖镜像；清理需显式指定 `--apply`。
-- `pool status`、`pool prune`：查看资源池租约，清除失效记录。
-- `plan [targets...]`、`cloud submit|status|logs|wait|fetch`：只读估算目标预算，并显式操作远端工作流。
-- `ci lint|build|build-gate|mirror`：供下游仓库 CI 使用，也可通过 `python -m qatlib_env.ci` 调用；具体门禁和镜像依赖目标仓库的配置。
-
-本机构建使用带心跳的租约账本控制并发准入。Linux 在支持时使用 `systemd --user` cgroup v2 scope，Windows 使用 Job Object，macOS 在可用时使用 `taskpolicy` 调整调度优先级；各平台能力不同，macOS 不提供聚合内存硬上限。编译器包装层通过 `LEAN_SYSROOT` 覆盖和 `LAKE_OVERRIDE_LEAN` 注入线程数 `-j` 与内存参数 `-M`，其中 `-M` 最低为 `2048 MiB`。
-
-Windows 跳过 POSIX 编译器包装，通过 `LEAN_NUM_THREADS` 设置线程数。普通受管构建和可能编译程序的缓存 bootstrap 都要求 Job Object，并在启动实际命令前完成附加；配置或附加失败即拒绝执行，不能通过 `QATLAS_USE_JOB_OBJECT=0` 关闭。Job Object 提供整个进程树的 CPU/内存硬限制，无法提供 Lake 内每个编译器的 `-M` 分配或重模块槽位。因此 Windows 必须显式设置 `heavy_patterns=[]`（环境变量 `QATLAS_HEAVY_PATTERNS=''`）选择聚合限制，否则在执行前报错；`heavy_jobs` 在此模式下没有槽位控制作用。直接调用 `lean` 仍会添加显式的 `-j`/`-M` 参数。
-
-所有平台保留 stage 总时限；Windows/macOS 使用核心依赖 `psutil` 观察实际 Lean 进程并执行正值 `module_timeout`，以首次观察到该模块进程的时间计时（轮询间隔约 50 ms）。不能读取受管进程时会报错。清理保留已观察子进程的创建时间，避免 PID 复用误杀；Windows 受管构建还通过关闭 Job 清理未被轮询捕获的子孙。独立调用 `supervisor.run` 而未提供 Job 回调时，非 Linux 后端只能清理已观察到的进程，无法保证捕获在两次轮询间完成派生并退出的父进程。
-
-Windows 原生缓存映射发布持有 cache、staging、outputs、namespace 及其所有祖先的目录句柄，拒绝 symlink/junction/reparse point，并在原子替换完成前禁止目录写入和删除共享。源文件也以句柄锁定并复核已验证的 JSON 字节，最终通过 `SetFileInformationByHandle(FileRenameInfo)` 相对目标 namespace 句柄执行替换。已有不兼容句柄、重定向目录或无法打开的祖先都会使发布失败；共享缓存目录必须允许这种受约束访问。映射替换原子性不等于整个多模块发布事务的原子性。
-
-以下工作树与构建示例应在已有的 Lean Git 项目中执行，并将模块名换成项目中的真实目标：
-
-```bash
-qatlib-env config explain
-qatlib-env pool status
-
-qatlib-env worktree ../feature-branch feat/new-lemma
-qatlib-env --project ../feature-branch plan MyLib.TargetModule
-qatlib-env --project ../feature-branch run -- lake build MyLib.TargetModule
-```
-
-`plan` 接受模块名、源码文件路径或库名，留空使用 Lake 默认目标。它读取真实 Git HEAD、依赖锁与检出身份、词法导入图、项目内反向依赖，以及 `.olean` / `.trace` 的保守有效性检查，输出目标数、包/工具链闭包、反向失效、热命中与必须重编数、未知导入、内存与耗时区间、`mode` 和结构化 `reasons`。它不运行 Lake、不恢复缓存、不写 `.lake`。耗时暂用每冷模块5–60秒及并发估算，重模块按至少8GiB进程峰值计；结果仍需结合实际测量，未涵盖链接与公理审计开销，也不替代 Lake 的原生 depHash 校验。
-
-```bash
-qatlib-env plan MyLib.TargetModule
-qatlib-env plan MyLib/TargetModule.lean
-qatlib-env plan --cold --full-gate
-qatlib-env plan MyLib.TargetModule --check-remote-cache
-```
-
-`--check-remote-cache` 只将精确修订清单取到内存，输出可达性与映射行数；清单行数不等于模块命中率，探测不会减少本机重编计数。缺失/损坏输出、依赖锁失配和未解析导入均不能被认证为热缓存。
-
-`run` 与 `check` 共用默认拒绝门禁。冷编/重编或反向波及超过配置阈值、整库目标、lint/test/可执行驱动或公理审计、依赖身份不符与导入未知时，本机执行返回非零并输出预算诊断。`--no-prepare` 只跳过缓存准备；`--policy local` 只表达偏好。任意 Python/shell 驱动按可能触发编译的完整操作处理；Lake 的跨目录参数必须与 `--project` 一致。
-
-获得用户对当次重任务的明确许可后，才使用下面的单次标志：
-
-```bash
-qatlib-env run --no-prepare --allow-local-heavy -- lake build MyLib
-qatlib-env check --allow-local-heavy MyLib.TargetModule
-qatlib-env ci build --allow-local-heavy
-```
-
-许可仅在本次进程调用内有效，诊断记录 `allow_local_heavy=true`，不会写入配置或传给子进程作为绕过变量。它不能提高池的 CPU/内存硬上限，也不能禁用控制器或超时。Linux 重任务要求可用的 systemd 用户 CPU/内存 scope，Windows 要求成功配置并附加 Job Object；缺少硬限制的后端拒绝本机重任务。更新消费项目固定版本时，应同步核对其 CI 调用显式许可和 Runner 资源配置。
-
-实际远端提交由 `cloud submit` 显式执行。云端命令需要先配置仓库和工作流、提供目标平台的 API 凭据，并确保工作流接受手动触发。排队、超时或平台不可用会保持远端状态或报错，不会自动回退本机。`--head` 填目标工作流所在的真实分支，例如 `main`：
-
-```bash
-qatlib-env plan --policy auto --cold
-qatlib-env cloud submit --head main
-qatlib-env cloud status
-qatlib-env cloud wait
-
-# 提交状态中已有 run_id 后，使用该次运行中的真实 job ID
-qatlib-env cloud logs --job-id 123456789
-
-# 目标路径须尚不存在；远端制品须符合验证包清单格式
-qatlib-env cloud fetch --destination .lake/verified-bundle
-```
-
-云端状态默认保存在当前目录的 `.qatlib-env/cloud-state.json`，可用 `--state` 指定；若切换目录，后续命令需指向同一状态文件。日志按字节范围读取并提取 Lean 编译诊断。远端验证包校验清单及各文件的大小、SHA-256，若 API 提供整包摘要也会验证；解包拒绝路径越界与符号链接。`fetch` 将包放到指定的新目录，缓存接入由调用方按项目布局处理。
-
-</details>
-
-<details>
-<summary>自托管 Linux / WSL2 systemd Runner 运维</summary>
-
-WSL2 中先确认发行版实际由 systemd 管理，且内核提供 cgroup v2；Windows 宿主给虚拟机的总量、Linux 可见内存、容器上限和 systemd slice/service 限额是不同边界。不能从 CPU 数或宿主物理内存推断某个 Runner 可用多少内存。每个并发 Runner 实例需要独立的工作目录；多个实例共享父 slice 的总预算。
-
-**服务生命周期与逐 job 清理。** Runner service 放入有总预算的 slice，再配置实例限额；`MemoryHigh=` 用来触发回收和节流，`MemoryMax=` 是最后的硬边界，不能把 high 当作 OOM 上限。父 slice 限额会约束全部子服务，服务预算之和也不能当成额外容量。按真实并发和操作系统余量设置 CPU、内存与进程数，避免多个服务各自按整机容量配额。见 [systemd 资源控制](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)。
-
-以下为已有 Runner service 的 drop-in 示例，数值仅示意，部署前按机器与父 slice 调整：
-
-```ini
-[Service]
-Slice=ci.slice
-CPUQuota=400%
-MemoryHigh=24G
-MemoryMax=28G
-TasksMax=512
-KillMode=control-group
-TimeoutStopSec=30s
-```
-
-`KillMode=control-group` 在 **service 停止**时清理该单元 cgroup 中的剩余进程，超过停止宽限后发送最终信号。它不把仍在运行的 Runner 中某个 job 的取消自动变成 service 停止，因此不能单独保证逐 job 清理。见 [systemd.kill](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)。`setup_runner.sh` 生成的服务已有该设置；本节没有安装或重启任何服务。
-
-逐 job 使用独立且可监督的进程树或 scope，并在正常退出、取消、模块超时和 stage 超时后验证清理结果。`qatlib-env` 的 supervisor 会跟踪进程身份和子孙，终止进程组并复扫；它不能接管绕过该入口启动的任意任务。父进程退出后，`PPID=1` 的 `lake` / `lean` 仍可能留在原 cgroup 并持续占用其预算，单看 Runner 的主 PID 或进程树不够。取消验收应包含一个派生子孙的测试任务，确认其 PID、cgroup 与资源池租约最终均不再活跃。
-
-容器内的 PID/cgroup namespace 可能隐藏宿主父层级；Docker daemon 创建的容器也可能位于 Runner service 之外。嵌套 scope、委托 cgroup 和容器需要分别核对实际归属以及对应 runtime 的停止/清理机制。不能把停止一个 service 当成清理所有外部容器的保证。维护时先暂停接收新 job，等待或明确取消当前工作，再停止/重启目标服务；不要凭进程名批量终止共享机器上的进程。
-
-可在具有对应可见性和读取权限的 Linux 环境检查：
-
-```bash
-systemctl show ci-runner.service -p ControlGroup -p Slice -p KillMode \
-  -p MemoryHigh -p MemoryMax -p EffectiveMemoryHigh -p EffectiveMemoryMax
-systemctl cat ci-runner.service
-ps -eo pid,ppid,pgid,rss,args
-# 由 ControlGroup 定位实际目录，并逐级查看可见的父 cgroup：
-# memory.current、memory.high、memory.max、memory.stat、memory.events、memory.pressure
-```
-
-`memory.events` 的 high/max/oom/oom_kill 增量和压力信息能帮助区分节流、OOM 与缓存；取值必须附采样时间、cgroup 路径和任务状态。不能从一次高 current 或 PPID=1 推断原因。
-
-**缓存与内存准入。** `memory.current` 包含匿名内存、文件缓存和其他被计费内存；恢复大量 `.olean` / `.ltar` 后，即使编译已结束，缓存仍可能占用原 cgroup。假设 current 为 36 GiB、high 为 40 GiB，原始余量就是 4 GiB；这是说明场景，不是本项目的机器取证。先看 `memory.stat` 的 anon、file、shmem、inactive_file、file_dirty、file_writeback 和 unevictable，确认高占用来自活动程序还是缓存。`file` 包含共享内存；`inactive_file` 是 LRU 状态，不能保证立即、完整地回收，更不能把全部 file 从 current 中扣掉。见 [内核 cgroup v2 内存接口](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)。
-
-本工具保留按实际计费量的保守准入：资源探针逐级计算可见祖先中每个有限 high/max 减去该层 current 的非负余量并取最小值；宿主预算另取 `MemAvailable`、物理内存与宿主 reserve 的约束，reserve 不重复从小 cgroup 配额扣除。有限 v2 限额的 current 缺失、无效或不可读时，探针返回零余量并在 `config explain` 的 `memory.error` 中记录原因；损坏限额也不按无限处理。正数配置下限不代表获准执行。没有可见控制器文件不能证明无限容量，容器外的隐藏祖先需要从宿主核验。
-
-本轮没有引入 `inactive_file` 容量抵扣：统计文件之间不是原子快照，LRU、脏页、写回与实际回收存在竞态，且不能由这些总量证明某个工作负载的页面可回收。缺失或损坏的 `memory.stat` 因而也不会增加准入容量。准入后的新分配仍需依赖内核硬边界和并发池，探针快照本身不预留内存。没有 systemd 用户 scope 时，Linux 后端仅在可证明有限 `memory.max`、CPU quota 且各可见祖先原始余量充足时接受已有 cgroup 控制；单靠 high 或 CPU affinity 不构成硬控制。
-
-处理已确认的冷缓存有两种局部维护手段：
-
-- 解包完成、写入者关闭且短期不再使用的完整文件，可以重新打开文件描述符，对完整范围请求 `POSIX_FADV_DONTNEED`，随后关闭描述符。该调用只是提示，不保证释放；部分页请求会被忽略，范围应考虑页对齐，未写回的脏页不能据此视为已释放。需要持久化保证时先由文件拥有者完成 `fsync` / `fdatasync`，不要在共享 CI 的热文件上循环逐出缓存。见 [posix_fadvise(2)](https://man7.org/linux/man-pages/man2/posix_fadvise.2.html)。
-- 在暂停新 job 的空闲维护窗口，具备目标 cgroup 写权限的管理员可评估 `memory.reclaim`，小量请求后复查 current、stat、events 和压力。它是 best effort，可能过量或不足回收，未达到请求量可返回 `EAGAIN`；权限不足、接口缺失和回收失败均不能解释为容量已释放。不要在 job 热路径自动调用，也不自动使用全机 `drop_caches`，后者会影响其他服务并带来重新读取成本。见 [memory.reclaim](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) 和 [drop_caches](https://docs.kernel.org/admin-guide/sysctl/vm.html#drop-caches)。
-
-**配合工具预算。** `~/.qatlib/env.toml` 的真实配置键是顶层 `local_pool_mib` / `local_pool_cpu` 和 `[resources]` 中的 `jobs`、`lean_threads`、`memory_budget`、`heavy_jobs`、`module_timeout`、`stage_timeout`、`heavy_patterns`，完整示例见下方配置节。`lean_threads` 会写入 `LEAN_NUM_THREADS`；`jobs × lean_threads` 是并发 CPU 请求，`memory_budget` 是任务总预算，POSIX 编译器包装层另分配每进程 `-M`。个人文件低于项目显式配置，部署后用 `config explain` 核查最终来源，不能只看文件内容。
-
-内核 slice/service 或容器提供外层硬边界，工具共享池与单进程预算提供任务层准入；二者配合才能防止多个 worktree 同时超配。共享机器上的调用者需使用同一租约账本和一致池上限，给 Runner 本身、缓存、其他服务及突发分配留余量。修改 high/max、环境文件或个人预算不会自动更新已经运行的 job；维护后从小任务开始验证正常退出、取消和超时路径，再恢复并发。
-
-</details>
-
-<details>
-<summary>GitHub / Gitea 协作接口</summary>
-
-`qatlib-forge` 以 JSON 输出仓库、PR、Issue、工作流运行与日志信息，并按目标主机解析认证。
-
-- `pr` 支持 `read`、`list`、`create`、`update`、`comment`、`comments`、`review-comment`、`draft`、`ready`。
-- `issue` 支持 `list`、`read`、`create`、`update`、`close`、`reopen`、`comment`。
-- `repo` 解析仓库身份，`compare` 比较两个修订，`status read|write` 操作本地正文文件中的任务状态块。
-- `runs list|read` 查询工作流，`logs` 读取任务日志，`artifacts list` 列出制品。制品下载另由 Python `RepoAPI.download_artifact` 和 `qatlib_forge.artifacts` 提供。
-
-使用 `owner/repo` 简写时需明确平台或主机。GitHub 示例中的 `--platform`、`--repo` 可放在具体操作后：
-
-```bash
-qatlib-forge pr list --platform github --repo quantum-atlas-ai/qatlib --state open
-qatlib-forge runs list --platform github --repo quantum-atlas-ai/qatlib --branch main
-
-# 将示例 job ID 换成指定仓库的真实任务 ID
-qatlib-forge logs 123456789 --platform github --repo quantum-atlas-ai/qatlib --start 0 --end 131071 --diagnostics
-qatlib-forge artifacts list --platform github --repo quantum-atlas-ai/qatlib --run-id 123456789
-```
-
-Gitea 使用 `--platform gitea` 和完整仓库 URL，或用 `--web-host` 明确主机；该主机必须与凭据匹配。查看具体参数可运行 `qatlib-forge pr create --help` 等子命令帮助。
-
-</details>
-
-<details>
-<summary>Lean 源码与证明检索</summary>
-
-`qatlib-search build` 扫描 Lean 源码生成声明索引，`query` 按名称片段和声明种类检索：
-
-```bash
-# 在包含 Qatlib/ 源码目录的项目根目录中运行
-qatlib-search build Qatlib -o .cache/search-index.json
-qatlib-search query .cache/search-index.json 'gram' --kind theorem --limit 10
-```
-
-`retrieve` 提供统一源码检索入口。更完整的索引导出、增补、校验和目标检查由 `build_search_index`、`enrich_search_index`、`check_search_index`、`proof_index`、`unified_retrieval`、`query_library`、`find_symbol`、`check_goal` 等 Python 模块提供，其中部分操作需要准备好的 Lean 环境。
-
-共享解析器支持嵌套块注释和 `«…»` 转义导入；`lean_declarations`、`lean_doc_source` 提取声明及文档，`promotion`、`promotion_closure` 处理跨包查重与依赖闭包。检索命中表示源码候选，使用前仍需检查完整类型、前提与目标工具链下的 Lean 验证结果。
-
-`qatlib_search.doc_references` 提供不调用 Lean 的增量文档引用核心。项目适配器传入基线/当前源码、书目键、锁定依赖层，以及项目自己的退役根和内部标识规则。它复用 `lean_source` 的同一词法器区分嵌套注释、普通/原始字符串与转义名称，排除 `#guard_msgs` 诊断和 Markdown 围栏示例；普通注释只检查标识规则。声明删除和书目键删除会反查未改动的文档消费者，文件移动但 FQN 不变不视作声明删除。
-
-确定的旧声明/模块删除、坏 Lean 路径、新增无效书目键和项目禁止的标识为错误；未知完整名称及可能转成结构投影的名称仅提示，namespace 和局部变量不冒充声明。源码出现词法索引不支持的生成命令会明确报告索引未完成。该门禁检查显式源码证据，真实生成声明、网页跳转和目标锚点仍须由实际 API 文档构建核验。
-
-源码与依赖分别建立 `LayerIndex`，缓存身份绑定解析器源码、工具链、manifest、受测树、源内容/精确 Git blob 集合与策略。`read_cache` 拒收身份过期或 payload 校验失败的缓存，由适配器从原始源码重建；缓存应放项目已有忽略的区域。稳定依赖层可以按干净且精确锁定的 Git tree 复用，不因业务源码改名重扫整个依赖树；缺失依赖源码时适配器必须报告验证未运行并失败。
-
-`cached_layer` 在整层缓存之外按文件内容、路径、解析器、策略与解析模式存储校验过的记录；HEAD、manifest 或工具链身份变化仍须重新组装严格绑定新输入的层，但不重解析内容相同的词法记录。行号通过预先建立的换行偏移和二分查找定位，已知名称全集只建立一次。
-
-数学模式中的方括号不参与书目识别。Markdown 中明确标记为 `<span data-source-excerpt="true">…</span>` 的原文摘录使用被引论文自身的书目作用域，仅其书目提取被排除；摘录内的内部标识、实际 Lean FQN 与路径仍检查，其他正文照常验证本仓书目键。生成器须给摘录明确的阅读标签并安全转义内容，不能把本仓主动引用混入该范围；未闭合或错嵌套的摘录标记使检查失败。
-
-</details>
-
-<details>
-<summary>配置优先级、参数与资源控制</summary>
-
-库与测试根从目标 `lakefile.toml` 的 `defaultTargets`、`[[lean_lib]].name`、`roots`、`srcDir` 推导，仓库身份读取当前 checkout 的 `origin`，构建工作流读取项目工作流目录。多个默认库或多个辅助测试库有歧义时使用显式参数；工具不会猜测业务库名。`python -m qatlib_env.check_scoped_env_lint --repo <项目> --base <SHA>` 按每个库的真实 `srcDir` 选择变更模块，`--root-prefix`、`--test-root-prefix`、`--test-src-dir` 可覆盖；EnvLint 模板仍由项目提供。
-
-路由、运行资源、CI/缓存项目资料及预算门禁共用一个校验加载器。优先级从低到高为：自适应默认、项目共享配置、仓内 local、环境变量、CLI。共享配置先读取根 `pyproject.toml` 的 `[tool.qatlib-env]`，再读取根 `qatlib-env.toml`；两者都不存在时回退到 `python/pyproject.toml`。兼容的 Runner 与已存在用户资源配置只作为低于项目的只读基础层，工具不会创建用户级配置文件。
-
-个人机器资源统一放 `~/.qatlib/env.toml`（建议目录 `0700`、文件 `0600`），优先于兼容的 `~/.config/qatlib/env.toml`，低于项目显式覆盖。项目根、依赖锁、缓存服务和 CI 资料分别由 Lake、`lake-manifest.json`、`lake-cache.toml` 与工作流维护；不必为了机器预算再复制一套项目参数。工具只读个人配置，不创建文件，也不在其中存密钥。
-
-根 `.qatlib-env.local.toml` 同时覆盖路由、资源和预算；次级 worktree 缺失该文件时，只读回退到主检出根目录同名文件，当前 worktree 自己的文件优先。私有覆盖不存令牌、不提交 Git；格式损坏、类型错误和未知键会报告文件路径并停止。以下是共享配置示例：
+手动编辑 `~/.qatlib/env.toml`。下面的数值适用于一台有足够可用资源的机器，请根据宿主和当前 cgroup 的实际余量调整。建议目录权限 `0700`、文件权限 `0600`，凭据另行配置。
 
 ```toml
-# qatlib-env.toml
-cloud_platform = "github"
-repository = "quantum-atlas-ai/qatlib"
-workflow = "build.yml"
-local_pool_mib = 24576
+local_pool_mib = 8192
 local_pool_cpu = 4
 
 [resources]
-jobs = 2
-lean_threads = 1
-memory_budget = "8GiB"
-heavy_jobs = 1
-module_timeout = 1800
-stage_timeout = 10800
-heavy_patterns = []
+jobs = 1
+lean_threads = 2
+memory_budget = "4GiB"
+```
 
+```bash
+qatlib-env config explain
+```
+
+先看 `values` 和 `sources`，确认线程及任务内存来自预期配置。查看 `configuration` 中的池上限，以及 `resources` 中探测到的 CPU 和内存余量。Windows 需在 `[resources]` 中显式设置 `heavy_patterns = []` 以启用受管构建，原因见[手记五](#note-concurrency)。
+
+### 3. 准备依赖并检查一个模块
+
+```bash
+qatlib-env prepare
+qatlib-env promotion verify-lock --package Qatlib
+qatlib-env plan ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.RootCountOrder
+qatlib-env run -- lake build ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.RootCountOrder
+```
+
+`prepare` 按锁物化依赖并恢复可用工件。离线时可用 `prepare --offline`，所需源码、工具链和缓存须已在本机。计划里先看 `cold_or_rebuild_modules`、`reverse_invalidated_modules` 和 `reasons`。若 `mode` 为 `cloud`，先处理锁失配、缺失工件或资源限制，再决定是否交给项目 CI。缓存恢复成功后仍以实际编译退出码为准。
+
+已有依赖工件时，可只检查正在改的源文件。缺产物会由 Lake 报错，补齐相应依赖后再检查。
+
+```bash
+qatlib-env run -- lake --no-build lean ExampleLibrary/Foundations/ScaledSqrt/SqrtBounds/RootCountOrder.lean
+```
+
+### 4. 查到定理后回源核对
+
+```bash
+qatlib-retrieve index
+qatlib-retrieve query 'postselection normalization error' --kind theorem --limit 10
+qatlib-retrieve query 'postselection' --cite GilyenSuLowWiebe2019 --limit 10
+qatlib-retrieve find Qatlib.Concepts.BlockEncoding.Postselection.normalize_error_of_gap
+```
+
+第一个查询试找后选择归一化的误差界，第二个按书目键筛选这组候选。精确查名可定位 `Qatlib.Concepts.BlockEncoding.Postselection.normalize_error_of_gap`。在 `example-library` 中，沿结果标注的文件和行号打开 `.lake/packages/Qatlib/Qatlib/Concepts/BlockEncoding/Postselection.lean`。这条引理要求 `‖y - x‖ ≤ η` 与 `η < ‖x‖`，结果包含 `y ≠ 0` 和归一化向量的距离上界。还要读它所在 section 的赋范群、实赋范空间实例。准备复用时，在普通 `module` 文件中导入该叶模块，用 Lean 核对完整类型和自己的目标。书目键在此标记模块的数学背景，精确的论文结果归属还需查原文。 [锁定 Public 的源码示例](https://github.com/quantum-atlas-ai/qatlib/blob/4e8ad0ff0c86d3f869146d488f93ab1a3eec961f/Qatlib/Concepts/BlockEncoding/Postselection.lean#L52)
+
+索引读取当前仓的正式 `lakefile.toml` 库根、`lake-manifest.json` 中已经物化的上游，以及各自的 `docs/references.bib`。索引默认写到用户缓存目录的 `qatlib/retrieve/` 下，可用 `--db <路径>` 另选仓外位置。切换工作目录时用 `--project <目录>`，源码改动后显式运行 `qatlib-retrieve index --changed`。查询只读，不启动 Lean 或 Lake，不下载依赖、不领取构建租约，也不自动更新索引。缺索引或命中文件已变化时，按提示显式更新后再查。
+
+输出的签名、`variable` 和文档是源码证据。宏、投影、自动生成声明等可能超出词法覆盖，模块说明也不一定适用于其中的每条定理。脚本可用 `--json` 读取候选，或用 `--repo`、`--kind`、`--cite` 缩小范围。需要额外术语时，用 `--map <文件>` 显式传入 `qatlib-retrieve-map/v1` 映射，以已存在的 FQN 增补标题、术语或书目键。消费项目负责导出映射，工具无需读取其 `metadata/`。
+
+<a name="promotion"></a>
+
+## 跨仓晋升与门禁对齐
+
+### 提交整文件闭包
+
+从可复用的叶模块起步，沿本仓导入追到全部依赖。迁移单元是一份完整文件，跟随其中的定义、实例、文档和私有 helper。依赖缺提供者、有循环，或同路径已有不同实现时，先由两边维护者厘清接口。记录每个留在原仓的文件及原因。Dev 自己的结构化元数据和生成文档仍按其接收合同更新。 [Dev 晋升合同](https://github.com/quantum-atlas-ai/example-library/blob/ad7eccff36857b11d6cdf1bcf337bcb77f9e2ef0/.agents/skills/qatlas-promote-to-staging/SKILL.md)
+
+Lean 4.35 中，`module` 文件只能导入其他 `module` 文件，迁移要从依赖底层开始。文件内声明默认私有，`public` 和 `public section` 控制可见性，`public import` 转发公开接口。若接口还承诺跨模块归约定义体，需要另核实 `@[expose]` 等约定。迁移中保留旧式非 `module` 导入方可能掩盖可见性问题，因为它能加载新模块的私有信息。 [Lean 4.35 模块系统参考](https://lean-lang.org/doc/reference/4.35.0/Source-Files-and-Modules/) · [模块迁移指南](https://leanprover-community.github.io/extras/module-system-quickstart.html)
+
+### 在 Staging 验证真实消费
+
+Staging 对候选组合运行 Lint 和 Build。另在接收仓准备一个小文件（示例为 `verification/Consumer.lean`），用 `module` 加普通窄导入，写出消费方需要的类型和前提。下面用 Public 的现成接口示范普通导入的写法，可用于上手示例的固定 Public 版本。
+
+```lean
+module
+import Qatlib.Concepts.BlockEncoding.Postselection
+
+#check Qatlib.Concepts.BlockEncoding.Postselection.normalize_error_of_gap
+```
+
+```bash
+qatlib-env promotion smoke --probe verification/Consumer.lean
+```
+
+正式 smoke 应用 `example` 独立重述所需签名。对承诺可计算的定义，用普通 `def` 调用并对小输入执行。对承诺可展开的定义，再用 `rfl` 或窄 `simp` 验证。探针用普通 import，避免 `import all` 或用 `noncomputable` 掩盖回归。回执记录 HEAD、工具链与诊断，区分 `PASS`、`REGRESSION`、`NOT-RUN`。有意改名可用 `--migration-map migration.toml` 记录 `[[rename]]` 的 `old`、`new` 和 `reason`。这份表供消费者改写，回执仍以编译结果为准。是否列为 Required Check 由项目合同决定。
+
+### Public 发布后再切换消费
+
+Staging 接收后可以在独立 Draft 分支预演改写，但 Dev 主线仍须有可用的提供者。等正式 Public 接口和对应缓存可消费，再更新下游 `lakefile.toml` 中直接依赖 `Qatlib` 的目标修订，定向更新并核对实际检出。
+
+```bash
+qatlib-env promotion bump-lock --package Qatlib
+qatlib-env promotion verify-lock --package Qatlib
+qatlib-env prepare
+```
+
+改写受影响的 `import`、`open`、FQN、测试及 Dev 的 `covered_by`。确认新提供者可用后，清退旧 `.lean` 和空导入壳。随晋升同步有关 `docs/references.bib` 条目，逐键处理冲突，消费仓只清退已由上游接管且没有本地独立用途的增量条目。检查未改动文件是否仍引用已删除的声明或书目键。最后在精确 Public 锁上重新跑适用门禁，再按项目流程合入。
+
+```bash
+qatlib-env promotion check-retired --package Qatlib
+qatlib-env conflicts --package Qatlib
+```
+
+| 门禁 | 验证内容 |
+| --- | --- |
+| `verify-lock` | 核对 manifest 的完整 SHA 与实际依赖检出和源码 |
+| `check-retired` | 检出归一化库根后的重复公开声明或整文件副本 |
+| `conflicts` | 比较真实模块名、显式公开 FQN 和全局语法注册。合法重载可能需人工确认 |
+| 项目静态门禁 | 核对导入层级、元数据、生成文档、增量书目和被删提供者的反向引用 |
+| 受控 Build、EnvLint 与内核审计 | 编译实际消费者，验证环境和项目公理合同，覆盖需要编译器判断的构造器、投影和宏 |
+| 普通 `module` smoke | 提前发现少量代表性公开接口的签名、计算性或归约回归 |
+
+轻量门禁以已物化源码为前提。外层 CI 入口可用 `qatlib-env ci lint` 与 `qatlib-env ci build`，仓库提供驱动、公理白名单和 PR 基线。项目 CI 需要执行完整编译时，按 Runner 预算对该次调用显式传入 `--allow-local-heavy`。`python -m qatlib_env.check_scoped_env_lint --base "$BASE_SHA"` 中的 `BASE_SHA` 必须指向本地可用的真实 PR 基线。发布、缓存上传和合并各按项目授权执行。
+
+<a name="field-notes"></a>
+
+## 工程实战手记（Engineering Field Notes）
+
+### 一、为什么检查一个文件，会估算出上万模块冷编译？
+
+**现象。** 文件只改几行，计划却显示大量模块待重编，甚至因 `cold_limit` 或 `reverse_limit` 拒绝执行。
+
+**原理。** 如果检查文件导入根聚合模块，正向依赖就可能展开到全库。预算器还从选中闭包里缺产物或已修改的节点沿反向边查项目内消费者。若某个节点使根聚合入口失效，估算会把受影响消费者的其他依赖也计入。这里的闭包是在回答「这次修改和不确定的缓存会波及多大」，Lake 原生构建是否实际执行这些任务还取决于其目标与 depHash。
+
+**处理。** 写临时探针时仅导入所需叶模块，例如上面的 `Qatlib.Concepts.BlockEncoding.Postselection`。对真实目标先看 `plan` 的闭包、反向波及、锁和未解析导入。确认依赖工件可用后用 `run -- lake --no-build lean <文件>` 检查。若预算器仍按共享依赖判断存在大范围波及，让 CI 验证完整闭包。估算依据是源码导入、锁、工件和 trace 等保守筛查，无法承诺实际冷编时间。整库任务在有可用硬限制和适当预算时才按流程给予本次 `--allow-local-heavy`，该标志无法提高资源上限。
+
+<a name="note-memory"></a>
+
+### 二、为什么整机还有几百 GiB，构建仍等不到内存准入？
+
+**现象。** 宿主看起来空闲，也没有一个 RSS 特别大的进程。构建在开始编译前报等待资源准入超时。
+
+**原理。** Linux cgroup v2 的 `memory.current` 对当前组及后代计费，包含匿名内存、文件页缓存等。读写或解包大量 `.ltar` 和 `.olean` 会增加 `file`，进程退出后页缓存仍可能驻留。假设某层 `memory.high` 为 40 GiB、`memory.current` 为 36 GiB，当前按该层剩 4 GiB，即使另一层的上限更高。宿主余量和各层限额逐一生效，最后受最紧的边界约束。 [内核 cgroup v2 内存文档](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)
+
+**诊断。** 从实际 service 或进程的 cgroup 找到可见祖先，逐层采集 `memory.current`、`memory.high`、`memory.max`、`memory.stat`、`memory.events` 和 `memory.pressure`。`anon`、`file`、`shmem`、`inactive_file`、`file_dirty` 和 `file_writeback` 帮助分辨在跑的进程和驻留的缓存。`inactive_file` 是 LRU 分类，仍可能遇到正在写回、映射或再次访问的页。各统计值也来自不同采样时刻。直接用 `current - inactive_file` 做准入会把无法保证释放的页计为确定容量。
+
+`qatlib-env` 对各可见祖先计算有限 high/max 减去该层原始 current 的非负余量，再结合宿主 `MemAvailable`、物理内存和预留以及池上限。遇到有限限额却缺少有效 current，或限额本身无法合法读取时，探针以零余量拒绝，并在 `config explain` 的 `resources.limits` 中报告 `memory.error`。资源探测是快照，运行中的约束仍由池和内核提供。容器外的不可见祖先从宿主核对。
+
+**空闲维护。** 若确认是冷缓存，解包完成、写入者关闭且确认近期不用的完整归档或输出文件，可以重新打开描述符，请求 `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)` 后关闭。`0, 0` 表示从文件起点到末尾。对局部范围按页对齐，未写回的脏页不能据此视为释放。需要持久化时由拥有者先完成写回，并重新采样观察实际效果。这一提示可能影响同时使用同一文件的其他进程，适合冷文件。 [posix_fadvise(2)](https://man7.org/linux/man-pages/man2/posix_fadvise.2.html)
+
+如需按组回收，管理员在暂停接收新 job、确认该组空闲后，可在已核对的目标 cgroup 目录向 `memory.reclaim` 写入小额度，例如 `printf '%s\n' 512M > memory.reclaim`。回收量可能多于或少于请求，少于请求可能返回 `EAGAIN`。操作后重新采集 current、stat、events 和压力，确认预算变化再开放调度。权限不足或内核无该接口时保留现状并报告。逐 job 热路径应避免自动回收，全机 `drop_caches` 会影响其他服务的热缓存。 [memory.reclaim](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) · [drop_caches](https://docs.kernel.org/admin-guide/sysctl/vm.html#drop-caches)
+
+<a name="note-cancellation"></a>
+
+### 三、为什么取消或超时后，机器还在 90% 以上内存占用时反复抖动？
+
+**现象。** Forge 记录 job 已取消或超时，宿主仍持续回收内存，Runner 却显示正常运行。此时可能还能找到 `PPID=1` 的 `lake` 或 `lean`。
+
+**原理。** 父进程退出后，未被收割的后代仍可能在原 cgroup 计费。越过 `MemoryHigh` 会触发直接回收与节流，持续分配可能让回收和运行反复争抢。`MemoryMax` 才提供最终的内存硬边界，无法回收时可能触发该组 OOM。systemd 的 `KillMode=control-group` 在停止 service 时作用于整个单元。Runner 持续运行期间取消单次 job 不会自动触发该机制。 [systemd.kill](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html) · [systemd 资源控制](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)
+
+**处理。** 按 job 建独立进程组或 scope，由监督器追踪进程和后代。取消、模块超时、stage 超时与正常完成都应触发清理，并复扫确认；不要仅按进程名清理共享机器。Windows 受管入口在命令运行前附加 Job Object，用于聚合限制和清理，关闭最后的 Job 句柄可一并终止归属其中的进程。核对残留时读取 PID、创建时间、命令、工作目录和 cgroup，再看 `memory.events` 中 high/max/oom 的增量。单次采样或 `PPID=1` 只能作为线索。容器可能由外部 daemon 启动，或在命名空间中看不到父层，需要通过实际 runtime 复核。 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+
+### 四、为什么网页能点开的文档引用，在 VS Code 悬浮窗里只显示文字？
+
+**现象。** Lean docstring 中的声明名在 API 网页上可点击，同一段文字在编辑器里并不具有同样的链接。书目链接也可能打开正确页面却跳不到正确条目。
+
+**原理。** `doc-gen4` 在生成期拥有模块、声明链接和书目表，可以把相应文本渲染成 HTML 链接。VS Code 向 Lean LSP 发出 `textDocument/hover`，服务器从当前命令的环境和 elaboration 信息生成 Markdown，回复中没有生成网站的书目表和静态路径信息。API 参考文献页的实际锚点形如 `#ref_<CiteKey>`。例如链接目标写成 `references.html#SuksmonoMinato2019` 时，页面能打开，但对应的实际 ID 是 `ref_SuksmonoMinato2019`。 [doc-gen4](https://github.com/leanprover/doc-gen4) · [Lean 4.35 hover 实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/Lean/Server/FileWorker/RequestHandling.lean) · [门户锚点修复](https://github.com/quantum-atlas-ai/qatlib-staging/pull/22)
+
+**处理。** 跨模块普通 Markdown 用反引号包完整 FQN，论文结果使用 `[CiteKey], Theorem X`，其中 `X` 按原文实际编号填写，键在根 `docs/references.bib` 中登记。确需在编辑器中提供可点击的论文入口时，附上标准 DOI 或 arXiv 链接。对网页分别实查生成后的 href 和目标 ID。词法引用门禁能发现新增坏引用和删除提供者后留下的消费者，生成声明与 HTML 锚点仍由相应前端验证。
+
+Lean 4.35 试点在 `RootCountOrder.lean` 中以 `set_option doc.verso true` 启用 Verso，用角色 `` {name}`ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.rootCount` `` 引用已有声明。故意拼错常量名会在编译时产生 `Unknown constant`。该试点还验证了 LSP 悬浮、锁定版 doc-gen4 的目标锚点和生成摘要。推广时先沿用这套三处验证，仅在受测模块和角色上启用。角色能检查名字解析，书目键有效性和论文本身的数学归属仍各自核验。 [Lean 文档编写规范](https://github.com/leanprover/lean4/blob/v4.35.0/doc/style.md) · [单模块试点](https://github.com/quantum-atlas-ai/example-library/pull/550)
+
+<a name="note-concurrency"></a>
+
+### 五、工作树多开和线程乘积是怎么超配的？
+
+**现象。** 两个分支互相覆盖 `.lake` 工件，或每个 job 单看只有几个编译进程，合起来却十分慢。
+
+**原理。** `.lake` 中的依赖检出、build 目录、trace 和本地锁与工作树的源码和依赖版本绑定。两棵树软链成同一 `.lake` 后，更新依赖和写入构建产物会互相干扰。并发还分两层，`jobs` 是并行进程数，`lean_threads` / `LEAN_NUM_THREADS` 是每个 Lean 进程的线程数。比如两个任务各设 `jobs=4`、`lean_threads=4`，合计请求 32 个 CPU 单位，而非 8 个。
+
+**处理。** 每个 worktree 保有独立 `.lake`，通过工具管理的内容寻址缓存与 Git 对象镜像复用数据。对象镜像里有对象并不表示依赖已检出。将同一机器上的任务接到同一租约账本和一致的池上限，按 `jobs × lean_threads` 估算 CPU，另给每次任务记内存预算。内核的父 slice、service 或容器给出外层限制，工具的共享池负责跨工作树准入。POSIX 编译器包装层还分配每进程内存与重模块槽位。Windows 的 Job Object 提供聚合 CPU/内存限制，须用 `heavy_patterns = []` 选择该模式，重模块槽位不适用。macOS 后端可调整调度优先级，但缺少聚合内存硬上限，不能用它执行需要该保证的本机重任务。
+
+<a name="cli-reference"></a>
+
+## CLI 速查
+
+| 任务 | 入口 | 行为 |
+| --- | --- | --- |
+| 查看生效配置和本机资源 | `qatlib-env config explain` | 输出值和来源 |
+| 查看缓存和租约 | `qatlib-env cache explain`、`qatlib-env pool status` | 诊断缓存和并发准入 |
+| 离线读本手册 | `qatlib-env docs` 或 `qatlib-env docs --path` | 打印文档或安装路径 |
+| 创建独立工作树 | `qatlib-env worktree <路径> <分支>` | 默认准备缓存，可加 `--no-bootstrap` |
+| 估算和执行 | `qatlib-env plan <模块>`、`qatlib-env run -- <命令>`、`qatlib-env check <模块>` | `plan` 默认只读。实际执行受资源准入限制 |
+| 准备或显式上传缓存 | `qatlib-env prepare`、`qatlib-env cache upload --help` | 准备可联网。上传由项目发布流程授权 |
+| 超过本机预算 | `qatlib-env cloud submit --head <分支>` | 显式提交远端。配合 `status`、`logs`、`wait`、`fetch` |
+| 定向升锁和查重 | `qatlib-env promotion --help`、`qatlib-env conflicts --package <包名>` | `bump-lock` 更新目标包，其余锁和副本检查只读。smoke 运行 Lean |
+| 索引源码 | `qatlib-retrieve index [--changed]` | 只写索引缓存 |
+| 查源码 | `qatlib-retrieve query <文本>`、`qatlib-retrieve find <文本>` | 只读，亦可省略 `query`，或用 `python -m qatlib_search` |
+| 查询 Forge | `qatlib-forge pr list --platform github --repo quantum-atlas-ai/qatlib` | 需读取权限。写操作如 `pr create`、`issue comment` 另行调用 |
+| 维护工作区 | `qatlib-env workspace scan <目录> --json` | 默认本地扫描，`--check-remote` 才查远端 |
+| 预览回收 | `qatlib-env workspace clean-caches --checkout <路径> --dry-run` | 清理缓存或用 `trash-checkouts` 选择整树，审阅清单后再 `--apply` 移入系统回收站 |
+
+旧 `qatlib-search build/query/retrieve` 使用的索引格式已退役。改用 `qatlib-retrieve index` 初始化、`query` 查询，无需转换历史索引。锁定上游未准备时先用 `qatlib-env prepare` 核对，检索命中不能代替构建或晋升门禁。
+
+<a name="configuration"></a>
+
+## 配置优先级
+
+以下按低到高排列，同一键由后者覆盖。运行 `config explain` 可以看到最终值与来源。
+
+| 层级 | 来源与职责 |
+| --- | --- |
+| 默认与项目推导 | 宿主探测给出资源默认值。主库、测试根和 `srcDir` 来自 `lakefile.toml`，仓库身份和工作流从项目本身推导 |
+| Runner 兼容层 | `QATLAS_RUNNER_CONFIG` 指向的文件 |
+| 个人设置 | 先读 `${XDG_CONFIG_HOME:-~/.config}/qatlib/env.toml` 兼容配置，再读 `~/.qatlib/env.toml` |
+| 项目共享 | 先读根 `pyproject.toml` 的 `[tool.qatlib-env]`，再读根 `qatlib-env.toml`。两文件均不存在时才回退到 `python/pyproject.toml` |
+| 工作树本地覆盖 | 根 `.qatlib-env.local.toml`。次级工作树没有时可只读使用主检出的同名文件 |
+| 环境变量 | 如 `QATLAS_POOL_BUDGET_MIB`、`QATLAS_POOL_CPU`、`QATLAS_JOBS`。线程变量的优先级为 `QATLAS_LEAN_THREADS` 高于 `LEAN_NUM_THREADS` |
+| 本次命令参数 | 如 `qatlib-env run --jobs 1 --lean-threads 2 -- lake build <模块>` |
+
+项目需要共享预算策略时可提交下面这样的 `qatlib-env.toml`。机器规模、每个任务的运行资源留在个人或 Runner 配置中。若放到 `pyproject.toml`，表名改为 `[tool.qatlib-env.budget]`。
+
+```toml
 [budget]
 max_cold_modules = 15
 max_reverse_modules = 15
 require_explicit_local_heavy = true
 ```
 
-也可以把所有设置放进 `pyproject.toml` 或本地覆盖的 `[tool.qatlib-env]` 命名空间：
+这两个阈值填 `0` 表示对应类别不允许重编或波及。可用 `QATLAS_MAX_COLD_MODULES` 和 `QATLAS_MAX_REVERSE_MODULES` 覆盖。项目和个人配置出现未知键或错误类型时，按报错路径改正。`--allow-local-heavy` 只在单次调用中有效，执行仍受池、控制器和超时约束。`QATLAS_POOL_WAIT_TIMEOUT` 调整等待其他租约的时间，请求超过池硬上限时仍会直接拒绝。
 
-```toml
-# .qatlib-env.local.toml
-[tool.qatlib-env]
-cloud_platform = "github"
-repository = "quantum-atlas-ai/qatlib"
-workflow = "build.yml"
-local_pool_mib = 24576
-local_pool_cpu = 4
+依赖精确修订由 `lake-manifest.json` 维护。Lake 缓存服务由 `lake-cache.toml` 配置，本机工件路径由 `LAKE_CACHE_DIR` 指定。池账本由工具按 `XDG_STATE_HOME` / `XDG_CACHE_HOME` 定位；让需要共用容量的任务指向同一账本。检索从 Lake 项目和本地源码独立发现语料，用自己的 `--project` 与 `--db`。
 
-[tool.qatlib-env.resources]
-jobs = 2
-lean_threads = 1
-memory_budget = "8GiB"
-heavy_jobs = 1
-heavy_patterns = ["HeavyCertificate"]
+<a name="runner"></a>
 
-[tool.qatlib-env.budget]
-max_cold_modules = 15
-max_reverse_modules = 15
-require_explicit_local_heavy = true
-```
+## 自托管 Runner 部署核对单
 
-`[resources]`、`[tool.qatlib-env]` 的资源键及其 `[resources]` 子表均受支持，子表覆盖同层平铺键。`default_jobs` 是 `jobs` 的兼容别名，`default_memory_mib` 转为字节单位的 `memory_budget`，同表的规范键优先。`require_explicit_local_heavy` 须保持 `true`；不接受把一次性重任务许可持久化。`config explain` 输出运行值、路由/预算及各自来源；超配保留原值供诊断，执行准入会硬拒绝。
+1. **确认环境与身份。** Linux / WSL2 检查 systemd 正在管理服务，`stat -fc %T /sys/fs/cgroup` 通常应报告 `cgroup2fs`。确认当前容器、WSL 虚拟机和宿主各自的内存边界。每个实例安排独立工作目录与注册凭据，按信任边界划分运行账号，检查目标代码是否获准在相应 Runner 上运行。
+2. **核对脚本版本和职责。** 在锁定的 Tools 源码检出运行 `bash src/qatlib_env/setup_runner.sh --help`。已装 wheel 时可运行 `bash "$(python -c 'from pathlib import Path; import qatlib_env; print(Path(qatlib_env.__file__).with_name("setup_runner.sh"))')" --help`。脚本针对 Ubuntu/Debian 和 systemd，`init` 会配置主机依赖、账户和共享 slice，`register` 注册单个实例并写入服务资源设置。先审阅实际路径、认证和配额，再按部署变更流程执行。
+3. **同时预算父 slice 与每个实例。** 在已有服务的 drop-in 中使用 `[Service]` 下的 `Slice`、`CPUQuota`、`MemoryHigh`、`MemoryMax`、`TasksMax` 和 `KillMode=control-group`。按实例数与父 slice 的有效上限计算，为 Runner、文件缓存和其他服务留余量。使用 `systemctl show <服务> -p ControlGroup -p Slice -p EffectiveMemoryHigh -p EffectiveMemoryMax -p KillMode` 读回，并到实际 cgroup 检查计费。
+4. **按实际运行用户验收。** 核对个人配置、Runner 配置、共享池及项目约定，运行 `qatlib-env config explain`、`qatlib-env pool status`。Linux 重任务优先使用可用的受限 systemd 用户 scope。若只能沿用已有 cgroup，后端要求能证明有限 `memory.max`、CPU quota 和各可见祖先具备足够余量。单靠 `memory.high` 或 CPU affinity 无法满足硬限制要求。
+5. **跑小任务与取消测试。** 在测试 lane 分别检查成功退出、取消、模块超时和 stage 超时。测试任务应派生子孙。结束后复核进程、实际 cgroup 和租约，记录 `memory.events` 与压力变化。遇到高占用先看[手记二](#note-memory)和[手记三](#note-cancellation)，确认是缓存驻留还是仍有任务。最后按设计并发逐步放量。
 
-`local_pool_mib` / `local_pool_cpu` 同时约束计划与执行，环境变量 `QATLAS_POOL_BUDGET_MIB` / `QATLAS_POOL_CPU` 可显式覆盖；并发 CPU 请求按 `jobs × lean_threads` 计。未配置的池按宿主可用资源自适应；单次请求绝不反向放大显式上限，活跃租约也不能被另一个调用者放大。`QATLAS_POOL_WAIT_TIMEOUT` 只控制等待其他租约的时间，超过硬上限的单次请求立即拒绝。预算阈值可用 `QATLAS_MAX_COLD_MODULES` / `QATLAS_MAX_REVERSE_MODULES` 覆盖，0表示不允许任何对应重编/波及，不表示无限制。
+工具仓本地开发可运行 `uv lock --check`、`uv build` 和 `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs`。根 README 按原始字节打入 wheel 的 `qatlib_env/_manual.md`，在干净环境装 wheel 后可将 `qatlib-env docs` 的输出与本文件比较。
 
-本机工件缓存目录仍由 `LAKE_CACHE_DIR` 指定，池账本由 `XDG_STATE_HOME` / `XDG_CACHE_HOME` 定位；工具不自动创建用户级共享配置。检索 `build` 的源码根由位置参数指定。需要共同使用机器池的项目必须指向同一账本，并采用一致的池上限。
-
-</details>
-
-<details>
-<summary>Lean 4.35 单向 module 导入边界</summary>
-
-`module` 文件只能导入其他 module 文件，旧文件导入 module 时会加载私有信息并追踪非公开导入。迁移按依赖顺序从底层推进；普通 module 导入使用公开接口，`public import` 再导出，`import all` 请求私有接口。`public` 控制声明可见性，需要跨模块归约定义体的接口另按用途使用 `@[expose]`。迁完后普通导入能减少私有证明数据的加载，公开接口仍有成本，须以真实工具链和闭包实测。源码冲突 Lint 与真实消费者编译分别检查静态冲突和语义兼容。[Lean module system](https://leanprover-community.github.io/extras/module-system-quickstart.html) 解释了单向边界，[Lean 4.35 发布说明](https://lean-lang.org/doc/reference/latest/releases/v4.35.0/) 记录该版本变化。
-
-</details>
-
-<details>
-<summary>合并后的分支清理与收口核对</summary>
-
-仓库维护者可启用 `delete_branch_on_merge = true`，在 PR 合并后自动删除远端 head 分支；工具不会静默改仓库设置。
-
-- 读回 PR、精确提交与 CI；squash/rebase 情况按 PR 归属核实。
-- 核对未推改动、分支归属与 worktree 占用，保留仍有独立工作的本地分支。
-- 未合并 PR 不因本轮任务结束而删除；合并和发布各自遵循项目授权。
-- 本地工作树与文件按预览清单审阅后移入系统回收站。分支删除与文件回收分别处理。
-
-</details>
-
-<details>
-<summary>多根工作区盘点与系统回收站</summary>
-
-## 多根工作区盘点与官方回收站
-
-普通环境命令不扫描机器。维护时使用独立入口；扫描不初始化环境、不 fetch、不刷新
-Git index，也不创建缓存锁。使用 `python -B` 避免 Python 导入生成字节码：
-
-```bash
-python -B -m qatlib_env workspace scan ~/work ~/.legacy-worktrees/tmp --json
-python -B -m qatlib_env workspace scan ~/work --measure --check-remote --json
-python -B -m qatlib_env workspace scan /known/checkout /another/checkout --exact --json
-python -B -m qatlib_env workspace clean-caches --checkout /exact/idle/checkout --dry-run --json
-python -B -m qatlib_env workspace trash-checkouts --checkout /exact/redundant/checkout --dry-run --json
-```
-
-默认扫描当前目录的父目录与 `~/.legacy-worktrees/tmp`。显式根可以跨挂载；递归不进入
-其他挂载、符号链接、`.git`、`.lake`、回收站和常见依赖/容器目录。输出同时记录 Git、
-Lake/Lean 与研究目录标记，并按 `common-dir` 汇总全部分支、stash 与 worktree。
-已知清单可用 `--exact` 跳过递归发现。默认不遍历 `.lake` 测大小；`--measure`
-测分配/逻辑字节，耗时取决于文件数量。
-`--check-remote` 只读 `ls-remote`；缺失远端对象或浅克隆会保守标为未知，不自动 fetch。
-
-两个清理命令默认仅预览。保留常用 clone 时选 `clean-caches`，整树回收只选明确多余的
-`trash-checkouts`。两者均列出完整目标、逻辑/分配大小及结构化 `warnings`：近期活动、
-dirty/stash、未推或未知分支、Git 忽略的任务目录、被追踪的 `.lake` 内容、修改的依赖，
-以及 `.lake/task-*` 等非标准目录。文件提示列出具体路径，非标准目录另测整树大小；
-Git 元数据提示共享目标总量，不虚构分支的磁盘大小。这些发现供操作者审阅和归档，
-不会因为命中提示就禁止用户确认后的回收。默认不查询远端；需要 live 引用时加 `--check-remote`。
-
-审阅具体路径和状态并得到用户批准后，才用同一选择列表加 `--apply`。执行会重新预检，
-只有活跃 Lean/Lake/构建占用、路径越界（含会破坏未选 worktree 的共享 Git 目录）、
-不存在或非法链接、显式 `--protect` 排除和回收站后端故障才拒绝；`reasons` 列出这些阻断。
-提示项在 `--apply` 下可直接回收，无需第二套覆盖开关。后端途中失败保留已成功项的回执并停止；仍需操作者协调写者，
-无法排除检查后新进程启动的竞态。工具不保存批准，也不自动恢复或清空回收站。
-三端均交给 Send2Trash：Linux 使用 Gio 或库提供的 FreeDesktop Trash 实现（含外盘
-`.Trash/$uid`、`.Trash-$uid`），macOS 使用 Cocoa/CoreServices，Windows 强制使用
-pywin32 的原生 `IFileOperation`，不使用 .NET 或旧 `SHFileOperation` 兜底。Windows
-同时补齐上游取消回调的异常契约，并拒绝已知不安全的长路径情况；其他普通 Windows 路径可以回收。
-库没有通用只读能力探测接口，预览只确认后端可加载、路径和挂载的已知条件，不调用移动函数，
-不创建 Trash 目录；具体文件系统是否接受移动以执行结果为准。失败即报告，没有永久删除后备路径。
-跨盘可能需要复制到用户 Trash 后移动，耗时和临时占用取决于数据量。同盘回收通常保留物理块，
-大小和回执均不代表已经释放磁盘空间；共享 extents/硬链接也不能重复计算为可释放量。
-
-</details>
-
-<details>
-<summary>本地开发、打包与测试</summary>
-
-在检出目录中执行以下命令。测试工具通过 `uv run --with` 临时加入隔离环境；它们不属于核心运行时依赖。Hatchling 将根 README 的相同内容作为 `qatlib_env/_manual.md` 打进 wheel，`qatlib-env docs` 离线读取它；源码检出直接读取根 README。构建检查还会核验 Lean 导出器与 JSON schema。
-
-```bash
-uv venv .venv
-uv pip install -e .
-uv lock --check
-uv build
-uv run --with pytest --with hatchling --with jsonschema pytest -q -rs
-```
-
-</details>
-
-## 开源许可
-
-本项目采用 [Apache License, Version 2.0](./LICENSE)（`Apache-2.0`）许可证，与 [`quantum-atlas-ai/qatlib`](https://github.com/quantum-atlas-ai/qatlib) 保持一致。
+本项目采用 [Apache License, Version 2.0](./LICENSE)，与 [qatlib](https://github.com/quantum-atlas-ai/qatlib) 一致。

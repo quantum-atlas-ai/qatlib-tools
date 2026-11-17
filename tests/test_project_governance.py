@@ -81,8 +81,6 @@ def test_scoped_changed_modules_follow_each_srcdir(tmp_path):
     layouts = [(lib.src_dir, lib.roots) for lib in libraries(tmp_path)]
     with patch.object(scoped.subprocess, "check_output", return_value="\0".join(files).encode() + b"\0"):
         assert scoped.selected_modules(tmp_path, "HEAD~1", layouts) == ["Algebra.Basic", "Checks.Safety"]
-    from qatlib_search.build_search_index import modules_from_paths
-    assert modules_from_paths(files, tmp_path) == ["Algebra.Basic", "Checks.Safety"]
 
 
 def test_scoped_main_uses_lake_template_root(tmp_path):
@@ -160,7 +158,7 @@ def test_bump_is_targeted_and_inherited_lock_cannot_mutate(tmp_path):
 def test_docs_reads_the_unique_root_readme(capsys):
     root = Path(__file__).resolve().parents[1]
     assert main(["docs"]) == 0
-    assert capsys.readouterr().out == (root / "README.md").read_text() + "\n"
+    assert capsys.readouterr().out == (root / "README.md").read_text()
     assert main(["docs", "--path"]) == 0
     assert Path(capsys.readouterr().out.strip()) == root / "README.md"
     readmes = [path for path in root.rglob("README.md") if not any(

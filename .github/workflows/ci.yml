@@ -40,7 +40,7 @@ jobs:
           .wheel-venv-ci/bin/qatlib-env --help
           .wheel-venv-ci/bin/qatlib-env docs
           .wheel-venv-ci/bin/qatlib-forge --help
-          .wheel-venv-ci/bin/qatlib-search --help
+          .wheel-venv-ci/bin/qatlib-retrieve --help
           .wheel-venv-ci/bin/python -m qatlib_search --help
           .wheel-venv-ci/bin/python -m qatlib_env.ci --help
 

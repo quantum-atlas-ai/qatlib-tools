@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "qatlib-tools"
 version = "0.1.0"
-description = "Shared Lean workspace, Forge, and search tools"
+description = "Controlled Lean environments, read-only retrieval, and shared lexical gates"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
 [project.scripts]
 qatlib-env = "qatlib_env.__main__:main"
 qatlib-forge = "qatlib_forge.__main__:main"
-qatlib-search = "qatlib_search.__main__:main"
+qatlib-retrieve = "qatlib_search.retrieve:main"
 
 [project.optional-dependencies]
 validation = ["jsonschema>=4"]
