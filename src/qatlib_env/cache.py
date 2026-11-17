@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .workspace import fetch_lock
+from .workspace import cache_lock as fetch_lock
 
 
 def cache_key(*parts: str) -> str:
@@ -26,6 +26,6 @@ def read_cache_manifest(path: str | Path) -> dict[str, str]:
 
 @contextmanager
 def cache_lock(root: str | Path = "."):
-    with fetch_lock(root):
+    with fetch_lock(Path(root)):
         yield
 

@@ -146,12 +146,16 @@ def read_layer(path: Path, *, explicit: bool = False) -> dict:
 
 def layers(project: Path, env: Mapping[str, str]) -> list[tuple[str, dict]]:
     result = []
+    from .project import inferred_profile
+    result.append((f"lake:{project / 'lakefile.toml'}", inferred_profile(project)))
     if env.get("QATLAS_RUNNER_CONFIG"):
         path = Path(env["QATLAS_RUNNER_CONFIG"])
         result.append((f"runner:{path}", read_layer(path, explicit=True)))
     # Read-only compatibility layer. No directory or file is ever created.
     home = Path(env.get("HOME", str(Path.home())))
     path = Path(env.get("XDG_CONFIG_HOME", str(home / ".config"))) / "qatlib/env.toml"
+    result.append((f"user:{path}", read_layer(path)))
+    path = home / ".qatlib/env.toml"
     result.append((f"user:{path}", read_layer(path)))
     shared = [project / "pyproject.toml", project / "qatlib-env.toml"]
     if not any(path.exists() for path in shared):

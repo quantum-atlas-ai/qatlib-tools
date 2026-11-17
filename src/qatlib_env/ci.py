@@ -75,45 +75,54 @@ def runner_environment(project, base=None):
     return env
 
 
-DEV_PACKAGES = {"Project", "Qatlib", "ExampleLibrary", "example_library"}
-SECONDARY_PACKAGES = {"SecondaryProject", "secondary_package"}
-DEV_PACKAGE_NAMES = ("Project", "Qatlib", "ExampleLibrary", "example_library")
-SOURCE_IMPORT_CHECKERS = (
-    ("dev_metadata", "python/dev_metadata/check_source_imports.py"),
-    ("secondary_ops", "python/secondary_ops/check_source_imports.py"),
-)
+# Historical extension points retained for adapters, without built-in identities.
+DEV_PACKAGES = set()
+SECONDARY_PACKAGES = set()
+DEV_PACKAGE_NAMES = ()
+SOURCE_IMPORT_CHECKERS = ()
 
 
 def dev_dependency_dir(project):
-    return workspace.package_dir(project, DEV_PACKAGE_NAMES)
+    entries = workspace.manifest(project)["packages"]
+    names = tuple(p["name"].strip("«»") for p in entries if not p.get("inherited"))
+    if not names:
+        paths = sorted(path.name for path in (project / ".lake/packages").glob("*") if path.is_dir())
+        names = tuple(paths) if len(paths) == 1 else ()
+    if len(names) != 1:
+        raise ValueError("dependency selection is ambiguous; use an explicit project adapter")
+    return workspace.package_dir(project, names)
 
 
 def source_import_gate(project):
-    """Return the local source-import check command for a supported project."""
-    checker = next(
-        ((module, project / relative) for module, relative in SOURCE_IMPORT_CHECKERS
-         if (project / relative).is_file()),
-        None,
-    )
-    if checker is None:
-        generic = sorted((project / "python").glob("*/check_source_imports.py"))
-        if generic:
-            checker = (generic[0].parent.name, generic[0])
-    if checker is None:
+    """Select the project's declared CLI package, or its sole source checker."""
+    candidates = sorted({path for root in (project / "python", project / "src")
+                         for path in root.glob("*/check_source_imports.py")})
+    if not candidates:
         return None
+    preferred = set()
+    for configuration in (project / "pyproject.toml", project / "python/pyproject.toml"):
+        if configuration.is_file():
+            scripts = tomllib.loads(configuration.read_text()).get("project", {}).get("scripts", {})
+            preferred.update(value.split(":", 1)[0].split(".", 1)[0] for value in scripts.values()
+                             if isinstance(value, str))
+    selected = [path for path in candidates if path.parent.name in preferred]
+    if len(selected) == 1:
+        checker = selected[0]
+    elif len(candidates) == 1:
+        checker = candidates[0]
+    else:
+        raise ValueError("multiple source-import checkers; declare a unique project CLI package")
 
     dependencies = []
     manifest = project / "lake-manifest.json"
     if manifest.is_file():
         for dependency in workspace.manifest(project)["packages"]:
             name = dependency["name"].strip("«»")
-            if name in {"Qatlib", "Project", "ExampleLibrary", "example_library"}:
-                path = project / ".lake/packages" / name
-                if path.is_dir():
-                    dependencies += ["--dependency-repo", str(path)]
+            dependency_path = project / workspace.manifest(project).get("packagesDir", ".lake/packages") / name
+            if (dependency_path / "lakefile.toml").is_file():
+                dependencies += ["--dependency-repo", str(dependency_path)]
 
-    _module, path = checker
-    return [sys.executable, "-B", str(path), "--repo", ".", *dependencies]
+    return [sys.executable, "-B", str(checker), "--repo", ".", *dependencies]
 
 
 def source_imports(project, env=None):
@@ -136,6 +145,9 @@ def profile(package, env=None, project=None):
     library = str(configured.get("library", values.get("QATLIB_LIBRARY", package))).strip()
     tests = str(configured.get("tests", values.get("QATLIB_TEST_TARGET", ""))).strip()
     repository = str(configured.get("cache_repository", configured.get("repository", values.get("QATLIB_REPOSITORY", "")))).strip()
+    if not repository and project is not None:
+        from .project import repository_slug
+        repository = repository_slug(project)
     if "://" in repository:
         from urllib.parse import urlsplit
         repository = urlsplit(repository).path.strip("/").removesuffix(".git")
@@ -146,12 +158,30 @@ def write_key(package, env):
     # CI consumes injected credentials only; local key-file/prompt resolution
     # belongs to the explicit cache-upload command, with the same variable map.
     from qatlib_env.r2_cache import credential_variables
-    return next((env.get(name, "").strip() for name in credential_variables(package)
+    return next((env.get(name, "").strip() for name in credential_variables(package, env)
                  if env.get(name, "").strip()), "")
 
 
+def source_inputs(project, library):
+    config = tomllib.loads((project / "lakefile.toml").read_text()) if (project / "lakefile.toml").is_file() else {}
+    if config.get("lean_lib"):
+        from .project import libraries
+        paths = []
+        for lib in libraries(project):
+            for root in lib.roots:
+                path = lib.src_dir / root.replace(".", "/")
+                for candidate in (path, path.with_suffix(".lean")):
+                    if (project / candidate).exists():
+                        paths.append(candidate.as_posix())
+    else:
+        paths = [library, library + ".lean"]
+        if (project / "verification").is_dir():
+            paths.append("verification")
+    return list(dict.fromkeys([*paths, "lakefile.toml", "lean-toolchain", "lake-manifest.json"]))
+
+
 def input_tree(project, library):
-    paths = [library, library + ".lean", "verification", "lakefile.toml", "lean-toolchain", "lake-manifest.json"]
+    paths = source_inputs(project, library)
     data = subprocess.check_output(["git", "rev-parse", *("HEAD:" + p for p in paths)], cwd=project)
     return hashlib.sha256(data).hexdigest()
 
@@ -160,36 +190,54 @@ def toolchain_dir(raw):
     return raw.replace("/", "--").replace(":", "---")
 
 
+def _source_dependency(project, env):
+    entries = workspace.manifest(project)["packages"]
+    selected = env.get("QATLIB_SOURCE_PACKAGE", "").strip()
+    if selected:
+        matches = [p for p in entries if p["name"].strip("«»") == selected]
+        if len(matches) != 1:
+            raise ValueError("QATLIB_SOURCE_PACKAGE must name one locked dependency")
+        return matches[0]
+    direct = [p for p in entries if not p.get("inherited")]
+    return direct[0] if len(direct) == 1 else None
+
+
 def public_repo(project, env):
     """Select checked-out sources at the locked revision for read-only gates.
 
     A usable object mirror may have no checkout, while a shallow dependency
     checkout is sufficient for source validation. Do not conflate the two.
     """
-    locked = next((p["rev"] for p in workspace.manifest(project)["packages"]
-                   if p["name"] == "Qatlib"), None)
-    if not locked:
+    entry = _source_dependency(project, env)
+    if entry is None:
         return None
+    locked, name = entry["rev"], entry["name"].strip("«»")
     roots = [project]
     if env.get("QATLAS_PKG_MIRROR"):
         roots.append(Path(env["QATLAS_PKG_MIRROR"]))
     candidates = []
     for root in roots:
-        candidate = root / ".lake/packages/Qatlib"
+        candidate = root / workspace.manifest(project).get("packagesDir", ".lake/packages") / name
         candidates.append(str(candidate))
         if source_checkout(candidate, locked, env):
             return candidate
     raise ValueError(
-        f"Qatlib {locked}: source checks require materialized Lean sources at the locked HEAD; "
+        f"{name} {locked}: source checks require materialized Lean sources at the locked HEAD; "
         f"no matching checkout found in {', '.join(candidates)}"
     )
 
 
 def source_checkout(candidate, locked, env):
     """Materialized locked sources are usable even from a tree-filtered clone."""
-    if not (candidate / "Qatlib").is_dir():
-        return False
-    if not any((candidate / "Qatlib").rglob("*.lean")):
+    config = tomllib.loads((candidate / "lakefile.toml").read_text()) if (candidate / "lakefile.toml").is_file() else {}
+    if config.get("lean_lib"):
+        from .project import libraries
+        roots = [candidate / lib.src_dir / root.replace(".", "/")
+                 for lib in libraries(candidate) for root in lib.roots]
+    else:
+        roots = [path for path in candidate.glob("*") if not path.name.startswith(".")]
+    if not any((root.is_file() and root.suffix == ".lean") or
+               (root.is_dir() and any(root.rglob("*.lean"))) for root in roots):
         return False
     result = supervisor.run(["git", "-C", str(candidate), "rev-parse", "--show-toplevel", "HEAD"],
                             env={**env, "GIT_NO_LAZY_FETCH": "1"}, capture_output=True, text=True)
@@ -199,11 +247,13 @@ def source_checkout(candidate, locked, env):
 
 
 def bibliography(project, env):
+    entry = _source_dependency(project, env)
+    if entry is None:
+        return None
+    locked, name = entry["rev"], entry["name"].strip("«»")
     roots = [Path(env["QATLAS_PKG_MIRROR"])] if env.get("QATLAS_PKG_MIRROR") else []
-    locked = next((p["rev"] for p in workspace.manifest(project)["packages"]
-                   if p["name"] == "Qatlib"), None)
     for root in [project, *roots]:
-        candidate = root / ".lake/packages/Qatlib"
+        candidate = root / workspace.manifest(project).get("packagesDir", ".lake/packages") / name
         bib = candidate / "docs/references.bib"
         file_at_rev = supervisor.run(
             ["git", "-C", str(candidate), "cat-file", "-e", f"{locked}:docs/references.bib"],
@@ -215,10 +265,10 @@ def bibliography(project, env):
     return None
 
 
-def metadata_checks(run, public):
+def metadata_checks(run, public, module):
     flags = ["--public-repo", str(public)] if public else []
-    for module, option in [("check_meta_v2", "--strict"), ("gen_v2_docs", "--check")]:
-        run([sys.executable, "-B", "-m", "dev_metadata." + module, "--repo", ".", option, *flags])
+    for check, option in [("check_meta_v2", "--strict"), ("gen_v2_docs", "--check")]:
+        run([sys.executable, "-B", "-m", module + "." + check, "--repo", ".", option, *flags])
 
 
 def mirror_main(project, env):
@@ -263,7 +313,7 @@ def mirror_main(project, env):
 def lint(project, env):
     from qatlib_env.r2_cache import package_environment
     package = workspace.package_name(project)
-    env = package_environment(package, env)
+    env = package_environment(package, env, project=project)
     workspace.ensure_pkg_mirror(project, env)
     def run(command):
         workspace.run(command, cwd=project, env=env)
@@ -271,26 +321,27 @@ def lint(project, env):
     if source_gate:
         run(source_gate)
     run(["git", "diff", "--check"])
-    run([sys.executable, "-B", "-m", "dev_metadata.ci_static"])
+    adapters = sorted(path.parent for path in (project / "python").glob("*/check_meta_v2.py"))
+    if len(adapters) > 1:
+        raise ValueError("multiple metadata adapters; select checks in the project CI entry point")
+    metadata = adapters[0].name if adapters else None
+    if metadata and (adapters[0] / "ci_static.py").is_file():
+        run([sys.executable, "-B", "-m", metadata + ".ci_static"])
     if (project / "python/tests").is_dir():
         run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "python/tests", "-p", "test_*.py"])
     if shutil.which("lake", path=env.get("PATH")):
         run(["lake", "lint"])
-    if package in DEV_PACKAGES:
-        run([sys.executable, "-B", "-m", "dev_metadata.check_dev_imports"])
+    if metadata:
+        if (adapters[0] / "check_dev_imports.py").is_file():
+            run([sys.executable, "-B", "-m", metadata + ".check_dev_imports"])
         public = public_repo(project, env)
         if public:
-            run([sys.executable, "-B", "-m", "dev_metadata.check_promoted_duplicates", "--repo", ".",
+            run([sys.executable, "-B", "-m", metadata + ".check_promoted_duplicates", "--repo", ".",
                  "--public-repo", str(public)])
         bib = bibliography(project, env)
-        run([sys.executable, "-B", "-m", "dev_metadata.check_references", *(["--bib", str(bib)] if bib else [])])
-        metadata_checks(run, public)
-    elif package in SECONDARY_PACKAGES:
-        return
-    else:
-        raise ValueError("unsupported package: " + package)
-    if package in DEV_PACKAGES:
-        mirror_main(project, env)
+        run([sys.executable, "-B", "-m", metadata + ".check_references", *(["--bib", str(bib)] if bib else [])])
+        metadata_checks(run, public, metadata)
+    mirror_main(project, env)
 
 
 def cache_service(project, env, package):
@@ -652,7 +703,7 @@ def may_publish(env, package=None):
 def build(project, env):
     from qatlib_env.r2_cache import package_environment, native_key_environment
     package = workspace.package_name(project)
-    env = package_environment(package, env)
+    env = package_environment(package, env, project=project)
     env = workspace.environment(project, base_env=env)
     workspace.ensure_pkg_mirror(project, env)
     env["LAKE_CONFIG"] = str(project / "lake-cache.toml")
@@ -685,7 +736,7 @@ def build(project, env):
         output = compile_targets(project, env, targets, kind, candidate)
         run(["lake", "lint"])
         run(["lake", "test"])
-        if package in DEV_PACKAGES and env.get("CI_BASE_SHA") and ci_value(env, "EVENT_NAME") == "pull_request":
+        if env.get("CI_BASE_SHA") and ci_value(env, "EVENT_NAME") == "pull_request":
             run([sys.executable, "-B", "-m", "qatlib_env.check_scoped_env_lint", "--base", env["CI_BASE_SHA"]])
         if may_publish(env, package):
             selected_key = write_key(package, env)

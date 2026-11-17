@@ -21,10 +21,10 @@ class WheelResourcesTests(unittest.TestCase):
             self.assertEqual(len(wheels), 1)
             with zipfile.ZipFile(wheels[0]) as wheel:
                 names = set(wheel.namelist())
-                for path in ("README.md", "docs/cache.md", "docs/resources.md", "docs/runners.md",
+                for path in ("_manual.md",
                              "resources.py", "supervisor.py", "compiler.py", "runner_config.py", "prepare.py", "checkpoint.py", "r2_cache.py", "setup_runner.sh"):
                     self.assertIn("qatlib_env/" + path, names)
-                self.assertIn(b"Cache", wheel.read("qatlib_env/docs/cache.md"))
+                self.assertEqual((package / "README.md").read_bytes(), wheel.read("qatlib_env/_manual.md"))
                 for module in ("qatlib_env", "qatlib_forge", "qatlib_search"):
                     self.assertIn(module + "/__init__.py", names)
                     self.assertNotIn(module + "/pyproject.toml", names)
@@ -39,8 +39,8 @@ class WheelResourcesTests(unittest.TestCase):
             with tarfile.open(source) as sdist:
                 members = {"/".join(Path(name).parts[1:]) for name in sdist.getnames()}
                 self.assertIn("pyproject.toml", members)
-                for resource in ("src/qatlib_env/README.md", "src/qatlib_env/docs/cache.md", "src/qatlib_env/docs/resources.md",
-                                 "src/qatlib_env/docs/runners.md", "src/qatlib_search/ExportSearchIndex.lean",
+                self.assertEqual({name for name in members if name.endswith("README.md")}, {"README.md"})
+                for resource in ("README.md", "src/qatlib_search/ExportSearchIndex.lean",
                                  "src/qatlib_search/retrieval-report.schema.json"):
                     self.assertIn(resource, members)
                 for module in ("qatlib_env", "qatlib_forge", "qatlib_search"):

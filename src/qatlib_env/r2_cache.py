@@ -27,12 +27,9 @@ import urllib.request
 R2_ENDPOINT = ""
 REGION = "auto"
 SERVICE = "s3"
-KEY_VARIABLES = {
-    "Qatlib": "LAKE_PUBLIC_CACHE_KEY",
-    "Project": "LAKE_PROJECT_CACHE_KEY",
-    "ExampleLibrary": "LAKE_DEV_CACHE_KEY", "example_library": "LAKE_DEV_CACHE_KEY",
-    "SecondaryProject": "LAKE_SECONDARY_CACHE_KEY", "secondary_package": "LAKE_SECONDARY_CACHE_KEY",
-}
+# Compatibility registration point for callers; shared code owns no package names.
+KEY_VARIABLES: dict[str, str] = {}
+_KEY_VARIABLE = re.compile(r"LAKE_(?:[A-Z0-9_]+_)?CACHE_KEY\Z")
 ARTIFACT_NAME = re.compile(r"[0-9a-fA-F]{16}\.ltar\Z")
 
 
@@ -43,22 +40,52 @@ def cache_endpoint(env: dict[str, str] | None = None) -> str:
     return value.rstrip("/")
 
 
-def credential_variables(package_name: str) -> tuple[str, ...]:
-    """Private buckets require their own key; only Qatlib accepts the community key."""
-    if package_name not in KEY_VARIABLES:
-        raise ValueError(f"unsupported package for R2 credentials: {package_name}")
-    variable = KEY_VARIABLES[package_name]
-    return (variable, "LAKE_CACHE_KEY") if package_name == "Qatlib" else (variable,)
+def credential_variables(package_name: str, env: dict[str, str] | None = None,
+                         *, project: Path | None = None) -> tuple[str, ...]:
+    """Select explicit aliases or a package-specific name, never a generic fallback.
+
+    QATLIB_CACHE_KEY_VARIABLES is a JSON map from package names to variable names
+    (or ordered lists of names). It contains configuration, never credential values.
+    A caller must explicitly opt a particular package into LAKE_CACHE_KEY.
+    """
+    if not package_name:
+        return ()
+    values = os.environ if env is None else env
+    configured = KEY_VARIABLES.get(package_name)
+    if project is not None:
+        from .config import load_config
+        configured = load_config(project, values).metadata.get("cache_key_variable", configured)
+    aliases = json.loads(values.get("QATLIB_CACHE_KEY_VARIABLES", "{}"))
+    if not isinstance(aliases, dict):
+        raise ValueError("QATLIB_CACHE_KEY_VARIABLES must be a JSON object")
+    configured = aliases.get(package_name, configured)
+    if configured is None:
+        stem = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", package_name)
+        stem = re.sub(r"[^A-Za-z0-9]+", "_", stem).strip("_").upper()
+        if not stem:
+            raise ValueError("package name cannot form a credential variable")
+        configured = "LAKE_" + stem + "_CACHE_KEY"
+    variables = (configured,) if isinstance(configured, str) else tuple(configured) if isinstance(configured, list) else ()
+    if not variables or not all(isinstance(name, str) and _KEY_VARIABLE.fullmatch(name) for name in variables):
+        raise ValueError("cache credential aliases must be LAKE_<scope>_CACHE_KEY variable names")
+    return tuple(dict.fromkeys(variables))
 
 
-def package_environment(package_name: str, env: dict[str, str]) -> dict[str, str]:
+def package_environment(package_name: str, env: dict[str, str], *, project: Path | None = None) -> dict[str, str]:
     """Remove inherited native credentials before running a workspace or its deps."""
     result = dict(env)
     generic = result.pop("LAKE_CACHE_KEY", "").strip()
-    if package_name == "Qatlib" and not result.get("LAKE_PUBLIC_CACHE_KEY", "").strip() and generic:
-        # Preserve the public/community interface under its explicit bucket
-        # name. Dependencies never inherit the ambiguous native variable.
-        result["LAKE_PUBLIC_CACHE_KEY"] = generic
+    variables = credential_variables(package_name, env, project=project)
+    if variables == ("LAKE_CACHE_KEY",):
+        stem = re.sub(r"[^A-Za-z0-9]+", "_", package_name).strip("_").upper()
+        variables = ("LAKE_" + stem + "_CACHE_KEY", *variables)
+    if package_name and variables != credential_variables(package_name, env):
+        aliases = json.loads(result.get("QATLIB_CACHE_KEY_VARIABLES", "{}"))
+        aliases[package_name] = list(variables)
+        result["QATLIB_CACHE_KEY_VARIABLES"] = json.dumps(aliases)
+    dedicated = next((name for name in variables if name != "LAKE_CACHE_KEY"), None)
+    if "LAKE_CACHE_KEY" in variables and dedicated and not result.get(dedicated, "").strip() and generic:
+        result[dedicated] = generic
     return result
 
 
@@ -109,7 +136,7 @@ def parse_key_file(path: Path, *, check_permissions: bool = True) -> dict[str, s
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
-            if name.strip() not in {*KEY_VARIABLES.values(), "LAKE_CACHE_KEY"}:
+            if not _KEY_VARIABLE.fullmatch(name.strip()):
                 raise ValueError("unsupported variable in R2 credential file")
             entries[name.strip()] = value
         elif ":" in line:
@@ -123,11 +150,11 @@ def _valid_key(value: str) -> bool:
     return bool(re.fullmatch(r"[^:\s=]+:[^:\s]+", value)) and len(value) >= 20
 
 
-def save_key_file(path: Path, key_value: str, var_name: str = "LAKE_PUBLIC_CACHE_KEY") -> None:
+def save_key_file(path: Path, key_value: str, var_name: str = "LAKE_CACHE_KEY") -> None:
     """Save a canonical bucket key without relaxing existing path permissions."""
     if not _valid_key(key_value.strip()):
         raise ValueError("R2 write key must have format <AccessKeyId>:<SecretAccessKey>")
-    if var_name not in KEY_VARIABLES.values():
+    if not _KEY_VARIABLE.fullmatch(var_name):
         raise ValueError("unsupported R2 credential variable")
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -148,8 +175,8 @@ def resolve_write_key(package_name: str, *, env: dict[str, str] | None = None,
                       persist_prompted: bool = True) -> str:
     """Resolve the bucket's permitted env names, then the selected private file."""
     values = os.environ if env is None else env
-    candidates = credential_variables(package_name)
-    variable = KEY_VARIABLES[package_name]
+    candidates = credential_variables(package_name, values)
+    variable = candidates[0]
     for name in candidates:
         value = values.get(name, "").strip()
         if value:
@@ -189,10 +216,10 @@ def detect_repo_profile(repo: Path) -> dict[str, object]:
         slug = urlsplit(slug).path.strip("/").removesuffix(".git")
     if not bucket or not slug:
         bucket, slug = "", ""
+    from .ci import source_inputs
     return {"package": name, "bucket": bucket, "repo_slug": slug,
             "build_args": ["-KCI", library] if tests is None else [library, tests],
-            "tree_inputs": [library, library + ".lean", *(["verification"] if tests else []),
-                            "lakefile.toml", "lean-toolchain", "lake-manifest.json"],
+            "tree_inputs": source_inputs(repo, library),
             "tc": tc, "tc_dir": tc.replace("/", "--").replace(":", "---")}
 
 
@@ -412,11 +439,12 @@ def main(argv: list[str] | None = None) -> int:
     repo = args.repo.resolve()
     profile = detect_repo_profile(repo)
     if args.save_key:
-        save_key_file(args.key_file or default_key_file(), getpass.getpass("R2 write key (<AK>:<SK>): "), KEY_VARIABLES[str(profile["package"])])
+        save_key_file(args.key_file or default_key_file(), getpass.getpass("R2 write key (<AK>:<SK>): "),
+                      credential_variables(str(profile["package"]), project=repo)[0])
         print("Saved private R2 credential file (mode 0600).")
         return 0
     from . import workspace
-    env = package_environment(str(profile["package"]), workspace.environment(repo))
+    env = package_environment(str(profile["package"]), workspace.environment(repo), project=repo)
     plan = verified_upload_plan(repo, env, build=args.build)
     print(f"Verified {profile['repo_slug']} HEAD={plan['head']} artifacts={len(plan['artifacts'])}")
     if args.dry_run:

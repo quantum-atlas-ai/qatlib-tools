@@ -44,7 +44,7 @@ class ExactPromotionLockTests(unittest.TestCase):
     def test_wrong_head_is_not_fetched_checked_out_or_accepted(self):
         self.lock('0' * 40)
         with self.assertRaisesRegex(ValueError, 'expected .*actual HEAD'):
-            promotion.verify_locked_source(self.consumer, self.public)
+            promotion.verify_locked_source(self.consumer, self.public, root='Qatlib')
         self.assertEqual(subprocess.check_output(
             ['git', '-C', str(self.public), 'rev-parse', 'HEAD'], text=True).strip(), self.rev)
 
@@ -101,7 +101,7 @@ class ExactPromotionLockTests(unittest.TestCase):
         bare = self.root / 'objects.git'
         subprocess.run(['git', 'clone', '--bare', '-q', str(self.public), str(bare)], check=True)
         with self.assertRaisesRegex(ValueError, 'missing source tree'):
-            promotion.verify_source_revision(bare, self.rev)
+            promotion.verify_source_revision(bare, self.rev, root='Qatlib')
 
     def test_redirected_source_is_rejected(self):
         other = self.root / 'other.lean'

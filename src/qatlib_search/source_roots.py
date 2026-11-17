@@ -14,7 +14,7 @@ import subprocess
 import tomllib
 from qatlib_env.git_identity import assert_clean_git_sources
 
-LEAN_ROOTS = ('Qatlib', 'Project')
+LEAN_ROOTS = ()
 
 
 def configured_lean_roots(project: Path | None = None) -> tuple[str, ...]:
@@ -34,6 +34,8 @@ def configured_lean_roots(project: Path | None = None) -> tuple[str, ...]:
             values = section.get('search_source_roots') if isinstance(section, dict) else None
             if isinstance(values, list) and values:
                 return tuple(str(value) for value in values)
+        from qatlib_env.project import source_directories
+        return source_directories(Path(project))
     return LEAN_ROOTS
 
 
@@ -41,7 +43,7 @@ def lean_path(value: object, *, roots: tuple[str, ...] = LEAN_ROOTS) -> bool:
     if not isinstance(value, str) or not value.endswith('.lean'):
         return False
     path = PurePosixPath(value)
-    return (not path.is_absolute() and (path.parts[0] in roots or value in {n + '.lean' for n in roots})
+    return (not path.is_absolute() and any(value == n + '.lean' or value.startswith(n + '/') for n in roots)
             and not any(part in {'', '.', '..'} for part in value.split('/'))
             and not any(c in value for c in '\\:\x00'))
 
@@ -70,15 +72,22 @@ class SourceCatalog:
         self._checked: set[Path] = set()
         self._tracked: dict[Path, set[str]] = {}
         self.frozen_pin = None
+        self.upstream_roots = ()
         manifest = self.root / 'lake-manifest.json'
         if manifest.is_file():
             data = json.loads(manifest.read_text())
-            dependency = next((p for p in data.get('packages', []) if p['name'] in ('Qatlib', 'qatlas_frozen')), None)
+            selected = os.environ.get('QATLIB_SOURCE_PACKAGE')
+            candidates = [p for p in data.get('packages', []) if p.get('name') == selected
+                          or selected is None and not p.get('inherited', False)]
+            dependency = candidates[0] if len(candidates) == 1 else None
             if dependency:
                 self.frozen_pin = dependency['rev']
                 self.roots['frozen'] = self.root / data.get('packagesDir', '.lake/packages') / dependency['name']
         if os.environ.get('QATLAS_FROZEN_ROOT'):
             self.roots['frozen'] = Path(os.environ['QATLAS_FROZEN_ROOT']).expanduser().resolve()
+        if 'frozen' in self.roots and self.roots['frozen'].is_dir():
+            self.upstream_roots = configured_lean_roots(self.roots['frozen'])
+            self.lean_roots = tuple(dict.fromkeys((*self.lean_roots, *self.upstream_roots)))
 
     def validate_root(self, owner: str, root: Path) -> None:
         if root in self._checked:
@@ -103,8 +112,7 @@ class SourceCatalog:
     def candidates(self, value: str) -> list[Source]:
         if not lean_path(value, roots=self.lean_roots):
             raise ValueError(f'invalid Lean source path: {value!r}')
-        is_frozen = (any(value.startswith(root + '/') for root in self.lean_roots[:2])
-                     or value in tuple(root + '.lean' for root in self.lean_roots[:2]))
+        is_frozen = any(value == root + '.lean' or value.startswith(root + '/') for root in self.upstream_roots)
         if is_frozen and 'frozen' in self.roots:
             return [Source('frozen', self.roots['frozen'], value)]
         return [Source('local', self.root, value)]

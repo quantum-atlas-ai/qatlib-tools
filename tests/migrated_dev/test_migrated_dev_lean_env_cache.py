@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from qatlib_env import checkpoint, r2_cache
+from tests._credential_fixture import environment as credential_env
 
 
 class CacheTests(unittest.TestCase):
@@ -44,7 +45,7 @@ class CacheTests(unittest.TestCase):
     def test_keys_precedence_and_private_save(self):
         explicit = self.keyfile("explicit")
         envfile = self.keyfile("environment", "other_access_12345:other_secret_6789012345")
-        env = {"QATLAS_R2_KEY_FILE": str(envfile)}
+        env = credential_env({"QATLAS_R2_KEY_FILE": str(envfile)})
         self.assertTrue(r2_cache.resolve_write_key("ExampleLibrary", env=env).startswith("other_"))
         self.assertTrue(r2_cache.resolve_write_key("ExampleLibrary", env=env, key_file=explicit).startswith("file_"))
         env["LAKE_CACHE_KEY"] = "generic_access_12345:generic_secret_6789012345"
@@ -73,7 +74,7 @@ class CacheTests(unittest.TestCase):
     def test_invalid_environment_key_error_does_not_echo_credential(self):
         secret = "invalid_secret_value_that_must_not_appear"
         with self.assertRaises(ValueError) as raised:
-            r2_cache.resolve_write_key("ExampleLibrary", env={"LAKE_DEV_CACHE_KEY": secret})
+            r2_cache.resolve_write_key("ExampleLibrary", env=credential_env({"LAKE_DEV_CACHE_KEY": secret}))
         self.assertNotIn(secret, str(raised.exception))
 
     def test_failed_build_checkpoint_restores_fresh_checkout_and_is_idempotent(self):

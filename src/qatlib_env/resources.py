@@ -63,7 +63,11 @@ class HostResources:
 
     @property
     def memory_budget(self) -> int:
-        return max(1, min(self.physical_memory, self.available_memory, self.memory_headroom) - self.reserve)
+        # Reserve OS headroom at the host level. A cgroup already expresses a
+        # bounded allocation: subtracting a large host's reserve from that quota
+        # can turn an otherwise usable runner into a one-byte automatic pool.
+        return max(1, min(self.physical_memory - self.reserve,
+                          self.available_memory - self.reserve, self.memory_headroom))
 
 
 def _ancestors(root: Path, relative: str) -> list[Path]:

@@ -326,29 +326,26 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     service = next(s for s in config["service"] if s["name"] == config["defaultService"])
     package = workspace.package_name(package_root)
     from qatlib_env.r2_cache import package_environment
-    env = package_environment(package if package_root == project else "", env)
+    env = package_environment(package if package_root == project else "", env,
+                              project=package_root if package_root == project else None)
     scope_option = "--repo="
     if package == "Physlib":
         legacy = env["ELAN_TOOLCHAIN"].replace("/", "-").replace(":", "-")
         slug = "physlib-master/" + legacy + "/physlib"
         library = "Physlib"
         scope_option = "--scope="
-    elif package == "Qatlib":
-        library, slug = "Qatlib", "quantum-atlas-ai/qatlib"
-    elif package in ci.DEV_PACKAGES | ci.SECONDARY_PACKAGES:
-        library, _targets, slug = ci.profile(package, env, package_root)
     else:
-        origin = supervisor.run(["git", "remote", "get-url", "origin"], cwd=package_root,
-                                env=env, capture_output=True, text=True, check=True).stdout.strip()
-        from urllib.parse import urlsplit
-        slug = urlsplit(origin).path.strip("/").removesuffix(".git") if "://" in origin else origin.split(":", 1)[-1].strip("/").removesuffix(".git")
-        library = package
+        # A dependency must not inherit the root project's profile overrides.
+        profile_env = env if package_root == project else {
+            key: value for key, value in env.items() if key not in
+            {"QATLIB_LIBRARY", "QATLIB_TEST_TARGET", "QATLIB_REPOSITORY"}}
+        library, _targets, slug = ci.profile(package, profile_env, package_root)
+        if not slug:
+            raise CacheError(f"cache repository is unavailable for {package}; configure its origin or repository profile")
     sha = workspace.git_head(package_root)
     if not sha:
         raise CacheError(f"cache source identity unavailable: {package_root}")
-    paths = [library, library + ".lean", "lakefile.toml", "lean-toolchain", "lake-manifest.json"]
-    if package in ci.DEV_PACKAGES | ci.SECONDARY_PACKAGES:
-        paths.insert(2, "verification")
+    paths = ci.source_inputs(package_root, library)
     tree_result = supervisor.run(["git", "rev-parse", *("HEAD:" + p for p in paths)],
                                  cwd=package_root, env=env, capture_output=True, text=True)
     tree = hashlib.sha256(tree_result.stdout.encode()).hexdigest() if tree_result.returncode == 0 else ""
@@ -366,8 +363,7 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     key_env = dict(env)
     if package_root != project:
         key_env.pop("LAKE_CACHE_KEY", None)
-    key = (ci.write_key(package, key_env) if package == "Qatlib" or package in ci.DEV_PACKAGES | ci.SECONDARY_PACKAGES else "") \
-        or service.get("s3Auth", "").strip()
+    key = ci.write_key(package, key_env) or service.get("s3Auth", "").strip()
     (project / ".lake").mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="qatlas-prepare-", dir=project / ".lake") as temporary:
         manifest = Path(temporary) / "candidate.jsonl"
@@ -455,7 +451,7 @@ def prepare(project: Path, env: dict, *, source=None, offline=False) -> dict:
     from qatlib_env import checkpoint
     from qatlib_env.r2_cache import package_environment
     project = Path(project)
-    env = package_environment(workspace.package_name(project), env)
+    env = package_environment(workspace.package_name(project), env, project=project)
     cache = Path(env["LAKE_CACHE_DIR"])
     validate_cache(cache)
     (project / ".lake").mkdir(exist_ok=True)
@@ -477,8 +473,8 @@ def prepare(project: Path, env: dict, *, source=None, offline=False) -> dict:
             results = {}
             roots = workspace.package_roots(project)
             locked_names = _locked_package_names(project)
-            order = {"mathlib": 0, "Physlib": 1, "Qatlib": 2, "Project": 3, "example_library": 3}
-            roots = sorted(roots[1:], key=lambda p: order.get(locked_names.get(p, p.name), -1)) + roots[:1]
+            # Lock order is deterministic; the root is always restored last.
+            roots = roots[1:] + roots[:1]
             for root in roots:
                 if locked_names.get(root) == "mathlib":
                     _cache_run(["lake", "exe", "cache", "get"], project, env)

@@ -44,5 +44,5 @@ def require_prepared_dependencies(root: Path) -> None:
         raise SystemExit(f'Dependencies are not prepared: {error}. '
                          'Prepare locked sources/cache explicitly; no dependencies were installed or updated.') from None
     # Each real probe uses `lake --no-build lean <driver>` to validate its actual
-    # import closure. Do not traverse the entire Qatlib aggregate for every query.
+    # import closure. Do not traverse the entire library aggregate for every query.
 

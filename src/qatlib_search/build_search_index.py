@@ -40,11 +40,20 @@ EXPORTER = Path("src/qatlib_search/ExportSearchIndex.lean")
 VOLATILE_SUMMARY_FIELDS = ("generated_at",)
 
 
-def modules_from_paths(paths: list[str]) -> list[str]:
+def modules_from_paths(paths: list[str], project: Path | None = None) -> list[str]:
     """Admitted modules only, using the configured module roots and excluding test trees."""
-    modules = sorted({path[:-5].replace("/", ".") for path in paths if path and
-        (any(path == name + ".lean" or path.startswith(name + "/")
-             for name in index_identity.MODULE_ROOTS))})
+    roots = index_identity.module_roots(project)
+    layouts = [(Path("."), roots)]
+    if project is not None and (project / "lakefile.toml").is_file():
+        from qatlib_env.project import lake_config, libraries
+        if lake_config(project).get("lean_lib"):
+            layouts = [(lib.src_dir, tuple((lib.src_dir / root.replace('.', '/')).as_posix()
+                                          for root in lib.roots)) for lib in libraries(project)]
+    modules = sorted({Path(path).relative_to(directory).with_suffix("").as_posix().replace("/", ".")
+                      for path in paths if path.endswith(".lean")
+                      for directory, physical_roots in layouts
+                      if any(path == name + ".lean" or path.startswith(name + "/") for name in physical_roots)
+                      and Path(path).is_relative_to(directory)})
     if not modules or any(not MODULE_RE.fullmatch(m) for m in modules):
         raise SystemExit("No valid tracked library modules, or unexpected module path")
     return modules
@@ -52,7 +61,7 @@ def modules_from_paths(paths: list[str]) -> list[str]:
 
 def tracked_modules(root: Path = ROOT) -> list[str]:
     paths = index_identity.git_output(root, ["ls-files", "-z", "*.lean"]).decode('utf-8', 'replace').split("\0")
-    return modules_from_paths(paths)
+    return modules_from_paths(paths, root)
 
 
 def strip_imports(script: str) -> str:

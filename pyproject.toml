@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "qatlib-tools"
 version = "0.1.0"
 description = "Shared Lean workspace, Forge, and search tools"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "Send2Trash>=2.2.0,<3",
@@ -24,16 +25,6 @@ validation = ["jsonschema>=4"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/qatlib_env", "src/qatlib_forge", "src/qatlib_search"]
 
-[tool.setuptools.package-data]
-qatlib_env = ["docs/*.md", "setup_runner.sh"]
-qatlib_search = ["*.lean", "*.json", "README.md"]
-
-[tool.qatlib-env]
-source_roots = ["."]
-cache_dir = ".lake"
-local_pool_mib = 24576
-local_pool_cpu = 4
-default_jobs = 2
-default_memory_mib = 2048
-cloud_platform = "auto"
+[tool.hatch.build.targets.wheel.force-include]
+"README.md" = "qatlib_env/_manual.md"
 

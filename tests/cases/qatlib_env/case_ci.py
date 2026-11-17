@@ -17,6 +17,7 @@ from tests._git_fixture import snapshot
 ENV_DIR = Path(__file__).resolve().parents[3] / "src/qatlib_env"
 sys.path.insert(0, str(ENV_DIR))
 from qatlib_env import ci
+from tests._credential_fixture import environment as credential_env
 
 
 
@@ -186,7 +187,7 @@ class CITests(unittest.TestCase):
 
     def test_publish_requires_main_allowed_event_and_write_key_on_both_providers(self):
         for provider in ["GITHUB_", "GITEA_"]:
-            env = {provider + "REF": "refs/heads/main", provider + "EVENT_NAME": "push", "LAKE_DEV_CACHE_KEY": "key"}
+            env = credential_env({provider + "REF": "refs/heads/main", provider + "EVENT_NAME": "push", "LAKE_DEV_CACHE_KEY": "key"})
             self.assertTrue(ci.may_publish(env, "ExampleLibrary"))
             self.assertTrue(ci.may_publish({**env, provider + "EVENT_NAME": "workflow_dispatch"}, "ExampleLibrary"))
             self.assertFalse(ci.may_publish({**env, provider + "EVENT_NAME": "pull_request"}, "ExampleLibrary"))

@@ -303,17 +303,14 @@ EOF
   package_source=$(mktemp -d "$root/tmp/qatlas-python-install.XXXXXX")
   install -d -m 0700 -o "$account" -g "$account" "$package_source"
   install -m 0600 -o "$account" -g "$account" "$script_dir/../../pyproject.toml" "$package_source/pyproject.toml"
+  install -m 0600 -o "$account" -g "$account" "$script_dir/../../README.md" "$package_source/README.md"
   for package in qatlib_env qatlib_forge qatlib_search; do
-    install -d -m 0700 -o "$account" -g "$account" "$package_source/$package"
+    install -d -m 0700 -o "$account" -g "$account" "$package_source/src/$package"
     for package_file in "$script_dir/../$package"/*.py "$script_dir/../$package"/*.sh \
                         "$script_dir/../$package"/*.lean "$script_dir/../$package"/*.json \
-                        "$script_dir/../$package"/*.txt "$script_dir/../$package"/README.md; do
-      [ -f "$package_file" ] && install -m 0600 -o "$account" -g "$account" "$package_file" "$package_source/$package/"
+                        "$script_dir/../$package"/*.txt; do
+      [ -f "$package_file" ] && install -m 0600 -o "$account" -g "$account" "$package_file" "$package_source/src/$package/"
     done
-    if [ -d "$script_dir/../$package/docs" ]; then
-      cp -R "$script_dir/../$package/docs" "$package_source/$package/"
-      chown -R "$account:$account" "$package_source/$package/docs"
-    fi
   done
   runuser -u "$account" -- "$root/venv/bin/python3" -m pip install --quiet \
     --no-deps --no-build-isolation "$package_source"

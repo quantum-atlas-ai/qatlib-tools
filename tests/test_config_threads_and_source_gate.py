@@ -27,9 +27,13 @@ def test_current_source_import_gate_precedes_legacy_and_all_build_steps(tmp_path
         path.parent.mkdir(parents=True)
         path.write_text('# fixture\n')
     (tmp_path / 'lake-manifest.json').write_text(json.dumps({'packages': [{'name': 'Qatlib'}]}))
+    (tmp_path / 'python/pyproject.toml').write_text('[project.scripts]\ncheck="example_library.__main__:main"\n')
+    dependency = tmp_path / '.lake/packages/Qatlib'
+    dependency.mkdir(parents=True)
+    (dependency / 'lakefile.toml').write_text('name="Qatlib"\n[[lean_lib]]\nname="Qatlib"\n')
     with patch.object(workspace, 'run') as run:
         workspace._check(tmp_path, {}, ['Consumer.Basic'])
     command = run.call_args_list[0].args[0]
-    assert 'example_library.check_source_imports' in command
+    assert any('example_library/check_source_imports.py' in item for item in command)
     assert '--dependency-repo' in command
     assert run.call_args_list[1].args[0] == ['lake', 'lint']

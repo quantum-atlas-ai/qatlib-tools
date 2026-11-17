@@ -65,6 +65,30 @@ class ResourceTests(unittest.TestCase):
                                            cpus, cpus, total * resources.GIB)
             self.assertEqual(resources.resolve_config(self.repo, env=self.env, probe=host).values["jobs"], jobs)
 
+    def test_host_reserve_does_not_consume_a_smaller_cgroup_allocation(self):
+        kwargs = self.fixture(cpus=16, total=440, available=420)
+        (self.cgroup / "lane/memory.high").write_text(str(40 * resources.GIB))
+        (self.cgroup / "lane/memory.current").write_text(str(28 * resources.GIB))
+        host = resources.probe_resources(**kwargs)
+        self.assertGreater(host.reserve, 40 * resources.GIB)
+        self.assertEqual(host.memory_headroom, 12 * resources.GIB)
+        self.assertEqual(host.memory_budget, 12 * resources.GIB)
+        automatic = resources.resolve_config(self.repo, env=self.env, probe=host)
+        self.assertEqual(automatic.configuration.local_pool_mib, 12 * 1024)
+        explicit = resources.resolve_config(self.repo, {"local_pool_mib": 1024}, self.env, probe=host)
+        self.assertEqual(explicit.configuration.local_pool_mib, 1024)
+
+    def test_host_pressure_and_cgroup_headroom_still_bound_automatic_budgets(self):
+        host = resources.HostResources(440 * resources.GIB, 50 * resources.GIB,
+                                        16, 16, 12 * resources.GIB)
+        self.assertEqual(host.memory_budget, 6 * resources.GIB)
+        pressure = resources.HostResources(440 * resources.GIB, 2 * resources.GIB,
+                                            16, 16, 12 * resources.GIB)
+        self.assertEqual(pressure.memory_budget, 1)
+        bounded = resources.HostResources(440 * resources.GIB, 420 * resources.GIB,
+                                           16, 16, 512 * 1024**2)
+        self.assertEqual(bounded.memory_budget, 512 * 1024**2)
+
     def test_config_explain_cli_reports_real_file_layers_without_preparing(self):
         (self.repo / "qatlib-env.toml").write_text('[resources]\njobs=4\nlean_threads=3\n')
         inherited = {key: value for key, value in os.environ.items()

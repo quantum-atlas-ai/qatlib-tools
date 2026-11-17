@@ -22,9 +22,8 @@ class WheelPackageDataTests(unittest.TestCase):
             with zipfile.ZipFile(wheels[-1]) as archive:
                 names = set(archive.namelist())
                 setup_runner = archive.read("qatlib_env/setup_runner.sh")
-                self.assertIn("qatlib_env/docs/cache.md", names)
-                self.assertIn("qatlib_env/docs/resources.md", names)
-                self.assertIn("qatlib_env/docs/runners.md", names)
+                self.assertEqual(archive.read("qatlib_env/_manual.md"), (root / "README.md").read_bytes())
+                self.assertFalse(any(name.endswith("README.md") or "/docs/" in name for name in names))
                 self.assertIn(b"github.com", setup_runner)
                 self.assertIn(b"ssh.github.com", setup_runner)
                 self.assertIn(b"GITHUB_ED25519_KEY", setup_runner)

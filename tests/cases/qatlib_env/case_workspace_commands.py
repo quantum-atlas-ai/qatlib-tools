@@ -92,10 +92,13 @@ class WorkspaceCommandsTests(unittest.TestCase):
         gate = self.project / 'python/dev_metadata/check_source_imports.py'
         gate.parent.mkdir(parents=True); gate.write_text('# test')
         (self.project/'lake-manifest.json').write_text(json.dumps({'packages': [{'name': 'Qatlib'}]}))
+        dependency = self.project / '.lake/packages/Qatlib'
+        dependency.mkdir(parents=True)
+        (dependency / 'lakefile.toml').write_text('name="Qatlib"\n[[lean_lib]]\nname="Qatlib"\n')
         with patch.object(ws, 'run') as run:
             ws.check(self.project, self.env, ['Consumer'])
         command = run.call_args_list[0].args[0]
-        self.assertIn("dev_metadata.check_source_imports", command)
+        self.assertIn(str(gate), command)
         self.assertIn('--dependency-repo', command)
         self.assertEqual(run.call_args_list[1].args[0], ['lake', 'lint'])
 

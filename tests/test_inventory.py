@@ -227,7 +227,7 @@ def test_real_approved_synthetic_cache_uses_recoverable_trash(tmp_path, monkeypa
     native = inventory.system_trash.trash
     xdg = tmp_path / "xdg"
     monkeypatch.setattr(inventory.system_trash, "trash",
-                        lambda path: native(path, {"XDG_DATA_HOME": str(xdg)}))
+                        lambda path: native(path, {"HOME": str(tmp_path), "XDG_DATA_HOME": str(xdg)}))
     result = inventory.clean([checkout], apply=True)
     assert result["applied"] and result["receipts"]
     assert not (checkout / ".lake").exists()

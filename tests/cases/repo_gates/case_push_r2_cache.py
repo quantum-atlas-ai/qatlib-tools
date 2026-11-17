@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from qatlib_env import r2_cache as MOD
+from tests._credential_fixture import environment as credential_env
 
 
 class PushR2CacheTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class PushR2CacheTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(kf.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(kf.parent.stat().st_mode), 0o700)
         self.assertEqual(
-            MOD.resolve_write_key("example_library", env={}, key_file=kf, allow_prompt=False),
+            MOD.resolve_write_key("example_library", env=credential_env(), key_file=kf, allow_prompt=False),
             "saved_ak_12345:saved_sk_6789012345",
         )
 
@@ -50,18 +51,18 @@ class PushR2CacheTests(unittest.TestCase):
         os.chmod(kf, 0o600)
 
         self.assertEqual(
-            MOD.resolve_write_key("example_library", env={}, key_file=kf, allow_prompt=False),
+            MOD.resolve_write_key("example_library", env=credential_env(), key_file=kf, allow_prompt=False),
             "dev_ak_12345:dev_sk_6789012345",
         )
         self.assertEqual(
-            MOD.resolve_write_key("Qatlib", env={}, key_file=kf, allow_prompt=False),
+            MOD.resolve_write_key("Qatlib", env=credential_env(), key_file=kf, allow_prompt=False),
             "shared_ak_12345:shared_sk_6789012345",
         )
         # Explicit env var wins over file
         self.assertEqual(
             MOD.resolve_write_key(
                 "example_library",
-                env={"LAKE_DEV_CACHE_KEY": "env_ak:env_sk_1234567890"},
+                env=credential_env({"LAKE_DEV_CACHE_KEY": "env_ak:env_sk_1234567890"}),
                 key_file=kf,
                 allow_prompt=False,
             ),
@@ -118,7 +119,7 @@ class PushR2CacheTests(unittest.TestCase):
         with patch.object(MOD, "_run", return_value="new\nold\n"), \
              patch.object(MOD, "s3_get_optional", side_effect=[b'"2026-03-17"\n',
                                                                   b'"2026-03-17"\n["hash", "0123456789abcdef.ltar"]\n']):
-            self.assertEqual(MOD.find_baseline_ltars(repo, profile, "ak", "sk"), {"0123456789abcdef.ltar"})
+            self.assertEqual(MOD.find_baseline_ltars(repo, profile, "ak", "sk", {"QATLAS_R2_ENDPOINT": "https://cache.example"}), {"0123456789abcdef.ltar"})
 
 
 if __name__ == "__main__":
