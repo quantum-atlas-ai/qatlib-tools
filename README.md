@@ -201,6 +201,62 @@ qatlib-env cloud fetch --destination .lake/verified-bundle
 </details>
 
 <details>
+<summary>自托管 Linux / WSL2 systemd Runner 运维</summary>
+
+WSL2 中先确认发行版实际由 systemd 管理，且内核提供 cgroup v2；Windows 宿主给虚拟机的总量、Linux 可见内存、容器上限和 systemd slice/service 限额是不同边界。不能从 CPU 数或宿主物理内存推断某个 Runner 可用多少内存。每个并发 Runner 实例需要独立的工作目录；多个实例共享父 slice 的总预算。
+
+**服务生命周期与逐 job 清理。** Runner service 放入有总预算的 slice，再配置实例限额；`MemoryHigh=` 用来触发回收和节流，`MemoryMax=` 是最后的硬边界，不能把 high 当作 OOM 上限。父 slice 限额会约束全部子服务，服务预算之和也不能当成额外容量。按真实并发和操作系统余量设置 CPU、内存与进程数，避免多个服务各自按整机容量配额。见 [systemd 资源控制](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)。
+
+以下为已有 Runner service 的 drop-in 示例，数值仅示意，部署前按机器与父 slice 调整：
+
+```ini
+[Service]
+Slice=ci.slice
+CPUQuota=400%
+MemoryHigh=24G
+MemoryMax=28G
+TasksMax=512
+KillMode=control-group
+TimeoutStopSec=30s
+```
+
+`KillMode=control-group` 在 **service 停止**时清理该单元 cgroup 中的剩余进程，超过停止宽限后发送最终信号。它不把仍在运行的 Runner 中某个 job 的取消自动变成 service 停止，因此不能单独保证逐 job 清理。见 [systemd.kill](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)。`setup_runner.sh` 生成的服务已有该设置；本节没有安装或重启任何服务。
+
+逐 job 使用独立且可监督的进程树或 scope，并在正常退出、取消、模块超时和 stage 超时后验证清理结果。`qatlib-env` 的 supervisor 会跟踪进程身份和子孙，终止进程组并复扫；它不能接管绕过该入口启动的任意任务。父进程退出后，`PPID=1` 的 `lake` / `lean` 仍可能留在原 cgroup 并持续占用其预算，单看 Runner 的主 PID 或进程树不够。取消验收应包含一个派生子孙的测试任务，确认其 PID、cgroup 与资源池租约最终均不再活跃。
+
+容器内的 PID/cgroup namespace 可能隐藏宿主父层级；Docker daemon 创建的容器也可能位于 Runner service 之外。嵌套 scope、委托 cgroup 和容器需要分别核对实际归属以及对应 runtime 的停止/清理机制。不能把停止一个 service 当成清理所有外部容器的保证。维护时先暂停接收新 job，等待或明确取消当前工作，再停止/重启目标服务；不要凭进程名批量终止共享机器上的进程。
+
+可在具有对应可见性和读取权限的 Linux 环境检查：
+
+```bash
+systemctl show ci-runner.service -p ControlGroup -p Slice -p KillMode \
+  -p MemoryHigh -p MemoryMax -p EffectiveMemoryHigh -p EffectiveMemoryMax
+systemctl cat ci-runner.service
+ps -eo pid,ppid,pgid,rss,args
+# 由 ControlGroup 定位实际目录，并逐级查看可见的父 cgroup：
+# memory.current、memory.high、memory.max、memory.stat、memory.events、memory.pressure
+```
+
+`memory.events` 的 high/max/oom/oom_kill 增量和压力信息能帮助区分节流、OOM 与缓存；取值必须附采样时间、cgroup 路径和任务状态。不能从一次高 current 或 PPID=1 推断原因。
+
+**缓存与内存准入。** `memory.current` 包含匿名内存、文件缓存和其他被计费内存；恢复大量 `.olean` / `.ltar` 后，即使编译已结束，缓存仍可能占用原 cgroup。假设 current 为 36 GiB、high 为 40 GiB，原始余量就是 4 GiB；这是说明场景，不是本项目的机器取证。先看 `memory.stat` 的 anon、file、shmem、inactive_file、file_dirty、file_writeback 和 unevictable，确认高占用来自活动程序还是缓存。`file` 包含共享内存；`inactive_file` 是 LRU 状态，不能保证立即、完整地回收，更不能把全部 file 从 current 中扣掉。见 [内核 cgroup v2 内存接口](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)。
+
+本工具保留按实际计费量的保守准入：资源探针逐级计算可见祖先中每个有限 high/max 减去该层 current 的非负余量并取最小值；宿主预算另取 `MemAvailable`、物理内存与宿主 reserve 的约束，reserve 不重复从小 cgroup 配额扣除。有限 v2 限额的 current 缺失、无效或不可读时，探针返回零余量并在 `config explain` 的 `memory.error` 中记录原因；损坏限额也不按无限处理。正数配置下限不代表获准执行。没有可见控制器文件不能证明无限容量，容器外的隐藏祖先需要从宿主核验。
+
+本轮没有引入 `inactive_file` 容量抵扣：统计文件之间不是原子快照，LRU、脏页、写回与实际回收存在竞态，且不能由这些总量证明某个工作负载的页面可回收。缺失或损坏的 `memory.stat` 因而也不会增加准入容量。准入后的新分配仍需依赖内核硬边界和并发池，探针快照本身不预留内存。没有 systemd 用户 scope 时，Linux 后端仅在可证明有限 `memory.max`、CPU quota 且各可见祖先原始余量充足时接受已有 cgroup 控制；单靠 high 或 CPU affinity 不构成硬控制。
+
+处理已确认的冷缓存有两种局部维护手段：
+
+- 解包完成、写入者关闭且短期不再使用的完整文件，可以重新打开文件描述符，对完整范围请求 `POSIX_FADV_DONTNEED`，随后关闭描述符。该调用只是提示，不保证释放；部分页请求会被忽略，范围应考虑页对齐，未写回的脏页不能据此视为已释放。需要持久化保证时先由文件拥有者完成 `fsync` / `fdatasync`，不要在共享 CI 的热文件上循环逐出缓存。见 [posix_fadvise(2)](https://man7.org/linux/man-pages/man2/posix_fadvise.2.html)。
+- 在暂停新 job 的空闲维护窗口，具备目标 cgroup 写权限的管理员可评估 `memory.reclaim`，小量请求后复查 current、stat、events 和压力。它是 best effort，可能过量或不足回收，未达到请求量可返回 `EAGAIN`；权限不足、接口缺失和回收失败均不能解释为容量已释放。不要在 job 热路径自动调用，也不自动使用全机 `drop_caches`，后者会影响其他服务并带来重新读取成本。见 [memory.reclaim](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) 和 [drop_caches](https://docs.kernel.org/admin-guide/sysctl/vm.html#drop-caches)。
+
+**配合工具预算。** `~/.qatlib/env.toml` 的真实配置键是顶层 `local_pool_mib` / `local_pool_cpu` 和 `[resources]` 中的 `jobs`、`lean_threads`、`memory_budget`、`heavy_jobs`、`module_timeout`、`stage_timeout`、`heavy_patterns`，完整示例见下方配置节。`lean_threads` 会写入 `LEAN_NUM_THREADS`；`jobs × lean_threads` 是并发 CPU 请求，`memory_budget` 是任务总预算，POSIX 编译器包装层另分配每进程 `-M`。个人文件低于项目显式配置，部署后用 `config explain` 核查最终来源，不能只看文件内容。
+
+内核 slice/service 或容器提供外层硬边界，工具共享池与单进程预算提供任务层准入；二者配合才能防止多个 worktree 同时超配。共享机器上的调用者需使用同一租约账本和一致池上限，给 Runner 本身、缓存、其他服务及突发分配留余量。修改 high/max、环境文件或个人预算不会自动更新已经运行的 job；维护后从小任务开始验证正常退出、取消和超时路径，再恢复并发。
+
+</details>
+
+<details>
 <summary>GitHub / Gitea 协作接口</summary>
 
 `qatlib-forge` 以 JSON 输出仓库、PR、Issue、工作流运行与日志信息，并按目标主机解析认证。

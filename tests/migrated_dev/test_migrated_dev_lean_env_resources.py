@@ -49,6 +49,7 @@ class ResourceTests(unittest.TestCase):
         (self.cgroup / "memory.high").write_text(str(48 * resources.GIB))
         (self.cgroup / "memory.current").write_text(str(8 * resources.GIB))
         (self.cgroup / "lane/memory.max").write_text(str(80 * resources.GIB))
+        (self.cgroup / "lane/memory.current").write_text("0")
         (self.cgroup / "lane/instance/memory.max").write_text("max")
         (self.cgroup / "cpu.max").write_text("750000 100000")
         (self.cgroup / "lane/cpu.max").write_text("1200000 100000")
