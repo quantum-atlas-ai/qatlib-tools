@@ -1,12 +1,12 @@
 # 贡献指南
 
-修改共享能力前，核对下游当前锁定版本与调用入口。共享接口采用可组合的小操作，跨仓业务规则由消费仓维护。提交前使用 Python 3.12 依次运行 `uv lock --check`、`uv build` 与 `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs`。
+调整本仓的跨仓共享能力前，请先核对各下游仓库当前锁定的版本与实际调用入口。共享工具接口保持职责单一、可组合，具体仓库自身的业务规则与接收契约由各消费仓自行维护。提交改动前，请使用 Python 3.12 依次运行 `uv lock --check`、`uv build` 与 `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs` 完成验证。
 
 <a id="human-review-protected-paths"></a>
 
 ## 人工审阅保护区域（Human-Review Protected Paths）
 
-以下文件按全文保护。路径边界与门禁配置也受保护。
+下列核心文档按全文保护，定义路径边界与门禁规则的配置文件一并纳入保护范围：
 
 - `README.md`
 - `AGENTS.md`
@@ -15,6 +15,6 @@
 - `.github/workflows/ci.yml`
 - `tests/test_human_review_paths.py`
 
-涉及列表中任何文件的改动必须直接以 Draft PR 创建，并在正文列明涉及的文件。人类维护者必须全文审阅，批准与候选版本绑定。根 README 全文另行提交委托人审阅。全文获批后方可转为 Ready，审批后的改动须重新提交全文。合入还须通过仓库的正常检查与授权。
+凡涉及上述清单中任一文件的改动，必须直接创建为 Draft PR，并在 PR 正文中列明所触及的受保护文件。人类维护者须对最新候选版本执行全文审阅，审阅批准与该候选版本严格绑定；其中根 `README.md` 的候选全文须另行提交委托人审阅。全文获批后 PR 方可转为 Ready，获批后若继续追加改动须重新提交最新全文审阅；最终合入仍须通过仓库常规检查并取得合并授权。
 
-`.github/CODEOWNERS` 提供路径归属。维护者应在 GitHub 主线规则启用代码所有者批准，并在推送后撤销过期批准。仓内静态门禁核对清单、路径归属和文件存在性。
+受保护文件的路径归属由 `.github/CODEOWNERS` 声明。仓内静态门禁确认清单包含要求保护的路径，逐一核对文件存在、`.github/CODEOWNERS` 路径与清单一致，并检查每条规则至少有一个符合格式的 GitHub 用户名。代码所有者批准和推送后撤销过期批准由维护者在 GitHub 主线分支规则中启用。
