@@ -4,20 +4,24 @@
 
 ## 命令行与草稿状态
 
-分支查看和推送用 `git`。GitHub 的常规查询、创建和更新用 `gh`，Gitea 可用 `tea` 或实例支持的 `gt`，单步接口可直接走平台 API。`tea` 是独立的 Gitea CLI，`gt` 是 Gitea 的新版命令行，使用前核对实例支持的版本和本地登录状态。 [tea v0.16.0](https://gitea.com/gitea/tea/releases/tag/v0.16.0) · [gt 官方文档](https://docs.gitea.com/cli/)
+查看分支和推送用 `git`。平台查询、创建 PR 和更新状态，可用 GitHub 的 `gh`，或 Gitea 的 `tea`、`gt`，也可直接调用平台 API。`tea` 和 `gt` 是不同的 Gitea 客户端，`gt` 是新版官方 CLI。使用时核对客户端支持的命令和所连接的实例。 [tea v0.16.0](https://gitea.com/gitea/tea/releases/tag/v0.16.0) · [gt 官方文档](https://docs.gitea.com/cli/)
 
-GitHub 草稿有独立的 `isDraft` 状态，由 `gh pr create --draft` 创建，`gh pr ready` 更新平台状态。Gitea 标题前缀由实例配置，常见为 `WIP:` 或 `[WIP]`。API 返回的 `draft` 可以反映此前缀，标题与状态不可当成两个独立开关。移除前缀后是否调度构建取决于工作流的事件和作业条件。以题目编辑事件补跑首次 Ready 构建时，先按 PR 编号、head 和工作流查询历史作业。之前已有排队、成功或失败的作业都代表已调度，避免一次标题编辑重复启动全库编译。 [GitHub CLI 草稿操作](https://cli.github.com/manual/gh_pr_ready) · [Gitea 草稿前缀配置](https://docs.gitea.com/administration/config-cheat-sheet#pull-request-repositorypull-request)
+GitHub 有独立的 `isDraft` 状态，用 `gh pr create --draft` 创建草稿，用 `gh pr ready` 转为就绪。Gitea 用实例配置的标题前缀标记草稿，例如 `WIP:` 或 `[WIP]`，API 的 `draft` 字段也反映这个状态。移除前缀后，是否构建由工作流的触发事件和作业条件决定。若配置了标题编辑触发构建，先按 PR 编号、head 和工作流查看已有作业。已有排队、运行或已完成的适用作业时，按其状态处理，避免重复触发。 [GitHub CLI 草稿操作](https://cli.github.com/manual/gh_pr_ready) · [Gitea 草稿前缀配置](https://docs.gitea.com/administration/config-cheat-sheet/#repository---pull-request-repositorypull-request)
 
 <a id="ci"></a>
 
 ## 检查结果与变更范围
 
-GitHub 的 check-runs、提交 statuses 和 Actions jobs 来自独立接口。Gitea 的 status 摘要可能停在 `pending`，而同 SHA 的具体 job 已结束为 `skipped`。按完整 SHA 查询各页，用状态的目标 URL 核对同仓、同次运行、同一作业，再解释差异。读取前后都检查 PR head。查看结果的命令可以成功返回，表内作业仍可能失败或未运行。使用 `qatlib-forge pr checks --help` 查看状态和作业选择方法。 [GitHub Checks API](https://docs.github.com/en/rest/checks/runs) · [GitHub Commit Statuses API](https://docs.github.com/en/rest/commits/statuses)
+GitHub 的 check-runs、提交 statuses 和 Actions jobs 分属不同接口。Gitea 的状态摘要可能还在 `pending`，同一 SHA 的具体 job 却已标为 `skipped`。排查时按完整 SHA 分页查询，结合状态的目标 URL 核对仓库、运行和作业。读取前后核对 PR 的 head，防止查到旧提交。查询退出成功只表示查到了结果，作业是否通过要看返回的状态。筛选和状态含义见 `qatlib-forge pr checks --help`。 [GitHub Checks API](https://docs.github.com/en/rest/checks/runs) · [GitHub Commit Statuses API](https://docs.github.com/en/rest/commits/statuses)
 
-路径过滤决定是否调度 Build。文档改动避开构建输入时，仍应运行仓库适用的静态检查。平台因路径过滤跳过整个工作流与 workflow 已运行但 job 退出为 `skipped` 是不同情况。复用构建结果前核对两侧工作流规则、受测 head 和 base 的祖先关系，只在 main 增量是未命中 Build 且与 PR 未相交的文档时复用既有构建结果。保留受测提交、作业链接和变更清单。遇到不支持的规则、基线变更影响代码或工作流、证据不全时重新验证。 [GitHub 工作流路径过滤](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)
+路径过滤决定工作流是否为变更安排构建。纯文档改动避开构建路径时，仍按仓库规则做静态检查。整个工作流被过滤掉时没有对应的运行，已触发的工作流则可能记录具体作业为 `skipped`。要复用既有 CI 结论，先确认成功作业对应当前 head，再核对受测基线、当前基线的祖先关系及两端的工作流规则。主线新增改动须为未命中构建规则的文档，且与 PR 改动互不相交。
+
+`qatlib-forge pr paths` 根据本地提交树判定这些条件。用 `--tested-base` 和 `--tested-head` 指明受测提交，核验适用作业成功后再传 `--ci-success`，工具不会代查 CI。记录受测提交、作业链接和变更路径。碰到无法解释的过滤规则、有关联的主线变更或不完整的证据时，重新验证。 [GitHub 工作流路径过滤](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)
 
 <a id="concurrent-writes"></a>
 
 ## 并行合入与分支清理
 
-审阅与执行之间可能有人推送。按审核过的完整 head SHA 合并，让服务端在执行时比对预期提交。GitHub 可用 `gh pr merge --match-head-commit <SHA>`，跨平台入口是 `qatlib-forge pr merge --expected-head <SHA>`，授权和适用 CI 仍须单独核对。删远端分支前核对仓库、默认分支和保护规则，再用 `git push --force-with-lease=refs/heads/<分支>:<SHA>` 加上删除 refspec，请 Git 仅在远端仍指向预期 SHA 时执行。遇到远端变更或保护规则无法读出时停下来重新核查。 [GitHub 合并接口](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request) · [Git push](https://git-scm.com/docs/git-push)
+审阅后，远端分支可能收到新提交。合并时把已审阅的完整 head SHA 传给平台，让服务端在合并时核对。GitHub 可用 `gh pr merge <PR 编号> --match-head-commit <SHA>`，两种平台也可用 `qatlib-forge pr merge <PR 编号> --expected-head <SHA>`。执行前核对适用的 CI 和权限。
+
+删除分支前，先核对推送目标、默认分支和保护规则，再确认远端 SHA。`qatlib-forge branch delete <分支> --expected-sha <SHA>` 带这些校验，实际删除使用 `git push --force-with-lease=refs/heads/<分支>:<SHA> <远端> :refs/heads/<分支>`。远端引用与预期 SHA 不一致时，Git 会拒绝删除。保护规则读不全或远端有新提交时，先停下来核对。 [GitHub 合并接口](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request) · [Git push](https://git-scm.com/docs/git-push)
