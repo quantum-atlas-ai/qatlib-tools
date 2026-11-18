@@ -77,6 +77,22 @@ def test_exact_scan_groups_common_dir_without_writes(monkeypatch):
     assert common.call_count == 1
 
 
+def test_scan_cli_reports_directory_truncation(tmp_path, capsys):
+    import json
+
+    (tmp_path / "nested").mkdir()
+    assert inventory.cli_main(["scan", str(tmp_path), "--max-directories", "1"]) == 1
+    assert json.loads(capsys.readouterr().out)["truncated"] is True
+
+
+def test_derived_cleanup_selects_only_build_and_packages(monkeypatch):
+    moved = mock_cleanup(monkeypatch)
+    result = inventory.clean(["/r/a"], mode="derived", apply=True)
+    assert result["applied"]
+    assert [str(call.args[0]) for call in moved.call_args_list] == [
+        "/r/a/.lake/build", "/r/a/.lake/packages"]
+
+
 def test_git_observation_disables_locks_fetch_and_prompts(monkeypatch):
     run = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
     monkeypatch.setattr(inventory.subprocess, "run", run)

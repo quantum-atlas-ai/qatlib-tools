@@ -12,6 +12,7 @@ if __package__ in (None, ""):
 
 from qatlib_forge.repo_api import RepoAPI, RepoError, RepoRef
 from qatlib_forge import task_state
+from qatlib_forge import pr_evidence, pr_writes
 
 
 def _text(value: str | None, path: Path | None) -> str:
@@ -78,6 +79,30 @@ def _pr_parser(commands) -> None:
     review = sub.add_parser("review-comment"); _add_repo_options(review, suppress=True); review.add_argument("number", type=int); review.add_argument("--path"); review.add_argument("--line", type=int); review.add_argument("--commit-id"); review.add_argument("--position", type=int); _add_body_options(review)
     draft = sub.add_parser("draft"); _add_repo_options(draft, suppress=True); draft.add_argument("number", type=int)
     ready = sub.add_parser("ready"); _add_repo_options(ready, suppress=True); ready.add_argument("number", type=int)
+    for name in ("checks", "activity", "merge"):
+        command = sub.add_parser(name)
+        _add_repo_options(command, suppress=True)
+        if name != "activity":
+            command.add_argument("number", type=int)
+        if name in {"checks", "merge"}:
+            command.add_argument("--expected-head", required=name == "merge")
+        if name == "checks":
+            command.add_argument("--require-job", action="append", default=[],
+                                 metavar="WORKFLOW-FILE:JOB-NAME")
+        if name == "merge":
+            command.add_argument("--method", choices=("merge", "squash", "rebase"), default="merge")
+        if name == "activity":
+            command.add_argument("number", type=int, nargs="?", help="omit to scan open PRs")
+            command.add_argument("--cold-days", type=int, default=30)
+            command.add_argument("--ignore-user", action="append", default=[])
+    paths = sub.add_parser("paths", help="classify exact Git trees and compare CI bases")
+    paths.add_argument("--project", default=Path.cwd(), type=Path)
+    paths.add_argument("--base", required=True)
+    paths.add_argument("--head", required=True)
+    paths.add_argument("--workflow", required=True)
+    paths.add_argument("--tested-base")
+    paths.add_argument("--tested-head")
+    paths.add_argument("--ci-success", action="store_true", help="attest successful applicable jobs")
 
 
 def _issue_parser(commands) -> None:
@@ -116,6 +141,13 @@ def _parser() -> argparse.ArgumentParser:
     repo.add_argument("repository", nargs="?"); repo.add_argument("--platform", choices=("github", "gitea")); repo.add_argument("--web-host"); repo.add_argument("--api-base"); repo.add_argument("--project", type=Path, default=Path.cwd()); repo.add_argument("--remote", default="origin")
     compare = commands.add_parser("compare", help="read a complete changed-file comparison")
     _add_repo_options(compare); compare.add_argument("base"); compare.add_argument("head")
+    branch = commands.add_parser("branch", help="conditional branch operations")
+    delete = branch.add_subparsers(dest="branch_command", required=True).add_parser("delete")
+    _add_repo_options(delete)
+    delete.add_argument("name")
+    delete.add_argument("--expected-sha", required=True)
+    delete.add_argument("--project", default=Path.cwd(), type=Path)
+    delete.add_argument("--remote", default="origin")
     status = commands.add_parser("status", help="read or write a task-card status marker")
     status_sub = status.add_subparsers(dest="status_command", required=True)
     read = status_sub.add_parser("read"); read.add_argument("body_file", type=Path)
@@ -138,7 +170,19 @@ def main(argv: list[str] | None = None) -> int:
             output = task_state.replace_control(body, args.head, args.state)
             (args.output or args.body_file).write_text(output, encoding="utf-8")
             return 0
+        if args.command == "pr" and args.pr_command == "paths":
+            from qatlib_forge.pr_paths import classify
+            result = classify(args.project, base=args.base, head=args.head, workflow=args.workflow,
+                              tested_base=args.tested_base, tested_head=args.tested_head,
+                              ci_success=args.ci_success)
+            print(json.dumps(result, indent=2))
+            return 0
         api, ref = _api(args)
+        if args.command == "branch":
+            result = pr_writes.delete_branch(api, args.name, expected_sha=args.expected_sha,
+                                             project=args.project, remote=args.remote)
+            print(json.dumps(result, indent=2))
+            return 0
         if args.command == "compare":
             print(json.dumps(api.compare(args.base, args.head), ensure_ascii=False, indent=2)); return 0
         if args.command == "runs":
@@ -161,6 +205,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str)); return 0
         if args.command == "pr":
             if args.pr_command == "read": result = api.pull_request(args.number)
+            elif args.pr_command == "checks":
+                result = pr_evidence.checks(api, args.number, expected_head=args.expected_head,
+                                            required_jobs=args.require_job)
+            elif args.pr_command == "merge": result = pr_writes.merge(api, args.number, expected_head=args.expected_head, method=args.method)
+            elif args.pr_command == "activity":
+                options = {"cold_days": args.cold_days, "ignore_users": args.ignore_user}
+                if args.number is not None:
+                    result = pr_evidence.activity(api, args.number, **options)
+                else:
+                    rows = api.list_pull_requests(state="open")
+                    result = [pr_evidence.activity(api, row["number"], **options) for row in rows]
+                    result.sort(key=lambda row: (row["cold"] is not True, row["number"]))
             elif args.pr_command == "list": result = api.list_pull_requests(state=args.state, head=args.head, base=args.base, labels=_labels(args.label))
             elif args.pr_command == "create": result = api.create_pull_request(title=_title(args.title, kind=args.kind, origin_tag=args.origin_tag), head=args.head, base=args.base, body=_text(args.body, args.body_file), draft=args.draft)
             elif args.pr_command == "update": result = api.update_pull_request(args.number, title=_title(args.title, kind=args.kind, origin_tag=args.origin_tag) if args.title else None, body=_text(args.body, args.body_file) if args.body is not None or args.body_file else None, base=args.base, state=args.state, labels=_labels(args.label))

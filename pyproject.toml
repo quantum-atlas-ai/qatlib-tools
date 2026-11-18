@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "Send2Trash>=2.2.0,<3",
     "psutil>=6,<8",
+    "PyYAML>=6,<7",
     "pywin32>=305; sys_platform == 'win32'",
 ]
 

@@ -259,7 +259,8 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
     return data
 
 
-def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), now=None, exact=False, semantic=None):
+def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), now=None,
+         exact=False, semantic=None, max_directories=100000):
     if not math.isfinite(hot_hours) or hot_hours < 24:
         raise ValueError("hot-hours must be finite and at least 24")
     now = time.time() if now is None else now
@@ -267,7 +268,9 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
         repos = sorted({str(Path(p).expanduser().absolute()) for p in roots})
         markers, errors, skipped = [], [], []
     else:
-        repos, markers, errors, skipped = discover(roots) if semantic is None else discover(roots, semantic=semantic)
+        if max_directories < 1:
+            raise ValueError("max-directories must be positive")
+        repos, markers, errors, skipped = discover(roots, max_directories=max_directories, semantic=semantic)
     active, process_errors = processes()
     # Git operations do not contend for shared write locks. Four workers bound load.
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -310,6 +313,7 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
     return {"schema_version": 1, "captured_at": now, "roots": [str(p) for p in roots], "exact": exact,
             "checkouts": rows, "common_dirs": groups, "research_markers": markers,
             "errors": errors, "skipped": skipped, "process_errors": process_errors,
+            "truncated": any(error.startswith(f"directory limit {max_directories} reached at ") for error in errors),
             "notes": ["No fetch/bootstrap/cache lock/config write; no proof that all research is harvested.",
                       "Sizes are optional; same-filesystem Trash does not reclaim physical space.",
                       "Processes visible to this user only; coordinate idle writers before apply."]}
@@ -400,18 +404,22 @@ def _runtime_reasons(checkout, target, active, protect):
 
 def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), check_remote=False):
     """Preview complete warnings; --apply confirms them and uses native Trash."""
-    if mode not in {"caches", "checkouts"}:
+    if mode not in {"caches", "derived", "checkouts"}:
         raise ValueError("mode must be caches or checkouts")
     selected = [Path(p).expanduser().absolute() for p in checkouts]
     selected = [Path(os.path.abspath(p)) for p in selected]
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("select distinct explicit checkout paths")
-    targets = [p / ".lake" if mode == "caches" else p for p in selected]
+    pairs = [(p, p / ".lake" if mode == "caches" else p) for p in selected]
+    if mode == "derived":
+        pairs = [(p, p / ".lake" / name) for p in selected for name in ("build", "packages")
+                 if (p / ".lake" / name).exists() or (p / ".lake" / name).is_symlink()]
+    targets = [target for _, target in pairs]
     if any(_related(a, b) for i, a in enumerate(targets) for b in targets[i + 1:]):
         raise ValueError("overlapping targets must be reviewed separately")
     active, process_errors = processes()
     rows, receipts, remote_cache = [], [], {}
-    for path, target in zip(selected, targets):
+    for path, target in pairs:
         reasons = _runtime_reasons(path, target, active, protect)
         fact = checkout_facts(path, inspect_ignored=True)
         group = common_facts(path, check_remote=check_remote, remote_cache=remote_cache)
@@ -495,6 +503,8 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
                 result["error"] = str(error)
                 return result  # earlier receipts remain truthful; no fallback or rollback
         result["applied"] = True
+        if mode == "checkouts" and any(row["linked_worktree"] for row in rows):
+            result["worktree_followup"] = "From a remaining checkout, review: git worktree prune --dry-run --verbose"
     return result
 
 
@@ -505,6 +515,7 @@ def cli_main(argv=None):
     inventory.add_argument("roots", type=Path, nargs="*")
     inventory.add_argument("--measure", action="store_true", help="measure .lake bytes (slower)")
     inventory.add_argument("--exact", action="store_true", help="inspect known checkout roots without recursive discovery")
+    inventory.add_argument("--max-directories", type=int, default=100000, help="limit recursive discovery")
     inventory.add_argument("--marker", action="append", help="additional domain directory/file marker (repeatable)")
     inventory.add_argument("--check-remote", action="store_true", help="live ls-remote, never fetch")
     for name in ("clean-caches", "trash-checkouts"):
@@ -514,6 +525,9 @@ def cli_main(argv=None):
         action.add_argument("--apply", action="store_true", help="only after approval of the concrete list")
         action.add_argument("--dry-run", action="store_true", help="default; no filesystem writes")
         command.add_argument("--check-remote", action="store_true")
+        if name == "clean-caches":
+            command.add_argument("--derived-only", action="store_true",
+                                 help="select existing .lake/build and .lake/packages only")
     for command in (inventory, *[commands.choices[n] for n in ("clean-caches", "trash-checkouts")]):
         command.add_argument("--json", action="store_true")
         command.add_argument("--hot-hours", type=float, default=24)
@@ -524,14 +538,18 @@ def cli_main(argv=None):
             roots = args.roots or [Path.cwd().parent, Path.home() / ".legacy-worktrees/tmp"]
             result = scan(roots, measure=args.measure, check_remote=args.check_remote,
                           hot_hours=args.hot_hours, protect=args.protect, exact=args.exact,
-                          semantic=SEMANTIC | set(args.marker) if args.marker else None)
+                          semantic=SEMANTIC | set(args.marker) if args.marker else None,
+                          max_directories=args.max_directories)
         else:
-            result = clean(args.checkout, mode="caches" if args.command == "clean-caches" else "checkouts",
+            mode = "checkouts"
+            if args.command == "clean-caches":
+                mode = "derived" if args.derived_only else "caches"
+            result = clean(args.checkout, mode=mode,
                            apply=args.apply, hot_hours=args.hot_hours, protect=args.protect,
                            check_remote=args.check_remote)
         # JSON is the stable agent interface, also the default readable output.
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 1 if result.get("error") else 0
+        return 1 if result.get("error") or result.get("truncated") else 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(json.dumps({"error": str(error), "applied": False}), file=sys.stderr)
         return 1

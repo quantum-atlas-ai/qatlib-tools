@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-`qatlib-tools` 是支撑多仓协同开发、门禁验证与公开发布同一套 Lean 数学库的共享工具链，同时也是一份沉淀一线排障经验的工程学习手册。安装后在任意终端运行 `qatlib-env docs`，即可离线阅读全文。
+`qatlib-tools` 维护 Lean 数学库及其研究仓共用的工程手册和工具。安装后运行 `qatlib-env docs`，可离线阅读与当前版本一致的手册。通用操作优先引用官方 CLI 和 API。只有多个仓库都需要组合操作、核对前置条件或处理平台差异时，才在这里实现共享功能。已有消费者依赖的基础接口保留薄适配，新用法优先采用官方入口。
 
 ```text
 成果晋升流向   下游研究仓 ──▶ example-library（薄中转） ──▶ qatlib-staging（预发整包验收） ──▶ qatlib（正式发布 + 预编译缓存）
@@ -19,7 +19,7 @@
 | --- | --- |
 | `qatlib-env` | 依赖与缓存准备、受控构建与资源池准入、跨库冲突与晋升检查、工作区维护及离线手册（`qatlib-env docs`） |
 | `qatlib-retrieve` | 纯只读本地源码与书目检索：定位 Lean 声明、书写签名、上下文 `variable` 前提与文献引用（不启动编译器） |
-| `qatlib-forge` | 同源安全的 GitHub / Gitea 协作托管接口（PR、Issue、CI 运行与日志读写），免除外部托管 CLI 版本依赖 |
+| `qatlib-forge` | 跨 GitHub 和 Gitea 汇总 PR 检查与实质活动，按预期 SHA 保护合并和删分支操作 |
 
 ```bash
 # 1. 按锁准备依赖与预编译缓存
@@ -35,7 +35,7 @@ qatlib-env run -- lake --no-build lean ExampleLibrary/Foundations/ScaledSqrt/Sqr
 
 （底层 Python 包 `qatlib_search` 亦可供各仓门禁脚本直接调用词法解析、文档引用校验与晋升闭包分析函数。）
 
-[五分钟上手](#quickstart) · [跨仓晋升](#promotion) · [工程实战手记](#field-notes) · [CLI 速查](#cli-reference) · [配置优先级](#configuration) · [Runner 部署](#runner)
+[五分钟上手](#quickstart) · [共享工件缓存](#artifact-cache) · [托管与 PR 检查](#forge) · [跨仓晋升](#promotion) · [工程实战手记](#field-notes) · [CLI 速查](#cli-reference) · [配置优先级](#configuration) · [Runner 部署](#runner) · [人工审阅保护区域](#human-review-protected-paths)
 
 ---
 
@@ -88,7 +88,7 @@ qatlib-env plan ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.RootCountOrder
 qatlib-env run -- lake build ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.RootCountOrder
 ```
 
-- `prepare` 会严格按 `lake-manifest.json` 物化依赖检出并恢复匹配的预编译工件；无网环境下可使用 `prepare --offline`（前提是源码、工具链与缓存已就位）。
+- `prepare` 按 `lake-manifest.json` 检出依赖源码，并将匹配的工件准备到共享缓存。无网时可运行 `prepare --offline`，前提是源码、工具链与缓存已就位。
 - 执行构建前先跑 `plan`，重点看 `cold_or_rebuild_modules`、`reverse_invalidated_modules` 与 `reasons`：若建议 `mode` 显示为 `cloud`，应先排查锁版本失配、缺失缓存或本机预算限制，再决定是否交由远端 CI 执行整包编译。
 - 当依赖模块的编译产物均已就绪、只需快速迭代验证手头正在修改的单个 `.lean` 文件时，优先使用单文件无构建检查（若上游产物缺失，Lake 会直接报错提示先补齐依赖）：
 
@@ -117,6 +117,36 @@ qatlib-retrieve find Qatlib.Concepts.BlockEncoding.Postselection.normalize_error
 - 检索基于静态源码词法分析：由宏动态展开、结构体投影或编译器自动派生的声明可能不在词法索引内；脚本调用可加 `--json` 获取结构化输出，配合 `--repo`、`--kind`、`--cite` 过滤，或通过 `--map <文件>` 挂载消费仓导出的 `qatlib-retrieve-map/v1` 映射文件补充领域别名与书目关联（工具本身不耦合任何项目的私有 `metadata/` 目录）。
 
 ---
+
+<a id="artifact-cache"></a>
+
+## 共享工件缓存
+
+Lean v4.35 的 Lake 通过 `enableArtifactCache = true` 使用原生工件缓存。让同一机器上同一工具链、同一信任范围的工作树使用同一 `LAKE_CACHE_DIR`，各工作树仍保留独立的 `.lake`。源码检出在各自的 `.lake/packages`，可通过本地 Git 镜像节省下载。Lake 可直接从共享目录消费匹配的工件，省去在每个工作树里再次展开十余 GiB 的大型依赖产物。
+
+`qatlib-env prepare` 为配置了 R2 的包查找对应版本、相同输入或可供增量复用的祖先映射，将缺失工件下载到 `LAKE_CACHE_DIR/artifacts`，校验工件后用 `lake cache add` 注册映射。只有远端返回 HTTP 404 才视为缓存未命中，权限与校验错误会报出。Mathlib 的 `lake exe cache get` 单独处理 Mathlib 的缓存格式。如果本机已有与当前源码匹配的工作区 checkpoint，`prepare` 也会把其中的产物恢复到当前 `.lake/build`。可用 `qatlib-env cache explain` 核对本机缓存位置。
+
+日常受控构建与 Lean 交互让 `restoreAllArtifacts` 和 `LAKE_RESTORE_ARTIFACTS` 保持未设置，Lake 默认关闭全量恢复，仍按需把部分文件落到本地。仅当外部程序确实要求传统 `.lake/build` 布局时，例如旧脚本直接遍历 `.lake/build/lib/lean` 或交付包必须包含本地目录树，才在当次受控构建使用 `LAKE_RESTORE_ARTIFACTS=1 qatlib-env run -- lake build <目标>`。预先核对依赖是否有自己的覆盖配置以及目标目录所需空间。普通 PR 验证、源码检索和同机多工作树无需打开恢复。可查阅 [Lake v4.35 的配置实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Config/Monad.lean)和 [模块工件处理](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Module.lean)。
+
+<a id="forge"></a>
+
+## 托管与 PR 检查
+
+GitHub 的基础操作直接用 `gh pr list`、`gh pr view`、`gh pr create --draft --body-file <文件>`、`gh run view` 或 `gh api`。Gitea 使用实例支持的官方 CLI 或 API。普通分支查看和推送使用 Git。已有基础适配保留兼容性，复杂操作可用下列共享命令。
+
+| 命令 | 结果与使用条件 |
+| --- | --- |
+| `qatlib-forge pr checks <编号> --repo <仓库 URL> --platform <github 或 gitea> --expected-head <SHA>` | 固定 PR head，完整读取适用的 check-runs、提交状态和 Actions 运行与作业。Gitea 仅在摘要 URL 能对应同仓同运行的作业时用作业状态校正摘要，同时保留原始状态。加 `--require-job build.yml:build` 可查看适用作业，缺记录显示 `absent`。逐项核对运行来源，`skipped`、`cancelled` 和 `pending` 都不能当作成功。 |
+| `qatlib-forge pr paths --base <SHA> --head <SHA> --workflow <路径>` | 读取 Git 树中的 Build 工作流过滤规则，列出命中的路径以及是否为只需静态检查的文档改动。可用 `--tested-base`、`--tested-head` 与 `--ci-success` 记录已核实的 CI 证据并检查复用条件。判定要求 head 相同、基线历史连续、主线仅有过滤规则以外的文档改动，而且与 PR 路径不相交。给所有适用的 Build 工作流分别核对，按仓库要求照常执行静态检查。 |
+| `qatlib-forge pr activity [编号] --repo <仓库 URL> --platform <平台> --cold-days 30` | 根据开单、提交、评论和正式审阅记录找最后实质活动。过滤有机器人标识的账号，用 `--ignore-user` 补充仓库已知自动化账号。省略编号时分页检查开着的 PR；冷置时间只供人工复核。 |
+| `qatlib-forge pr merge <编号> --repo <仓库 URL> --platform <平台> --expected-head <SHA>` | 获得合并授权、核对保护规则及适用 CI 后才调用。服务器按预期 head 执行条件合并。GitHub 也可直接使用 `gh pr merge --match-head-commit <SHA>`。 |
+| `qatlib-forge branch delete <分支> --repo <仓库 URL> --platform <平台> --expected-sha <SHA>` | 先确认 Git 推送远端对应同一仓库并核对默认分支和保护规则，再用显式 SHA 的 `git push --force-with-lease` 删除远端分支。 |
+
+<a id="human-review-protected-paths"></a>
+
+## 人工审阅保护区域（Human-Review Protected Paths）
+
+根 `README.md`、`AGENTS.md`、`CONTRIBUTING.md` 的全文以及维护审阅门禁的文件均受保护，清单见 [贡献指南](CONTRIBUTING.md)。改动这些文件的 PR 一律先开 Draft。人类维护者须审阅并批准最新候选全文，随后才能转为 Ready 并按正常门禁合入。根 README 候选全文单独提交给委托人，批准后继续改动须重新审阅。
 
 <a name="promotion"></a>
 
@@ -258,14 +288,14 @@ qatlib-env conflicts --package Qatlib
 | 创建带缓存准备的隔离工作树 | `qatlib-env worktree <路径> <分支>` | 新建独立工作树并默认引导缓存（可加 `--no-bootstrap`） |
 | 预估波及范围与受控执行 | `qatlib-env plan <模块>`、`qatlib-env run -- <命令>`、`qatlib-env check <模块>` | `plan` 默认只读；`run` / `check` 受共享池与资源硬上限准入保护 |
 | 临时实验、枚举与递归搜索 | `qatlib-env exec -- <命令>` | 通用命令受本机共享池准入与 Linux 内核 scope 的时间、内存、CPU 硬上限约束；无可用控制器时拒绝执行 |
-| 恢复依赖缓存或显式发布缓存 | `qatlib-env prepare`、`qatlib-env cache upload --help` | `prepare` 按锁物化并拉取只读缓存；`upload` 仅在获授权的发布流程中使用 |
+| 准备共享工件或显式发布缓存 | `qatlib-env prepare`、`qatlib-env cache upload --help` | `prepare` 按锁检出源码并准备共享工件；`upload` 仅在获授权的发布流程中使用 |
 | 超出本机预算转交远端执行 | `qatlib-env cloud submit --head <分支>` | 显式派发远端运行，可配合 `status`、`logs`、`wait`、`fetch` 跟踪 |
 | 跨仓定向升锁、查重与冲突检查 | `qatlib-env promotion --help`、`qatlib-env conflicts --package <包名>` | `bump-lock` 更新指定包锁版本；其余锁/清退/冲突检查只读，`smoke` 实际调用 Lean |
 | 建立或增量刷新本地检索索引 | `qatlib-retrieve index [--changed]` | 仅写入用户缓存目录下的独立检索库，不碰项目工作区 |
 | 检索源码声明、签名与书目关联 | `qatlib-retrieve query <文本>`、`qatlib-retrieve find <文本>` | 纯只读（`query` 子命令词可省略，亦支持 `python -m qatlib_search`） |
-| 访问 GitHub / Gitea 协作接口 | `qatlib-forge pr list --platform github --repo quantum-atlas-ai/qatlib` | 读取需对应仓库权限；创建/评论 PR 或 Issue 等写操作须显式调用对应子命令 |
-| 扫描本地多个工作区状态 | `qatlib-env workspace scan <目录> --json` | 默认纯本地扫描，仅在显式加 `--check-remote` 时查询远端分支状态 |
-| 安全预览并回收缓存或旧工作树 | `qatlib-env workspace clean-caches --checkout <路径> --dry-run` | 先 `--dry-run` 审阅清单（整树回收用 `trash-checkouts`），确认后再加 `--apply` 移入系统回收站 |
+| 核对跨平台 PR 与 CI 证据 | `qatlib-forge pr checks --help` | 详见[托管与 PR 检查](#forge) |
+| 扫描本地多个工作区状态 | `qatlib-env workspace scan <目录> --json` | 默认纯本地扫描，仅在显式加 `--check-remote` 时查询远端分支状态。达到 `--max-directories` 上限时标记 `truncated` 并返回非零 |
+| 安全预览并回收缓存或旧工作树 | `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run` | 仅选 `.lake/build` 与 `.lake/packages`。先核对依赖中是否有本地修改等不可再生内容，确认后使用 `--apply` 移入回收站。整树用 `trash-checkouts`，回收后可用 `git worktree prune --dry-run --verbose` 核对剩余登记 |
 
 > **检索命令迁移提示**：旧版 `qatlib-search build/query/retrieve` 索引格式已退役，请直接使用 `qatlib-retrieve index` 重新初始化并用 `query` / `find` 查询（无需迁移旧索引文件）。若上游依赖尚未物化，请先运行 `qatlib-env prepare`；检索结果仅供定位源码，不能替代实际编译与晋升门禁。
 
@@ -310,7 +340,7 @@ require_explicit_local_heavy = true
 2. **审阅安装脚本与双阶段职责**：在锁定的 `qatlib-tools` 源码检出中运行 `bash src/qatlib_env/setup_runner.sh --help`（若为 wheel 安装环境，可运行 `bash "$(python -c 'from pathlib import Path; import qatlib_env; print(Path(qatlib_env.__file__).with_name("setup_runner.sh"))')" --help`）。该脚本面向 Ubuntu / Debian + `systemd` 环境：`init` 负责配置宿主依赖、专用运行账户与共享父 `slice`；`register` 负责注册单个 Runner 实例并写入服务级资源限制。执行前务必人工核对目标路径、凭据范围与配额数值。
 3. **协同预算父 `slice` 与单实例配额**：在服务 drop-in 配置的 `[Service]` 段同时声明 `Slice`、`CPUQuota`、`MemoryHigh`、`MemoryMax`、`TasksMax` 与 `KillMode=control-group`，确保各实例并发峰值之和与父 `slice` 上限相匹配，并为 Runner 自身进程、文件页缓存及同机其他服务留足安全余量。落盘重载后，执行 `systemctl show <服务> -p ControlGroup -p Slice -p EffectiveMemoryHigh -p EffectiveMemoryMax -p KillMode` 读回核实，并直接检查对应 `/sys/fs/cgroup/...` 节点的实时计费。
 4. **切换至实际运行账户做准入验收**：在 Runner 实际服务用户下运行 `qatlib-env config explain` 与 `qatlib-env pool status`。Linux 重型任务优先走受限的 `systemd` 用户态瞬态 scope；若受环境所限只能沿用外层既有 cgroup，执行后端会强制校验有限的 `memory.max`、CPU 配额及所有可见祖先层的真实余量——仅配置软水线 `memory.high` 或 CPU 亲和性（affinity）不满足硬隔离准入条件。
-5. **在测试泳道完成超时、取消与子孙收割演练**：正式放量前，先用会派生多层子孙进程的测试任务逐一演练正常退出、手动取消、单模块超时与整阶段超时四条路径；每次结束后复查进程表、实际 cgroup 残留、共享池租约归零情况以及 `memory.events` 计数变化。一旦观测到异常高水位，对照[手记二](#note-memory)与[手记三](#note-cancellation)区分是冷页缓存驻留还是孤儿进程泄漏，全部验收干净后再按设计并发度逐步上线。
+5. **在测试环境完成超时、取消与子进程回收演练**：正式放量前，用会派生多层子进程的测试任务逐一演练正常退出、手动取消、单模块超时与整阶段超时。每次结束后复查进程表、实际 cgroup 残留、共享池租约与 `memory.events` 计数。一旦观测到异常高水位，对照[手记二](#note-memory)与[手记三](#note-cancellation)定位原因，验收通过后按设计并发度逐步上线。
 
 ---
 

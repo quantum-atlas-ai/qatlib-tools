@@ -269,7 +269,9 @@ class RepoAPI:
             raise RepoError("ambiguous pagination next link")
         return following[0] if following else None
 
-    def request(self, endpoint, *, method="GET", payload=None, paginate=False):
+    def request(self, endpoint, *, method="GET", payload=None, paginate=False, collection=None):
+        if collection is not None and not paginate:
+            raise RepoError("collection requires pagination")
         if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"} or method == "GET" and payload is not None or paginate and method != "GET":
             raise RepoError("unsupported API request")
         if method != "GET" and not self.token:
@@ -285,7 +287,7 @@ class RepoAPI:
         data = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json; charset=utf-8"
-        items, seen, total = [], set(), None
+        items, seen, identities, total = [], set(), set(), None
         deadline = time.monotonic() + 120
         while True:
             if url in seen or len(seen) >= 10000 or time.monotonic() >= deadline:
@@ -311,18 +313,37 @@ class RepoAPI:
                 if value.get("errors") and endpoint == "graphql":
                     raise RepoError("GraphQL mutation failed")
                 return value
+            if collection is not None:
+                if not isinstance(value, dict) or type(value.get("total_count")) is not int:
+                    raise RepoError("invalid paginated collection")
+                count = str(value["total_count"])
+                value = value.get(collection)
             if not isinstance(value, list):
                 raise RepoError("pagination response is not an array")
+            for row in value:
+                row_id = row.get("id") if isinstance(row, dict) else None
+                if row_id is not None:
+                    if row_id in identities:
+                        raise RepoError("duplicate pagination identity")
+                    identities.add(row_id)
             if count is not None:
                 if not re.fullmatch(r"[0-9]+", count) or total is not None and int(count) != total:
                     raise RepoError("invalid or changing pagination total")
                 total = int(count)
             items.extend(value)
             following = self._next(link)
+            if total is not None:
+                if len(items) > total or (len(items) == total and following):
+                    raise RepoError("pagination total disagrees with returned pages")
+                if len(items) == total:
+                    return items
+                if not value:
+                    raise RepoError("incomplete pagination")
+            short_page = link or len(value) < int(dict(parse_qsl(urlsplit(url).query))[size_key])
             if following:
                 url = self._url(following)
-            elif link or len(value) < int(dict(parse_qsl(urlsplit(url).query))[size_key]):
-                if total is not None and total != len(items):
+            elif short_page and (total is None or collection is None):
+                if total is not None:
                     raise RepoError("incomplete pagination")
                 return items
             else:
@@ -608,6 +629,29 @@ class RepoAPI:
         except RepoError:
             rows = self.request(endpoint, paginate=True)
             return {"jobs": rows, "total_count": len(rows)}
+
+    def action_runs(self, *, head_sha, workflow=None, event=None):
+        """Read the complete Actions collection for one SHA."""
+        if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise RepoError("expected a full lowercase SHA")
+        endpoint = self.endpoint + "/actions"
+        if workflow:
+            endpoint += "/workflows/" + quote(workflow, safe="")
+        query = {"head_sha": head_sha}
+        if event:
+            query["event"] = event
+        rows = self.request(endpoint + "/runs?" + urlencode(query),
+                            paginate=True, collection="workflow_runs")
+        if self.ref.platform == "github" and len(rows) >= 1000:
+            raise RepoError("GitHub filtered Actions runs reached the 1000-run limit")
+        # Some Gitea versions ignore the SHA filter.
+        return [row for row in rows if row.get("head_sha") == head_sha
+                and (event is None or row.get("event") == event)]
+
+    def action_jobs(self, run_id):
+        """Read the latest attempt's jobs, including terminal skipped jobs."""
+        return self.request(f"{self.endpoint}/actions/runs/{int(run_id)}/jobs",
+                            paginate=True, collection="jobs")
 
     def dispatch(self, workflow, ref, inputs=None):
         payload = {"ref": ref, "inputs": inputs or {}}
