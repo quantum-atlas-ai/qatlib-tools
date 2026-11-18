@@ -50,6 +50,7 @@ def _pr_run(api, run, number):
 
 
 def checks(api, number, *, expected_head=None, required_jobs=()):
+    """Return observations for one PR head; a successful read is not a green CI verdict."""
     pr = api.pull_request(number)
     sha = exact_sha(pr["head"]["sha"])
     if expected_head is not None and exact_sha(expected_head) != sha:
@@ -116,6 +117,7 @@ def _date(value):
 
 
 def activity(api, number, *, cold_days=30, ignore_users=(), now=None):
+    """Find the newest recorded activity after excluding identifiable automation."""
     if cold_days < 1:
         raise RepoError("cold-days must be positive")
     now = now or datetime.now(timezone.utc)

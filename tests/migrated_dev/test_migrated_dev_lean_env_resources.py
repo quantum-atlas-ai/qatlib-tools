@@ -33,8 +33,8 @@ class ResourceTests(unittest.TestCase):
         return dict(proc_root=self.proc, cgroup_root=self.cgroup, cpu_count=cpus, affinity=set(range(cpus)))
 
     def test_adaptive_examples_and_available_memory(self):
-        for cpus, total, available, jobs in [(8, 16, 12, 2), (32, 62, 47, 10),
-                                              (48, 125, 105, 23), (128, 440, 440, 64)]:
+        for cpus, total, available, jobs in [(8, 16, 12, 1), (32, 62, 47, 4),
+                                              (48, 125, 105, 4), (128, 440, 440, 4)]:
             # Reuse real fixture directories rather than mocking the probe.
             (self.proc / "meminfo").write_text(f"MemTotal: {total * 1024 ** 2} kB\nMemAvailable: {available * 1024 ** 2} kB\n")
             (self.proc / "self/cgroup").write_text("")
@@ -57,14 +57,26 @@ class ResourceTests(unittest.TestCase):
         host = resources.probe_resources(**kwargs)
         self.assertEqual(host.effective_cpus, 7)
         self.assertEqual(host.memory_headroom, 40 * resources.GIB)
-        self.assertEqual(resources.resolve_config(self.repo, env=self.env, probe=host).values["jobs"], 3)
+        self.assertEqual(resources.resolve_config(self.repo, env=self.env, probe=host).values["jobs"], 1)
         self.assertEqual(len(host.limits["cgroups"]), 3)
 
     def test_formula_with_all_physical_memory_available(self):
-        for cpus, total, jobs in [(8, 16, 3), (32, 62, 13), (48, 125, 24), (128, 440, 64)]:
+        for cpus, total, jobs in [(8, 16, 1), (32, 62, 4), (48, 125, 4), (128, 440, 4)]:
             host = resources.HostResources(total * resources.GIB, total * resources.GIB,
                                            cpus, cpus, total * resources.GIB)
             self.assertEqual(resources.resolve_config(self.repo, env=self.env, probe=host).values["jobs"], jobs)
+
+    def test_one_cpu_and_explicit_pool_limit_are_admissible(self):
+        gib = resources.GIB
+        host = resources.HostResources(64 * gib, 48 * gib, 32, 1, 8 * gib)
+        config = resources.resolve_config(self.repo, env=self.env, probe=host)
+        self.assertEqual(config.values["lean_threads"], 1)
+        self.assertEqual(config.values["jobs"], 1)
+        self.assertEqual(config.values["memory_budget"], 4 * gib)
+        config = resources.resolve_config(self.repo, {"local_pool_mib": 3072}, self.env, probe=host)
+        self.assertEqual(config.values["memory_budget"], 3 * gib)
+        self.assertEqual(config.explain()["automatic"]["memory_budget"], 4 * gib)
+        self.assertEqual(config.configuration.local_pool_cpu, 1)
 
     def test_host_reserve_does_not_consume_a_smaller_cgroup_allocation(self):
         kwargs = self.fixture(cpus=16, total=440, available=420)

@@ -87,6 +87,17 @@ def test_zero_is_a_finite_limit_and_max_is_unbounded(probe):
     assert run().memory_headroom == 0
 
 
+def test_cgroup_v1_finite_limit_without_usage_does_not_grant_capacity(probe):
+    proc, root, _, run = probe
+    (proc / "self/cgroup").write_text("3:memory:/job\n")
+    memory = root / "memory"
+    (memory / "job").mkdir(parents=True)
+    (memory / "memory.limit_in_bytes").write_text(str(8 * GIB))
+    host = run()
+    assert host.memory_headroom == 0
+    assert "missing or invalid memory.usage_in_bytes" in host.limits["cgroups"][0]["memory.error"]
+
+
 @pytest.mark.parametrize("failure", [FileNotFoundError(), PermissionError()])
 def test_usage_disappearing_or_becoming_unreadable_fails_closed(probe, failure):
     _, _, job, run = probe

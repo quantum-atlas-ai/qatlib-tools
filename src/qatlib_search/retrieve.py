@@ -515,19 +515,23 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog='qatlib-retrieve', description=__doc__)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--project', default=argparse.SUPPRESS, help='target Lake TOML project')
-    common.add_argument('--db', default=argparse.SUPPRESS, help='cache outside source repositories')
+    common.add_argument('--db', default=argparse.SUPPRESS,
+                        help='index path outside source repositories (default: ${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/<corpus-key>.sqlite3)')
     for action in common._actions:
         if action.option_strings:
             p.add_argument(*action.option_strings, default=argparse.SUPPRESS, help=action.help)
     sub = p.add_subparsers(dest='command')
-    index = sub.add_parser('index', parents=[common], help='explicitly build/update the cache')
-    index.add_argument('--changed', action='store_true')
-    q = sub.add_parser('query', aliases=['find'], parents=[common], help='read-only source candidates')
+    index = sub.add_parser('index', parents=[common], help='explicitly build/update the cache',
+                           description='Index Lean source and BibTeX in the project and available locked dependencies. Does not build Lean or fetch dependencies.')
+    index.add_argument('--changed', action='store_true', help='refresh only changed files when the index can be reused')
+    q = sub.add_parser('query', aliases=['find'], parents=[common], help='read-only source candidates',
+                       description='Read an existing index. A missing or stale index must be refreshed explicitly with index. Results are lexical candidates, including source signatures and enclosing variable declarations.')
     q.add_argument('text', nargs='*', help='literal words or source FQN')
     q.add_argument('--limit', type=int, default=10)
-    for name in ('cite', 'kind', 'repo', 'map'):
-        q.add_argument('--' + name)
-    q.add_argument('--json', action='store_true')
+    for name, help_text in (('cite', 'BibTeX key'), ('kind', 'Lean declaration kind'),
+                            ('repo', 'filter by repository'), ('map', 'load a qatlib-retrieve-map/v1 JSON file')):
+        q.add_argument('--' + name, help=help_text)
+    q.add_argument('--json', action='store_true', help='emit structured matches and coverage diagnostics')
     args = p.parse_args(argv)
     if not args.command:
         p.print_help()

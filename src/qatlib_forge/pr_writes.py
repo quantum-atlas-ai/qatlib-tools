@@ -8,6 +8,7 @@ from .repo_api import RepoError, RepoRef
 
 
 def merge(api, number, *, expected_head, method="merge"):
+    """Send the reviewed head as a merge condition after checking PR readiness."""
     expected_head = exact_sha(expected_head)
     if method not in {"merge", "squash", "rebase"}:
         raise RepoError("unsupported merge method")
@@ -38,6 +39,7 @@ def _git(project, *args):
 
 
 def delete_branch(api, name, *, expected_sha, project, remote="origin"):
+    """Delete a protected-checked remote ref only while it points to expected_sha."""
     sha = exact_sha(expected_sha)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", remote):
         raise RepoError("invalid Git remote name")

@@ -529,7 +529,7 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
 def cli_main(argv=None):
     parser = argparse.ArgumentParser(prog="qatlib-env workspace", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    inventory = commands.add_parser("scan")
+    inventory = commands.add_parser("scan", description="Inspect Git and Lake state without preparing a workspace. A truncated scan reports its limit and exits 1.")
     inventory.add_argument("roots", type=Path, nargs="*")
     inventory.add_argument("--measure", action="store_true", help="measure .lake bytes (slower)")
     inventory.add_argument("--exact", action="store_true", help="inspect known checkout roots without recursive discovery")
@@ -537,7 +537,7 @@ def cli_main(argv=None):
     inventory.add_argument("--marker", action="append", help="additional domain directory/file marker (repeatable)")
     inventory.add_argument("--check-remote", action="store_true", help="live ls-remote, never fetch")
     for name in ("clean-caches", "trash-checkouts"):
-        command = commands.add_parser(name)
+        command = commands.add_parser(name, description="Preview targets and warnings. With --apply, move eligible targets to the system Trash and report receipts.")
         command.add_argument("--checkout", action="append", type=Path, required=True)
         action = command.add_mutually_exclusive_group()
         action.add_argument("--apply", action="store_true", help="only after approval of the concrete list")

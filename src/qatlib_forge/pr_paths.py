@@ -76,6 +76,7 @@ def _paths(project, base, head):
 
 
 def classify(project, *, base, head, workflow, tested_base=None, tested_head=None, ci_success=False):
+    """Evaluate local trees; ci_success is a caller attestation, not an API lookup."""
     base, head = exact_sha(base), exact_sha(head)
     path = PurePosixPath(workflow)
     if (path.parent.as_posix() not in {".github/workflows", ".gitea/workflows"}

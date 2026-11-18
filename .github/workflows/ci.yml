@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 
@@ -23,6 +24,11 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: false
+      - name: Check human-reviewed contracts
+        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
+        env:
+          CONTRACT_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && '--draft' || '' }}
+        run: python3 scripts/check_human_contracts.py $CONTRACT_DRAFT
       - name: Verify lockfile
         working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv lock --check

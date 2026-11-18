@@ -13,6 +13,7 @@ import re
 from typing import Any, Mapping
 
 GIB = 1024 ** 3
+MIB = 1024 ** 2
 
 
 def memory_bytes(value: Any) -> int:
@@ -84,7 +85,7 @@ def _ancestors(root: Path, relative: str) -> list[Path]:
         child = child.parent
 
 
-def _v2_memory_headrooms(directory: Path, entry: dict[str, Any]) -> list[int]:
+def _memory_headrooms(directory: Path, entry: dict[str, Any], *, v2: bool) -> list[int]:
     """Keep charged memory as the admission bound, including file cache.
 
     LRU counters do not promise reclaimable capacity. Missing or invalid usage
@@ -93,19 +94,24 @@ def _v2_memory_headrooms(directory: Path, entry: dict[str, Any]) -> list[int]:
     """
     finite = []
     try:
-        for name in ("memory.max", "memory.high"):
+        names = ("memory.max", "memory.high") if v2 else ("memory.limit_in_bytes", "memory.soft_limit_in_bytes")
+        for name in names:
             raw = _read(directory / name)
             if raw is None or raw == "max":
                 continue
             if not raw.isascii() or not raw.isdecimal():
                 raise ValueError(f"invalid {name}")
-            finite.append(int(raw))
-            entry[name] = int(raw)
+            limit = int(raw)
+            if not v2 and (limit == 0 or limit >= 2 ** 60):
+                continue
+            finite.append(limit)
+            entry[name] = limit
         if not finite:
             return []
-        raw = _read(directory / "memory.current")
+        usage = "memory.current" if v2 else "memory.usage_in_bytes"
+        raw = _read(directory / usage)
         if raw is None or not raw.isascii() or not raw.isdecimal():
-            raise ValueError("missing or invalid memory.current")
+            raise ValueError(f"missing or invalid {usage}")
         current = int(raw)
         entry["memory.current"] = current
         return [max(0, value - current) for value in finite]
@@ -182,17 +188,7 @@ def probe_resources(*, proc_root: Path = Path("/proc"),
                         allowed.intersection_update(cpuset)
                         entry["cpuset"] = sorted(cpuset)
                 if "memory" in kinds:
-                    if v2:
-                        headrooms.extend(_v2_memory_headrooms(directory, entry))
-                    else:
-                        current = int(_read(directory / "memory.usage_in_bytes") or 0)
-                        for name in ("memory.limit_in_bytes", "memory.soft_limit_in_bytes"):
-                            raw = _read(directory / name)
-                            if raw and raw != "max" and 0 < int(raw) < 2 ** 60:
-                                value = int(raw)
-                                headrooms.append(max(0, value - current))
-                                entry[name] = value
-                                entry["memory.current"] = current
+                    headrooms.extend(_memory_headrooms(directory, entry, v2=v2))
                 if len(entry) > 1:
                     limits["cgroups"].append(entry)
     quota_count = math.floor(min(quotas)) if quotas else count
@@ -220,14 +216,17 @@ class ResolvedConfig:
     host: HostResources
     warnings: list[str]
     configuration: Any = None
+    automatic: dict[str, Any] = field(default_factory=dict)
 
     def explain(self) -> dict[str, Any]:
         return {"values": self.values, "sources": self.sources, "warnings": self.warnings,
+                "automatic": self.automatic,
                 "configuration": self.configuration.explain() if self.configuration else {},
                 "resources": {"physical_memory": self.host.physical_memory,
                               "available_memory": self.host.available_memory,
                               "memory_headroom": self.host.memory_headroom,
                               "reserve": self.host.reserve,
+                              "logical_cpus": self.host.cpu_count,
                               "effective_cpus": self.host.effective_cpus,
                               "limits": self.host.limits}}
 
@@ -250,6 +249,19 @@ def _config_file(path: Path, *, explicit: bool = False) -> dict[str, Any]:
     return {key: value for key, value in read_layer(path, explicit=explicit).items() if key in ENV_KEYS}
 
 
+def _task_defaults(cpu: int, memory: int, explicit: Mapping[str, Any]) -> dict[str, Any]:
+    # Leave capacity for other builds when the machine has room. Small pools
+    # can devote their whole capacity to one task. Hard limits still apply.
+    task_cpu = min(cpu, max(2, cpu // 2), 8)
+    task_memory = min(memory, max(4 * GIB, memory // 2), 16 * GIB)
+    budget = explicit.get("memory_budget", task_memory)
+    threads = explicit.get("lean_threads", min(2, max(1, task_cpu // explicit.get("jobs", 1))))
+    jobs = explicit.get("jobs", max(1, min(task_cpu // threads, budget // (4 * GIB))))
+    return {"jobs": jobs, "lean_threads": threads, "memory_budget": budget,
+            "heavy_jobs": 1, "module_timeout": 1800.0, "stage_timeout": 10800.0,
+            "heavy_patterns": ["BalancedGram"]}
+
+
 def resolve_config(repo: Path, cli: Mapping[str, Any] | None = None,
                    env: Mapping[str, str] | None = None, *,
                    probe: HostResources | None = None) -> ResolvedConfig:
@@ -257,16 +269,20 @@ def resolve_config(repo: Path, cli: Mapping[str, Any] | None = None,
     from .config import load_config
     environment = os.environ if env is None else env
     host = probe if probe is not None else probe_resources()
-    values: dict[str, Any] = {"lean_threads": 2, "memory_budget": host.memory_budget,
-                              "heavy_jobs": 1, "module_timeout": 1800.0,
-                              "stage_timeout": 10800.0, "heavy_patterns": ["BalancedGram"]}
-    sources = dict.fromkeys(values, "automatic")
     configuration = load_config(repo, environment, cli)
+    pool_mib = max(1, host.memory_budget // MIB)
+    pool_cpu = host.effective_cpus
+    automatic = {**_task_defaults(pool_cpu, min(host.memory_budget, pool_mib * MIB), {}),
+                 "local_pool_mib": pool_mib, "local_pool_cpu": pool_cpu}
     # Unconfigured pools adapt to host capacity; an explicit pool is never
     # enlarged by either a host probe or an individual task request.
     configuration = replace(configuration,
-        local_pool_mib=configuration.local_pool_mib if configuration.sources["local_pool_mib"] != "automatic" else max(1, (host.memory_budget + 1024**2 - 1) // (1024**2)),
-        local_pool_cpu=configuration.local_pool_cpu if configuration.sources["local_pool_cpu"] != "automatic" else host.effective_cpus)
+        local_pool_mib=pool_mib if configuration.sources["local_pool_mib"] == "automatic" else configuration.local_pool_mib,
+        local_pool_cpu=pool_cpu if configuration.sources["local_pool_cpu"] == "automatic" else configuration.local_pool_cpu)
+    values = _task_defaults(min(pool_cpu, configuration.local_pool_cpu),
+                            min(host.memory_budget, configuration.local_pool_mib * MIB),
+                            configuration.resource_values)
+    sources = dict.fromkeys(values, "automatic")
     values.update(configuration.resource_values)
     sources.update({key: configuration.sources[key] for key in configuration.resource_values})
     for key in ("jobs", "lean_threads", "heavy_jobs"):
@@ -290,17 +306,17 @@ def resolve_config(repo: Path, cli: Mapping[str, Any] | None = None,
     if not isinstance(patterns, list) or not all(isinstance(part, str) and part for part in patterns):
         raise ValueError("heavy_patterns must be an array of nonempty strings")
     values["heavy_patterns"] = patterns
-    if "jobs" not in values:
-        values["jobs"] = max(1, min(host.effective_cpus // values["lean_threads"], values["memory_budget"] // (4 * GIB)))
-        sources["jobs"] = "automatic"
     warnings = []
-    if values["jobs"] * values["lean_threads"] > host.effective_cpus:
-        warnings.append("configured jobs × lean_threads exceeds effective CPU capacity; explicit values were retained")
-    if values["memory_budget"] > min(host.physical_memory, host.available_memory, host.memory_headroom):
-        warnings.append("configured memory_budget exceeds currently available/cgroup memory; explicit value was retained")
+    if values["jobs"] * values["lean_threads"] > min(host.effective_cpus, configuration.local_pool_cpu):
+        warnings.append("jobs × lean_threads exceeds effective or pool CPU capacity")
+    if values["memory_budget"] > min(host.physical_memory, host.available_memory, host.memory_headroom,
+                                      configuration.local_pool_mib * MIB):
+        warnings.append("memory_budget exceeds available, cgroup or pool memory")
+    elif min(host.memory_budget, configuration.local_pool_mib * MIB) < 2 * GIB:
+        warnings.append("less than 2 GiB is available for the minimum build request")
     if values["jobs"] * 4 * GIB > values["memory_budget"]:
-        warnings.append("configured jobs exceed the 4 GiB/job memory estimate; explicit values were retained")
+        warnings.append("jobs exceed the 4 GiB/job memory estimate")
     if values["heavy_jobs"] > values["jobs"]:
         warnings.append("heavy_jobs exceeds jobs; explicit values were retained")
-    return ResolvedConfig(values, sources, host, warnings, configuration)
+    return ResolvedConfig(values, sources, host, warnings, configuration, automatic)
 

@@ -968,12 +968,27 @@ def main(argv=None):
     parser.add_argument("--source-root", type=Path)
     resource_options = ("jobs", "lean_threads", "memory_budget", "heavy_jobs", "module_timeout", "stage_timeout", "heavy_patterns",
                         "local_pool_mib", "local_pool_cpu", "max_cold_modules", "max_reverse_modules")
+    resource_help = {
+        "jobs": "parallel build processes", "lean_threads": "threads per Lean process",
+        "memory_budget": "memory per build, in bytes or binary units such as 8GiB",
+        "heavy_jobs": "maximum concurrent heavyweight compiler processes",
+        "module_timeout": "time limit per Lean module in seconds", "stage_timeout": "total time limit in seconds",
+        "heavy_patterns": "comma-separated heavy module patterns",
+        "local_pool_mib": "total shared pool memory in MiB", "local_pool_cpu": "total shared pool CPUs",
+        "max_cold_modules": "maximum cold modules before a build needs explicit permission",
+        "max_reverse_modules": "maximum affected reverse dependencies before a build needs explicit permission",
+    }
+
     def options(target, *, defaults=False):
         for name in resource_options:
-            target.add_argument("--" + name.replace("_", "-"), default=None if defaults else argparse.SUPPRESS)
-        target.add_argument("--offline", action="store_true", default=False if defaults else argparse.SUPPRESS)
-        target.add_argument("--no-prepare", action="store_true", default=False if defaults else argparse.SUPPRESS)
-        target.add_argument("--allow-local-heavy", action="store_true", default=False if defaults else argparse.SUPPRESS)
+            target.add_argument("--" + name.replace("_", "-"), default=None if defaults else argparse.SUPPRESS,
+                                help=resource_help[name])
+        target.add_argument("--offline", action="store_true", default=False if defaults else argparse.SUPPRESS,
+                            help="validate locally present locked dependencies without fetching caches")
+        target.add_argument("--no-prepare", action="store_true", default=False if defaults else argparse.SUPPRESS,
+                            help="use already prepared dependencies and artifacts")
+        target.add_argument("--allow-local-heavy", action="store_true", default=False if defaults else argparse.SUPPRESS,
+                            help="allow a heavy build for this invocation within the hard resource limits")
         target.add_argument("--full-gate", action="store_true", default=False if defaults else argparse.SUPPRESS)
         target.add_argument("--policy", choices=("auto", "local", "cloud"), default="auto" if defaults else argparse.SUPPRESS)
     options(parser, defaults=True)
@@ -990,14 +1005,23 @@ def main(argv=None):
     commands.add_parser("workspace", help="read-only multi-root scan and explicit system Trash previews")
     for name in ("env", "shell", "bootstrap", "prepare"):
         options(commands.add_parser(name))
-    config = commands.add_parser("config")
+    config = commands.add_parser("config", help="explain resource configuration without preparing a workspace",
+                                 description="Report host/cgroup capacity, automatic defaults, effective settings and sources as JSON. This does not prepare dependencies or acquire a lease.")
     config.add_argument("action", choices=("explain",))
+    config.add_argument("--json", action="store_true", help="emit JSON (the default)")
     options(config)
     cache = commands.add_parser("cache")
     cache.add_argument("action", choices=("explain", "upload"))
     cache.add_argument("args", nargs=argparse.REMAINDER)
-    manual = commands.add_parser("docs")
-    manual.add_argument("--path", action="store_true", help="print installed manual location")
+    manual_path = Path(__file__).with_name("_manual.md")
+    if not manual_path.is_file():
+        manual_path = Path(__file__).resolve().parents[2] / "README.md"
+    topics = {path.stem: path for path in sorted((manual_path.parent / "docs").glob("*.md"))}
+    manual = commands.add_parser("docs", help="read the offline manual or topic guides")
+    manual.add_argument("topic", nargs="?", choices=topics or None, help="topic name (default: README)")
+    manual_mode = manual.add_mutually_exclusive_group()
+    manual_mode.add_argument("--path", action="store_true", help="print the selected document path")
+    manual_mode.add_argument("--list", action="store_true", help="list available topic names")
     execute = commands.add_parser("run")
     options(execute)
     execute.add_argument("args", nargs=argparse.REMAINDER)
@@ -1053,9 +1077,15 @@ def main(argv=None):
         with permission(args.allow_local_heavy):
             return promotion_cli(project, args, resource_cli=cli)
     if args.command == "docs":
-        manual_path = Path(__file__).with_name("_manual.md")
-        if not manual_path.is_file():
-            manual_path = Path(__file__).resolve().parents[2] / "README.md"
+        if args.list:
+            if args.topic:
+                manual.error("--list cannot pick a topic")
+            print("\n".join(topics))
+            return 0
+        if args.topic:
+            if args.topic not in topics:
+                manual.error(f"unknown topic: {args.topic}")
+            manual_path = topics[args.topic]
         if args.path:
             print(manual_path)
         elif hasattr(sys.stdout, "buffer"):

@@ -28,4 +28,5 @@ packages = ["src/qatlib_env", "src/qatlib_forge", "src/qatlib_search"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "README.md" = "qatlib_env/_manual.md"
+"docs" = "qatlib_env/docs"
 
