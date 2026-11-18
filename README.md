@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-`qatlib-tools` 维护 Lean 数学库和下游研究仓共用的工程手册与工具。安装后运行 `qatlib-env docs`，即可离线阅读当前版本的手册。日常操作优先用 `git`、`gh` 或平台 API。多个仓库都需要处理的平台差异、汇总检查或在写入时核对预期提交的操作，由本仓提供公共工具。已有下游在用的基础接口继续保留。
+`qatlib-tools` 维护 Lean 数学库与下游研究仓共用的工程手册和辅助工具；安装后在任意终端运行 `qatlib-env docs`，即可离线查阅与当前安装版本一致的完整手册。日常单步操作优先直接使用 `git`、`gh` 或托管平台原生 API；仅当多个仓库都需要抹平跨平台差异、聚合核验检查证据或在写操作前校验预期提交时，才由本仓提供共享工具，同时保留下游仍在使用的基础兼容接口。
 
 ```text
 成果晋升流向   下游研究仓 ──▶ example-library（薄中转） ──▶ qatlib-staging（预发整包验收） ──▶ qatlib（正式发布 + 预编译缓存）
@@ -43,25 +43,53 @@ qatlib-env run -- lake --no-build lean ExampleLibrary/Foundations/ScaledSqrt/Sqr
 
 ## 五分钟上手
 
-以下操作以具备访问权限的 `example-library` 检出目录为例。开始前请备好 Git、Python ≥ 3.11、`uv` 与 `elan`，确认项目 `lean-toolchain` 可正常调用，且 Git 已配好访问私有依赖所需的 SSH 密钥或 HTTPS 凭据助手。示例基于 Lean `v4.35.0` 的 `RootCountOrder` 模块（首次拉取大型上游缓存的耗时取决于本机已有工件与网络带宽）。
+以下操作以具备访问权限的 `example-library` 检出目录为例。开始前请备好 Git、Python ≥ 3.11 与 `elan`，确认项目 `lean-toolchain` 可正常调用，且 Git 已配好访问私有依赖所需的 SSH 密钥或 HTTPS 凭据助手。Python 包安装可选用 `uv`、`pipx` 或用标准库 `venv` 创建环境后在其中运行 `pip`。示例基于 Lean `v4.35.0` 的 `RootCountOrder` 模块，首次拉取大型上游缓存的耗时取决于本机已有工件与网络带宽。
 
 ### 1. 安装工具
 
-如果只想从任意目录调用工具，可以在宿主机上用 `uv tool install /path/to/qatlib-tools` 从本地检出安装，也可以把路径换成已下载的 wheel，或使用 `uv tool install 'git+https://github.com/quantum-atlas-ai/qatlib-tools.git@<提交 SHA>'` 安装可访问的仓库版本。一次安装会提供 `qatlib-env`、`qatlib-retrieve` 和 `qatlib-forge`。`uv` 会为工具创建独立环境。在终端找不到命令时，可用 `uv tool dir --bin` 查看命令目录，再运行 `uv tool update-shell` 将它加入 PATH。
+一次安装即可提供 `qatlib-env`、`qatlib-retrieve` 与 `qatlib-forge` 三个命令行入口。请按使用场景选择对应方式，全程在隔离虚拟环境中安装，不要直接对系统解释器执行裸 `pip install`：
 
-运行项目门禁时，使用项目内锁定的工具版本。
+**A. 安装项目锁定的配套版本（运行项目门禁与日常开发推荐）**
 
-在 `example-library` 根目录创建虚拟环境并安装 `./python` 包，其 `python/pyproject.toml` 会自动按锁定提交拉取配套版本的 `qatlib-tools`：
+运行项目门禁与日常开发时，应使用项目内 `python/pyproject.toml` 锁定的配套 `qatlib-tools` 版本，在 `example-library` 根目录创建虚拟环境并安装 `./python` 包：
 
-```bash
-uv venv .venv
-uv pip install --python .venv/bin/python ./python
-source .venv/bin/activate
-qatlib-env --help
-qatlib-retrieve --help
-```
+- **方式一：使用 `uv`**
 
-Windows PowerShell 下使用 `.venv\Scripts\Activate.ps1` 激活环境，并将安装目标改为 `.venv\Scripts\python.exe`。若需在独立环境中单独测试或装入指定提交构建的 `qatlib-tools` 分发包，可执行 `uv pip install --python <环境Python路径> /path/to/qatlib_tools-*.whl` 并核对分发包对应的提交哈希。
+  ```bash
+  uv venv .venv
+  uv pip install --python .venv/bin/python ./python
+  source .venv/bin/activate
+  qatlib-env --help
+  qatlib-retrieve --help
+  ```
+
+- **方式二：使用 `venv` + `pip`**
+
+  ```bash
+  python3 -m venv .venv
+  .venv/bin/python -m pip install --upgrade pip
+  .venv/bin/python -m pip install ./python
+  source .venv/bin/activate
+  qatlib-env --help
+  qatlib-retrieve --help
+  ```
+
+Windows PowerShell 下改用 `.venv\Scripts\Activate.ps1` 激活环境，并将安装命令中的解释器路径换为 `.venv\Scripts\python.exe`，例如运行 `uv pip install --python .venv\Scripts\python.exe ./python` 或 `.venv\Scripts\python.exe -m pip install ./python`。若需单独测试某个版本，可在另一个环境中安装该提交构建的 wheel，并根据构建记录核对它对应的提交。
+
+**B. 在机器上独立安装命令行入口（方便在任意目录调用）**
+
+若希望不依赖具体项目的虚拟环境、在任意目录下直接调用 `qatlib-env`、`qatlib-retrieve` 与 `qatlib-forge`，可将下列命令中的 `/path/to/qatlib-tools` 按需替换为本地检出路径、已下载的 `.whl` 文件，或可访问的仓库固定提交 `'git+https://github.com/quantum-atlas-ai/qatlib-tools.git@<提交 SHA>'`：
+
+- **使用 `uv`**：运行 `uv tool install /path/to/qatlib-tools`，由 `uv` 自动维护独立工具环境；若终端提示找不到命令，可先用 `uv tool dir --bin` 查看命令目录，再运行 `uv tool update-shell` 将其加入 `PATH`。
+- **使用 `pipx`**：运行 `pipx install /path/to/qatlib-tools`；若命令目录尚未加入 `PATH`，可执行 `pipx ensurepath` 补齐。
+- **使用 `venv` + `pip`**。创建专用虚拟环境，将它的 `bin` 目录加入日常使用的 shell 的 `PATH`。Windows 下将对应的 `Scripts` 目录加入用户 `PATH`。
+
+  ```bash
+  python3 -m venv ~/.local/share/qatlib-tools-venv
+  ~/.local/share/qatlib-tools-venv/bin/python -m pip install --upgrade pip
+  ~/.local/share/qatlib-tools-venv/bin/python -m pip install /path/to/qatlib-tools
+  export PATH="$HOME/.local/share/qatlib-tools-venv/bin:$PATH"
+  ```
 
 ### 2. 配置个人构建资源预算
 
@@ -126,17 +154,17 @@ qatlib-retrieve find Qatlib.Concepts.BlockEncoding.Postselection.normalize_error
 
 ## 共享工件缓存
 
-在 Lean v4.35 中开启 `enableArtifactCache = true`，并保持全量恢复关闭。使用相同工具链、属于同一信任范围的工作树可以共用一个 `LAKE_CACHE_DIR`。找到匹配的编译结果后，Lake 按内容哈希从共享目录直接读取 `.olean` 等文件，省去在每个工作树的 `.lake/build` 中重新复制或解包整套依赖产物。`.lake` 仍由各工作树独立管理，依赖源码也分别检出在各自的 `.lake/packages`。本机生效的缓存路径可用 `qatlib-env cache explain` 核对。
+Lean v4.35 开启 `enableArtifactCache = true` 并保持全量恢复关闭时，同一台机器上工具链相同、同属一个信任范围的多个工作树可以共用同一个 `LAKE_CACHE_DIR`。命中匹配的编译结果后，Lake 会按内容哈希直接从共享目录读取 `.olean` 等工件，省去在每棵工作树的 `.lake/build` 中重复复制或解包整套依赖产物；各工作树依然独立维护自身的 `.lake` 目录，依赖源码也分别检出在各自的 `.lake/packages` 下。本机当前生效的缓存路径可通过 `qatlib-env cache explain` 核对。
 
-共享发生在 Lake 查找和读取工件时。无需文件系统提供 reflink（写时复制）或在各工作树之间建立硬链接，同一机制可用于 Linux、macOS 和 Windows。个别目标需要在 `.lake/build` 下保留文件时，Lake 会按需落地，例如 `.ilean`，硬链接不可用时会复制所需文件。下文的 R2 下载准备有自己的步骤，当前实现使用同一缓存目录内的硬链接安装校验后的文件。
+这套共享直接发生在 Lake 查找与读取工件的阶段，既不要求底层文件系统支持 `reflink` 写时复制，也不需要在不同工作树之间建立硬链接，因此同一套机制可在 Linux、macOS 与 Windows 上一致工作。遇到 `.ilean` 等确需落入本地 `.lake/build` 的目标产物时，Lake 会按需就位，在不支持硬链接的环境上自动回退为复制所需文件；下文 R2 缓存拉取则走独立的准备流程，当前实现会在同一缓存目录内部通过硬链接安装已通过校验的工件文件。
 
-执行 `qatlib-env prepare` 时，工具按缓存来源分别处理：
+执行 `qatlib-env prepare` 时，工具按缓存来源分别就位：
 
-- **R2 包级工件缓存**：对配置了 R2 远端的根包和依赖包，先按源码提交查找映射，再尝试可用的同输入映射和可供增量复用的祖先映射。将本机缺失的工件下载到 `LAKE_CACHE_DIR/artifacts`，完成校验后通过 `lake cache add` 注册映射。远端查找映射时，只有 HTTP `404` 会继续尝试下一项，权限或校验错误会直接报错中断。
-- **Mathlib 预编译缓存**：`lake exe cache get` 会把 Mathlib 预编译包解到当前工作树的依赖检出中，默认布局为 `.lake/packages/mathlib/.lake/build/`。旧工作树空闲时，可先预览 `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run`，确认后用 `--apply` 回收该工作树的 `.lake/build` 和 `.lake/packages`。后者包含可重新检出的依赖源码和其中的 Mathlib 构建目录。
-- **本机工作区 checkpoint**：若本机已有与当前源码匹配的工作区 checkpoint，`prepare` 也会将其中的产物恢复到当前工作树的 `.lake/build`。
+- **R2 包级工件缓存**：针对配置了 R2 远端的根包与依赖包，先按精确源码提交查找映射，未命中时再依次尝试可用的同输入映射与可供增量复用的祖先映射；随后将本机缺失的工件下载至 `LAKE_CACHE_DIR/artifacts`，校验通过后调用 `lake cache add` 注册映射。向远端查找映射期间，仅当返回 HTTP `404` 时才会继续尝试下一候选，遇到权限或校验错误均会直接报错中断。
+- **Mathlib 预编译缓存**：`lake exe cache get` 会将 Mathlib 预编译归档解包到当前工作树的依赖检出目录中，默认路径为 `.lake/packages/mathlib/.lake/build/`。旧工作树闲置后，可先运行 `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run` 预览清单，确认无误后加 `--apply` 一并回收该工作树的 `.lake/build` 与 `.lake/packages`——后者包含可随时按锁重新检出的依赖源码及其内部的 Mathlib 构建目录。
+- **本机工作区 checkpoint**：若本机已有与当前源码状态匹配的工作区 checkpoint，`prepare` 也会将其中的产物恢复到当前工作树的 `.lake/build`。
 
-日常受控构建与 Lean 交互期间，保持 `restoreAllArtifacts` 与环境变量 `LAKE_RESTORE_ARTIFACTS` 处于未设置状态即可。Lake 默认关闭全量 `restore`，按构建目标需要将工件落到本地。普通 PR 验证、源码检索和同机多工作树并行开发均无需开启全量恢复。仅当外部程序确实依赖传统的 `.lake/build` 本地目录树时，例如旧脚本直接遍历 `.lake/build/lib/lean` 或交付包必须打包完整的本地构建目录，才在当次受控构建中单次传入 `LAKE_RESTORE_ARTIFACTS=1 qatlib-env run -- lake build <目标>`；启用前请先核对上游依赖是否设有独立的恢复覆盖配置，并确认目标磁盘留有足够空间。底层机制可进一步参阅 [Lake v4.35 的配置实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Config/Monad.lean)与[模块工件处理](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Module.lean)。
+日常受控构建与 Lean 交互期间，保持 `restoreAllArtifacts` 与环境变量 `LAKE_RESTORE_ARTIFACTS` 处于未设置状态即可——Lake 默认关闭全量 `restore`，仅按构建目标需要将必要工件落入本地，普通 PR 验证、源码检索和同机多工作树并行开发均无需开启全量恢复。仅当外部程序确实依赖传统的 `.lake/build` 本地目录树时，例如旧脚本直接遍历 `.lake/build/lib/lean` 或交付包必须打包完整的本地构建目录，才在当次受控构建中单次传入 `LAKE_RESTORE_ARTIFACTS=1 qatlib-env run -- lake build <目标>`；启用前请先核对上游依赖是否设有独立的恢复覆盖配置，并确认目标磁盘留有充足空间。底层机制可进一步参阅 [Lake v4.35 的配置实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Config/Monad.lean)与[模块工件处理](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Module.lean)。
 
 ---
 
@@ -144,15 +172,15 @@ qatlib-retrieve find Qatlib.Concepts.BlockEncoding.Postselection.normalize_error
 
 ## 托管与 PR 检查
 
-日常操作可以直接用官方工具。GitHub 上用 `gh pr list`、`gh pr view`、`gh pr create --draft --body-file <文件>`、`gh run view` 或 `gh api`，Gitea 上用实例支持的官方 CLI 或 API。查看和推送分支直接用 Git。需要汇总多项检查、判断基线变化或在写入时核对提交，可以用下列命令。
+日常单步操作优先直接使用官方工具：在 GitHub 上使用 `gh pr list`、`gh pr view`、`gh pr create --draft --body-file <文件>`、`gh run view` 或 `gh api`，在 Gitea 上使用目标实例支持的官方 CLI 或 API，查看与推送分支直接使用 Git。当需要跨接口汇总同一提交的多项检查、结合基线推进判定 CI 证据复用，或在执行写操作时核验预期提交哈希时，可使用下列共享命令：
 
-| 命令 | 用法 |
+| 命令 | 解决的场景、核验顺序与使用边界 |
 | --- | --- |
-| `qatlib-forge pr checks <编号> --repo <仓库 URL> --platform <github 或 gitea> --expected-head <SHA>` | **按 PR head 汇总 CI 证据**。开始时读取 PR 的完整 head SHA，如传入 `--expected-head` 则先核对预期值。分页读取该 SHA 上的提交状态、Actions 运行及作业，GitHub 还会读取 check-runs。采集后再次读取 PR，发现 head 变化即报错。Gitea 提交状态的 URL 对应同仓同次运行的具体作业时，使用该作业的状态校正摘要，并保留校正前的归一化状态。加 `--require-job build.yml:build` 可在该 PR 对应工作流的最新运行中查找指定作业，缺记录时显示 `absent`。判读时须核对运行触发来源，`skipped`、`cancelled` 和 `pending` 均不能当作成功。 |
-| `qatlib-forge pr paths --base <SHA> --head <SHA> --workflow <路径>` | **基于 Git 树核对工作流路径过滤与 CI 复用条件**。读取 `base` 与 `head` 两侧的 Build 工作流，按 `pull_request` 的路径过滤规则检查从合并基点到 head 的变更。仅当存在变更、两侧规则均未命中，且改动均为 `.github/` 和 `.gitea/` 之外的 `.md` 或 `.rst` 文件时，返回 `static-only`。遇到不支持的路径模式时会报错。检查 CI 复用须同时提供 `--tested-base` 和 `--tested-head`，并在自行核实适用作业已成功后传入 `--ci-success`。受测 head 须与当前 head 相同，受测基线须为当前 base 或当前合并基点，且当前 base 须沿受测基线前进。基线推进只能涉及两侧构建规则均未命中的文档改动，且与 PR 变更路径及父子目录边界互不相交。多个适用的 Build 工作流须分别核对，并按仓库要求执行静态检查。 |
-| `qatlib-forge pr activity [编号] --repo <仓库 URL> --platform <平台> --cold-days 30` | **盘点最后实质活动**。综合开单、提交、评论与已正式提交的审阅记录，并在采集前后核对 PR head。工具排除可识别的机器人账号，也可用 `--ignore-user` 补充过滤已知自动化账号。省略编号时分页扫描开启中的 PR，超期冷置标记仅作人工复核参考。 |
-| `qatlib-forge pr merge <编号> --repo <仓库 URL> --platform <平台> --expected-head <SHA>` | **按预期 head 执行服务端条件合并**。调用前由操作者取得合并授权、核对分支保护并确认适用 CI 已通过。工具先核对 head 和 PR 的开启、就绪状态，再将预期 head 随合并请求提交给托管服务端校验。GitHub 仓库也可使用原生命令 `gh pr merge --match-head-commit <SHA>`。 |
-| `qatlib-forge branch delete <分支> --repo <仓库 URL> --platform <平台> --expected-sha <SHA>` | **核实保护规则与预期 SHA 后清理远端分支**。工具先核对唯一的 Git 推送地址与 API 目标是否为同一仓库，再通过 API 依次核查默认分支、目标分支的保护标记，以及 GitHub 上对该分支生效的规则。通过这些检查后才比较远端 SHA 与 `--expected-sha`，并通过 `git push --force-with-lease=refs/heads/<分支>:<SHA>` 删除远端分支。 |
+| `qatlib-forge pr checks <编号> --repo <仓库 URL> --platform <github 或 gitea> --expected-head <SHA>` | **按精确 PR head 汇总多源 CI 证据**：启动时先读取 PR 当前完整的 `head` SHA，若传入 `--expected-head` 则立即比对预期值；随后分页拉取该 SHA 下的提交状态、Actions 运行及作业详情，GitHub 仓库还会一并读取 check-runs；采集完毕后再次回读 PR，一旦发现期间 `head` 发生变动即直接报错。针对 Gitea 摘要状态偶发滞后的差异，当提交状态 URL 明确指向同仓同次运行的具体作业时，用该作业的真实状态校正摘要，同时保留校正前的归一化状态备查。传入 `--require-job build.yml:build` 可在该 PR 所属对应工作流的最新一次运行中定点核查目标作业，缺失记录显式标为 `absent`。判读结果时仍须核对运行触发来源，`skipped`、`cancelled` 与 `pending` 均不能视作通过。 |
+| `qatlib-forge pr paths --base <SHA> --head <SHA> --workflow <路径>` | **基于 Git 树核对工作流路径过滤与 CI 复用条件**：直接从 `base` 与 `head` 两侧 Git 树读取受跟踪的 Build 工作流，按 `pull_request` 路径过滤规则检查合并基点到 `head` 的文件变更，遇到工作流使用了工具不支持的路径通配模式时会明确报错；仅当确实存在文件变更、两侧过滤规则均未命中，且改动全部为 `.github/` 与 `.gitea/` 目录之外的 `.md` 或 `.rst` 文档时，才判定为 `static-only`。核验既有 CI 证据能否复用时，须同时传入 `--tested-base` 与 `--tested-head`，并在自行确认适用作业已全部成功后显式加上 `--ci-success`：要求受测 `head` 与当前 `head` 完全一致，受测基线等于当前 `base` 或当前合并基点且当前 `base` 沿受测基线向前演进，同时基线推进范围仅限两侧构建规则均未命中的文档改动，且与本 PR 的变更路径及父子目录边界互不相交。若仓库包含多个适用的 Build 工作流须逐一分别核对，并按仓内要求照常执行静态检查。 |
+| `qatlib-forge pr activity [编号] --repo <仓库 URL> --platform <平台> --cold-days 30` | **剔除机器人噪音盘点最后实质活动**：在采集前后双重核对 PR `head` 未变的前提下，综合开单、提交、评论与已正式提交的审阅记录定位最近的实质活动。工具会自动排除带有可识别机器人特征的账号，并支持通过 `--ignore-user` 补充过滤仓库已知的自动化账号；省略编号时自动分页扫描全部开启中的 PR，超期冷置标记仅作人工复核参考。 |
+| `qatlib-forge pr merge <编号> --repo <仓库 URL> --platform <平台> --expected-head <SHA>` | **按预期 head 执行服务端条件合并**：调用前须由操作者取得明确合并授权、核对分支保护规则并确认适用 CI 均已通过。工具先校验当前 `head` 以及 PR 的开启与非草稿就绪状态，随后将预期 `head` 随合并请求一并交给托管服务端校验，避免合入审阅后新推入的提交；GitHub 仓库也可直接使用原生命令 `gh pr merge --match-head-commit <SHA>`。 |
+| `qatlib-forge branch delete <分支> --repo <仓库 URL> --platform <平台> --expected-sha <SHA>` | **核实保护规则与预期 SHA 后清理远端分支**：工具先确认本地唯一的 Git 推送地址与 API 目标指向同一仓库，再通过 API 依次核查仓库默认分支、目标分支的保护标记以及 GitHub 上对该分支生效的规则；全部通过后才比对远端分支当前 SHA 与 `--expected-sha`，最终通过 `git push --force-with-lease=refs/heads/<分支>:<SHA>` 安全删除远端分支。 |
 
 ---
 
@@ -299,7 +327,7 @@ qatlib-env conflicts --package Qatlib
 | 常见场景 | 命令入口 | 读写与执行边界 |
 | --- | --- | --- |
 | 核对生效配置与探测到的资源余量 | `qatlib-env config explain` | 纯只读，输出各项最终生效值与配置来源层级 |
-| 诊断缓存与共享池当前租约 | `qatlib-env cache explain`、`qatlib-env pool status` | 前者报告缓存路径和冷模块数，必要时创建缓存目录。后者清理失效租约并更新共享池账本 |
+| 诊断缓存与共享池当前租约 | `qatlib-env cache explain`、`qatlib-env pool status` | 前者输出缓存路径与冷模块数，必要时创建缓存目录；后者清理失效租约并刷新共享池账本 |
 | 离线查阅本手册 | `qatlib-env docs` 或 `qatlib-env docs --path` | 纯只读，直接打印手册全文或返回打包文件路径 |
 | 创建带缓存准备的隔离工作树 | `qatlib-env worktree <路径> <分支>` | 新建独立工作树并默认引导缓存（可加 `--no-bootstrap`） |
 | 预估波及范围与受控执行 | `qatlib-env plan <模块>`、`qatlib-env run -- <命令>`、`qatlib-env check <模块>` | `plan` 默认只读；`run` / `check` 受共享池与资源硬上限准入保护 |
@@ -310,9 +338,9 @@ qatlib-env conflicts --package Qatlib
 | 建立或增量刷新本地检索索引 | `qatlib-retrieve index [--changed]` | 仅写入用户缓存目录下的独立检索库，不碰项目工作区 |
 | 检索源码声明、签名与书目关联 | `qatlib-retrieve query <文本>`、`qatlib-retrieve find <文本>` | 纯只读（`query` 子命令词可省略，亦支持 `python -m qatlib_search`） |
 | 核对跨平台 PR 与 CI 证据 | `qatlib-forge pr checks --help` | `checks` / `paths` / `activity` 只读；`merge` 与 `branch delete` 强制校验预期 SHA，详见[托管与 PR 检查](#forge) |
-| 扫描本地多个工作区状态 | `qatlib-env workspace scan <目录> --json` | 默认纯本地扫描，仅在显式传入 `--check-remote` 时查询远端分支状态。递归扫描还需检查超出 `--max-directories` 的目录时，标记 `truncated` 并返回非零退出码 |
-| 预览并回收缓存 | `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run` | 只选中已有的 `.lake/build` 和 `.lake/packages`。先核对依赖中是否有本地修改等不可再生内容，再用 `--apply` 移入回收站 |
-| 预览并回收旧工作树 | `qatlib-env workspace trash-checkouts --checkout <路径> --dry-run` | 确认清单后用 `--apply`。关联工作树移入回收站后，默认在所属仓库运行 `git worktree prune --expire now`，清理该仓库中失效且未锁定的登记。加 `--no-prune` 可保留登记 |
+| 扫描本地多个工作区状态 | `qatlib-env workspace scan <目录> --json` | 默认纯本地扫描，仅在显式传入 `--check-remote` 时查询远端分支状态；递归扫描若仍有超出 `--max-directories` 上限的待检目录，则标记 `truncated` 并返回非零退出码 |
+| 预览并回收缓存 | `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run` | `--derived-only` 仅选中已存在的 `.lake/build` 与 `.lake/packages`；先核对依赖目录内无本地修改等不可再生内容，再用 `--apply` 移入回收站 |
+| 预览并回收旧工作树 | `qatlib-env workspace trash-checkouts --checkout <路径> --dry-run` | 审阅预览清单后加 `--apply` 执行；关联工作树移入回收站后，默认在所属仓库运行 `git worktree prune --expire now` 清理失效且未锁定的工作树登记，加 `--no-prune` 可保留原登记 |
 
 > **检索命令迁移提示**：旧版 `qatlib-search build/query/retrieve` 索引格式已退役，请直接使用 `qatlib-retrieve index` 重新初始化并用 `query` / `find` 查询（无需迁移旧索引文件）。若上游依赖尚未物化，请先运行 `qatlib-env prepare`；检索结果仅供定位源码，不能替代实际编译与晋升门禁。
 
@@ -361,6 +389,21 @@ require_explicit_local_heavy = true
 
 ---
 
-**工具仓自测与离线手册一致性校验**：修改本仓库后可执行 `uv lock --check`、`uv build` 与 `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs`。构建 wheel 时，根 `README.md` 会按原始字节打包为 `qatlib_env/_manual.md`；在干净虚拟环境装入 wheel 后，可直接比对 `qatlib-env docs` 输出与根 `README.md` 原文是否逐字节一致。
+<a id="self-test"></a>
+
+## 工具仓自测与离线手册校验
+
+使用 Python 3.12 运行 `uv lock --check`、`uv build` 和 `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs`，与 GitHub CI 的构建及全量测试一致。
+
+没有 `uv` 时，可在新建的虚拟环境中安装本项目及自测依赖，用 `build` 生成分发包，再运行自测。直接调用 `uv` 的安装测试留待有 `uv` 的环境复验。先完成构建，确保 `dist/` 中用于测试的 wheel 来自当前源码。
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -e . build pytest hatchling jsonschema
+.venv/bin/python -m build
+.venv/bin/python -m pytest -q -rs --ignore=tests/migrated_dev/test_migrated_dev_smoke_packages.py
+```
+
+构建 wheel 时，根 `README.md` 按原始字节打包为 `qatlib_env/_manual.md`。用 `pipx` 或干净的 `venv` 安装当前 wheel 后，可在仓库根目录运行 `qatlib-env docs | cmp README.md -`。确认命令来自刚安装的环境，避免误用已在 `PATH` 上的旧版本。
 
 本项目采用 [Apache License, Version 2.0](./LICENSE) 开源许可，与公开库 [qatlib](https://github.com/quantum-atlas-ai/qatlib) 保持一致。

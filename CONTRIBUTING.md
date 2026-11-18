@@ -1,6 +1,6 @@
 # 贡献指南
 
-调整本仓的跨仓共享能力前，请先核对各下游仓库当前锁定的版本与实际调用入口。共享工具接口保持职责单一、可组合，具体仓库自身的业务规则与接收契约由各消费仓自行维护。提交改动前，请使用 Python 3.12 依次运行 `uv lock --check`、`uv build` 与 `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs` 完成验证。
+调整本仓的跨仓共享能力前，请先核对各下游仓库当前锁定的版本与实际调用入口。共享工具接口保持职责单一、可组合，具体仓库自身的业务规则与接收契约由各消费仓自行维护。使用 Python 3.12 运行与 CI 一致的检查。没有 `uv` 时可用隔离环境构建、运行其余测试并校验离线手册，具体命令见[工具仓自测与离线手册校验](README.md#self-test)。
 
 <a id="human-review-protected-paths"></a>
 
