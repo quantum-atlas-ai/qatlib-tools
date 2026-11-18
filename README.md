@@ -112,6 +112,7 @@ qatlib-retrieve find Qatlib.Concepts.BlockEncoding.Postselection.normalize_error
 **检索器工作边界**：
 
 - `index` 扫描当前仓 `lakefile.toml` 声明的正式库根、`lake-manifest.json` 中已物化的上游包源码及各自的 `docs/references.bib`，索引默认写入用户缓存目录 `qatlib/retrieve/`（可通过 `--db <路径>` 指定仓外路径，跨目录调用传 `--project <目录>`，改完代码后运行 `qatlib-retrieve index --changed` 增量刷新）。
+- 语料遍历在进入目录前排除各源码仓内部的 `.lake`、`.git`、`.venv` 与 `.agent-tasks`，正式库根下嵌套的派生目录也不会扫描。锁定依赖虽物化在消费仓的 `.lake/packages/` 下，仍按各自源码仓的正式 Lake 库根发现语料，再排除其内部缓存；这不等于允许递归扫描消费仓整棵 `.lake`。
 - `query` / `find` 全程纯只读：不启动 Lean 或 Lake、不联网拉依赖、不占用构建池租约，也不会静默改写索引；索引缺失或命中文件发生修改时会明确提示刷新。
 - 检索基于静态源码词法分析：由宏动态展开、结构体投影或编译器自动派生的声明可能不在词法索引内；脚本调用可加 `--json` 获取结构化输出，配合 `--repo`、`--kind`、`--cite` 过滤，或通过 `--map <文件>` 挂载消费仓导出的 `qatlib-retrieve-map/v1` 映射文件补充领域别名与书目关联（工具本身不耦合任何项目的私有 `metadata/` 目录）。
 
@@ -209,8 +210,18 @@ qatlib-env conflicts --package Qatlib
 - **现象**：GitHub / Gitea 页面早已显示某次构建任务已取消或超时失败，Runner 服务状态也显示在线正常，但机器内存长期卡在 90% 以上剧烈回收抖动，排查进程表常能抓到挂在 `PPID=1` 下的孤儿 `lake` 或 `lean` 进程。
 - **底层原理**：systemd 服务单元配置的 `KillMode=control-group` **只在整个 service 停机或重启时才会清扫控制组内的所有残留进程**；而自托管 Runner 是一个长期常驻的守护进程，网页端取消单次 CI job 只会让 Runner 终止顶层作业包装进程，并不会触发 systemd 停掉整个 Runner 服务！一旦深层派生的 `lake` / `lean` 子孙进程脱离父进程变成 `PPID=1` 的孤儿，它们就会留在原 service 的 cgroup 里继续狂吃内存：账面用量冲破 `MemoryHigh` 后内核启动高频直接内存回收与分配节流，但只要还没撞上 `MemoryMax` 硬上限触发组内 OOM，进程就会在“一边被强行节流回收、一边继续申请内存”的拉锯战中把整组拖入长时抖动（参见 [`systemd.kill`](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html) · [`systemd` 资源控制](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)）。
 - **标准解法与适用边界**：
-  1. **逐作业独立进程域与全路径收割**：每次执行构建命令都应放入独立的进程组或瞬态 systemd scope，由监督器持续追踪整棵子孙进程树；无论是正常结束、用户取消、单模块超时还是整阶段（stage）超时，都必须走同一套进程树收割与复扫确认流程（共享机器上严禁仅凭 `lean`/`lake` 进程名盲目通杀，以免误杀其他工作树或他人的正常任务）。
-  2. **跨平台句柄绑定与残留取证**：Windows 受管模式通过启动即挂载 `Job Object` 实现整组 CPU/内存硬约束与生命周期绑定，关闭最后一个 Job 句柄即可由内核原子终止组内全部残留子进程（参见 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)）。线上排查疑似孤儿进程时，应联合核对 PID、启动时间、完整命令行、工作目录与所属 cgroup，并对照 `memory.events` 中 `high` / `max` / `oom` 计数器的增长速率（单看某刻 `PPID=1` 只是线索；若涉及容器任务，还需结合外部容器 daemon 的真实命名空间核实）。
+  1. **逐作业独立进程域与父死收割**：Linux 公共监督器为每个命令启动独立 guardian 进程，由 guardian 设置 `PR_SET_PDEATHSIG`，在父监督器被硬杀后接收信号并继续清理。只给 workload 本身设置父死信号，无法覆盖 double-fork 或 `setsid` 脱离会话的子孙；guardian 同时通过 `PR_SET_CHILD_SUBREAPER` 收养这些后代，按 PID 与启动时间跟踪进程身份，对已拥有的进程组和子孙执行 TERM、宽限期、KILL 与反复收割。正常结束、用户取消、单模块超时与整阶段（stage）超时共用这套清理流程，保留命令的 stdin、捕获输出与信号退出码契约。guardian 独立启动，避免在线程化父进程里使用可能死锁的 `preexec_fn`；共享机器上严禁仅凭 `lean`/`lake` 进程名通杀。
+  2. **内核整组硬上限作为第二道防线**：受限命令进入逐作业瞬态 systemd scope，以 `MemoryMax`、`MemorySwapMax=0`、`CPUQuota`、`RuntimeMaxSec` 和 `KillMode=control-group` 对整组进程施加内存、CPU、运行期限和终止边界。即使 guardian 也被同时硬杀，内核与 systemd 仍可按有限资源和期限收束该 scope，不能只依赖常驻 Runner service 的停机清理。此保护要求 Linux 上实际可用且支持这些属性的 systemd 用户 CPU/内存控制器；属性或权限不支持时命令失败，不会静默退回无界执行。它不能保护宿主消失后的任务，也不代替外部容器 daemon 的生命周期管理。
+  3. **临时实验、枚举与搜索也要接入边界**：普通 Python 和递归搜索同样可能派生残留进程或扫遍多工作树缓存。无需 Lean 项目即可使用 `qatlib-env exec -- <命令>`，默认期限 **300 秒、内存 4 GiB、1 CPU**；可用 `--timeout`、`--memory-mib`（至少 2048 MiB）与 `--cpu` 调整。它复用现有本机共享资源池的 CPU/内存租约，等待准入也有期限；请求超出池硬上限会直接拒绝。监督器超时返回 `124`，内核期限先触发时保留执行链的信号终止状态。现有 Lean 构建的预算与准入规则继续适用。这个入口需要调用方主动接入，无法自动截获外部 agent harness 的裸 shell；共享准入池也不是驻留调度平台，不新增配额数据库或 I/O 调速器。
+
+     ```bash
+     qatlib-env exec --timeout 300 --memory-mib 4096 --cpu 1 -- python experiment.py
+     # 只搜索明确的源码目录，并显式裁剪派生树
+     qatlib-env exec --timeout 60 -- rg --glob '*.lean' --glob '!.lake/**' --glob '!**/.lake/**' --glob '!.venv/**' --glob '!**/.venv/**' --glob '!.agent-tasks/**' --glob '!**/.agent-tasks/**' 'pattern' Source verification
+     ```
+
+     本工具仓根 `.ignore` 为遵循它的工具（如默认 `rg`）排除 `.lake`、`.git`、`.venv`、`.agent-tasks`、`dist` 与 `build`，但不会自动保护其他工作树，也不会替消费仓写配置。普通 `grep` / `find` 不读取 `.ignore`，`rg --no-ignore` 也会绕开它，调用方须显式排除 `.lake`、`.venv` 与 `.agent-tasks`；自写枚举脚本应在进入这些目录前剪枝，而不是扫描后再过滤结果。先避免无意义扫盘，再用有限 runtime 控制执行期限。
+  4. **跨平台句柄绑定与残留取证**：Windows 受管构建模式通过启动即挂载 `Job Object` 实现整组 CPU/内存硬约束与生命周期绑定，关闭最后一个 Job 句柄即可由内核原子终止组内全部残留子进程（参见 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)）；上述通用 `exec` 入口则仅支持 Linux，其他平台会明确拒绝。线上排查疑似孤儿进程时，应联合核对 PID、启动时间、完整命令行、工作目录与所属 cgroup，并对照 `memory.events` 中 `high` / `max` / `oom` 计数器的增长速率（单看某刻 `PPID=1` 只是线索；若涉及容器任务，还需结合外部容器 daemon 的真实命名空间核实）。
 
 ### 四、为什么网页能点开的文档引用，在 VS Code 悬浮窗里只显示纯文本？
 
@@ -246,6 +257,7 @@ qatlib-env conflicts --package Qatlib
 | 离线查阅本手册 | `qatlib-env docs` 或 `qatlib-env docs --path` | 纯只读，直接打印手册全文或返回打包文件路径 |
 | 创建带缓存准备的隔离工作树 | `qatlib-env worktree <路径> <分支>` | 新建独立工作树并默认引导缓存（可加 `--no-bootstrap`） |
 | 预估波及范围与受控执行 | `qatlib-env plan <模块>`、`qatlib-env run -- <命令>`、`qatlib-env check <模块>` | `plan` 默认只读；`run` / `check` 受共享池与资源硬上限准入保护 |
+| 临时实验、枚举与递归搜索 | `qatlib-env exec -- <命令>` | 通用命令受本机共享池准入与 Linux 内核 scope 的时间、内存、CPU 硬上限约束；无可用控制器时拒绝执行 |
 | 恢复依赖缓存或显式发布缓存 | `qatlib-env prepare`、`qatlib-env cache upload --help` | `prepare` 按锁物化并拉取只读缓存；`upload` 仅在获授权的发布流程中使用 |
 | 超出本机预算转交远端执行 | `qatlib-env cloud submit --head <分支>` | 显式派发远端运行，可配合 `status`、`logs`、`wait`、`fetch` 跟踪 |
 | 跨仓定向升锁、查重与冲突检查 | `qatlib-env promotion --help`、`qatlib-env conflicts --package <包名>` | `bump-lock` 更新指定包锁版本；其余锁/清退/冲突检查只读，`smoke` 实际调用 Lean |

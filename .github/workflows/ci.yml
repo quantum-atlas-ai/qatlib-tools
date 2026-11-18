@@ -38,6 +38,7 @@ jobs:
           uv venv --python 3.12 .wheel-venv-ci
           uv pip install --python .wheel-venv-ci/bin/python dist/*.whl
           .wheel-venv-ci/bin/qatlib-env --help
+          .wheel-venv-ci/bin/qatlib-env exec --help
           .wheel-venv-ci/bin/qatlib-env promotion merge-bibliography --help
           .wheel-venv-ci/bin/qatlib-env docs > .wheel-venv-ci/manual.md
           cmp README.md .wheel-venv-ci/manual.md

@@ -13,7 +13,7 @@ import pytest
 
 from qatlib_env import execute, supervisor
 from qatlib_env.backends import linux
-from qatlib_search.index import SearchIndex
+from qatlib_search.retrieve_corpus import discover
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux guardian")
@@ -71,6 +71,18 @@ def test_exec_refuses_missing_controller():
     run.assert_not_called()
 
 
+def test_exec_refuses_controller_lost_during_setup():
+    with patch.object(execute.sys, "platform", "linux"), \
+         patch.object(execute, "systemd_available", return_value=True), \
+         patch.object(linux, "systemd_available", return_value=False), \
+         patch.object(execute, "_pool_scope") as pool, \
+         patch.object(execute.supervisor, "run") as run, pytest.raises(SystemExit) as error:
+        execute.main(["--", "python", "experiment.py"])
+    assert error.value.code == 2
+    pool.assert_not_called()
+    run.assert_not_called()
+
+
 @pytest.mark.parametrize("option,value", [("--timeout", "0"), ("--timeout", "nan"), ("--timeout", "inf"),
                                          ("--cpu", "0"), ("--memory-mib", "1")])
 def test_exec_rejects_unbounded_values(option, value):
@@ -94,10 +106,36 @@ def test_exec_has_kernel_and_supervisor_deadlines():
     assert pool.call_args.args[0]["QATLAS_JOBS"] == "1"
 
 
-def test_search_prunes_build_trees_but_accepts_explicit_dependency_root(tmp_path):
-    (tmp_path / "Source.lean").write_text("def visible := 1\n")
-    cache = tmp_path / ".lake" / "packages"
-    cache.mkdir(parents=True)
-    (cache / "Dependency.lean").write_text("def hidden := 2\n")
-    assert [item.name for item in SearchIndex([tmp_path]).build()] == ["visible"]
-    assert [item.name for item in SearchIndex([cache]).build()] == ["hidden"]
+@pytest.mark.parametrize("derived", [".lake", ".venv", ".agent-tasks"])
+def test_retrieve_prunes_derived_trees_under_formal_library_roots(tmp_path, derived):
+    (tmp_path / "lakefile.toml").write_text(
+        'name="Local"\ndefaultTargets=["Lib"]\n[[lean_lib]]\nname="Lib"\n'
+        'srcDir="src"\nroots=["Source"]\n')
+    source = tmp_path / "src" / "Source"
+    source.mkdir(parents=True)
+    (source / "Visible.lean").write_text("def visible := 1\n")
+    # Neither repository-level caches nor caches nested in a declared library
+    # may be enumerated. A regular but undeclared source tree is omitted too.
+    for cache in [tmp_path / derived, source / "Nested" / derived, tmp_path / "Other"]:
+        cache.mkdir(parents=True)
+        (cache / "Hidden.lean").write_text("def hidden := 2\n")
+    scandir = os.scandir
+
+    def source_only_scandir(path):
+        assert derived not in Path(path).relative_to(tmp_path).parts, "derived tree was traversed"
+        return scandir(path)
+
+    with patch("os.scandir", side_effect=source_only_scandir):
+        assert [(relative, module) for _, relative, module in discover(tmp_path).files()] == [
+            ("src/Source/Visible.lean", "Source.Visible")]
+    # srcDir cannot turn a worktree's derived directory into source either.
+    (tmp_path / "lakefile.toml").write_text(
+        f'name="Local"\n[[lean_lib]]\nname="Lib"\nsrcDir="{derived}"\n')
+    cache_source = tmp_path / derived / "Lib"
+    cache_source.mkdir()
+    (cache_source / "Hidden.lean").write_text("def hidden := 2\n")
+    assert list(discover(tmp_path).files()) == []
+    # An explicitly selected repository is its own boundary, even when a
+    # materialized dependency lives below the consuming worktree's .lake.
+    (cache_source.parent / "lakefile.toml").write_text('name="Dependency"\n[[lean_lib]]\nname="Lib"\n')
+    assert [relative for _, relative, _ in discover(cache_source.parent).files()] == ["Lib/Hidden.lean"]
