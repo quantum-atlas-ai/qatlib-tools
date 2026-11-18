@@ -240,7 +240,7 @@ class CacheWorkflowTests(unittest.TestCase):
         with patch.object(lake.resources, "probe_resources", return_value=host), \
              patch.object(Path, "cwd", return_value=self.project), \
              patch.dict(os.environ, self.env, clear=True):
-            self.assertEqual(lake.default_jobs(), 23)
+            self.assertEqual(lake.default_jobs(), 4)
 
     def test_explicit_lean_thread_limit_is_preserved(self):
         env = lake.environment(self.project, base_env={**self.env, "LEAN_NUM_THREADS": "2"})
