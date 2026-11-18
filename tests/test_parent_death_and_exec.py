@@ -23,6 +23,24 @@ def test_guardian_preserves_workload_signal_exit(signum):
     assert supervisor.run(command).returncode == -signum
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux guardian")
+def test_stage_deadline_remains_owned_by_outer_supervisor():
+    subreaper = supervisor._subreaper
+
+    def delayed_setup(enable=None):
+        if enable is True:
+            # Scheduling/setup may consume part of the shared deadline before
+            # the guardian starts. Its timeout must not become an exit code.
+            time.sleep(.35)
+        return subreaper(enable)
+
+    env = {**os.environ, "QATLAS_STAGE_DEADLINE": str(time.monotonic() + .7)}
+    with patch.object(supervisor, "_subreaper", side_effect=delayed_setup), \
+         pytest.raises(subprocess.TimeoutExpired):
+        supervisor.run([sys.executable, "-c", "import os,time; assert os.environ.get('QATLAS_STAGE_DEADLINE'); time.sleep(5)"],
+                       env=env, grace=.05)
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux PDEATHSIG")
 def test_hard_killed_supervisor_still_reaps_detached_workload(tmp_path):
     pids = tmp_path / "pids"
