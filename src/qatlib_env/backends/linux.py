@@ -79,12 +79,16 @@ def enclosing_cgroup_limits(*, memory_mib: int, cpu: int,
             "memory_remaining": memory_remaining, "cpu_quota": float(cpu_quota)}
 
 
-def linux_command(command: list[str], *, memory_mib: int, cpu: int, unit: str = "qatlib-build") -> list[str]:
+def linux_command(command: list[str], *, memory_mib: int, cpu: int, unit: str = "qatlib-build",
+                  runtime_sec: float | None = None) -> list[str]:
     if not systemd_available():
+        if runtime_sec is not None:
+            raise ValueError("bounded execution requires a systemd user CPU/memory scope; no unbounded fallback")
         return list(command)
     memory_mib = max(2048, int(memory_mib))
     quota = max(1, int(cpu)) * 100
+    runtime = [] if runtime_sec is None else ["-p", f"RuntimeMaxSec={runtime_sec}", "-p", "KillMode=control-group"]
     return ["systemd-run", "--user", "--scope", f"--unit={unit}", "--slice=qatlib-lean.slice",
             "-p", f"MemoryHigh={memory_mib}M", "-p", f"MemoryMax={memory_mib}M",
-            "-p", "MemorySwapMax=0", "-p", f"CPUQuota={quota}%", "--", *command]
+            "-p", "MemorySwapMax=0", "-p", f"CPUQuota={quota}%", *runtime, "--", *command]
 

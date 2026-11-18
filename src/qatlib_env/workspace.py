@@ -978,6 +978,7 @@ def main(argv=None):
         target.add_argument("--policy", choices=("auto", "local", "cloud"), default="auto" if defaults else argparse.SUPPRESS)
     options(parser, defaults=True)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("exec", help="bounded Linux experiments/searches; see qatlib-env exec --help")
     from qatlib_env.promotion import add_parser as promotion_parser
     promotion_parser(commands)
     conflicts = commands.add_parser("conflicts", help="check source-level collisions against a locked dependency")

@@ -1,0 +1,7 @@
+# ripgrep source searches must not descend into build caches or task archives.
+.lake/
+.git/
+.venv/
+.agent-tasks/
+dist/
+build/

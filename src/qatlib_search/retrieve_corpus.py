@@ -14,6 +14,9 @@ from .doc_references import parse_bibliography_entries
 from .paths import project_root
 
 
+_DERIVED_DIRECTORIES = frozenset({'.lake', '.git', '.venv', '.agent-tasks'})
+
+
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -49,7 +52,7 @@ class Corpus:
         return digest(str(self.project).encode())[:24]
 
     def files(self):
-        """Yield regular files only in the selected default libraries, never .lake."""
+        """Yield selected library sources, pruning derived trees in each repo."""
         for repo in self.repos:
             root = Path(repo['root'])
             seen = set()
@@ -57,14 +60,24 @@ class Corpus:
                 source = contained(root, src_dir)
                 for name in names:
                     stem = contained(source, name.replace('.', '/'))
+                    # A dependency checkout below the consumer's .lake is its
+                    # own repository. Apply exclusions relative to that root,
+                    # including explicitly declared derived srcDir paths.
+                    if _DERIVED_DIRECTORIES.intersection(stem.relative_to(root).parts):
+                        continue
                     paths = ([stem.with_suffix('.lean')] if stem.with_suffix('.lean').is_file() else [])
-                    paths += sorted(stem.rglob('*.lean')) if stem.is_dir() else []
+                    if stem.is_dir():
+                        descendants = []
+                        for directory, children, files in os.walk(stem):
+                            children[:] = [child for child in children if child not in _DERIVED_DIRECTORIES]
+                            descendants.extend(Path(directory) / file for file in files if file.endswith('.lean'))
+                        paths += sorted(descendants)
                     for path in paths:
                         relative = path.relative_to(root).as_posix()
                         if relative in seen:
                             continue
                         seen.add(relative)
-                        # rglob does not traverse directory symlinks. The selected
+                        # os.walk does not traverse directory symlinks. The selected
                         # source root was checked above; reject leaf links below.
                         if path.is_symlink() or any(p.startswith('.') for p in path.relative_to(source).parts):
                             raise ValueError(f'hidden or symlink source is not admitted: {path}')
