@@ -23,7 +23,7 @@ SEMANTIC = {"questions", "research"}
 
 
 def git(path, *args, timeout=15, input=None):
-    """Read Git without refreshing the index, lazy fetching or prompting."""
+    """Invoke Git without optional index writes, lazy fetching or prompting."""
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1",
                GIT_TERMINAL_PROMPT="0", LC_ALL="C")
     env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "
@@ -402,7 +402,8 @@ def _runtime_reasons(checkout, target, active, protect):
     return reasons
 
 
-def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), check_remote=False):
+def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), check_remote=False,
+          prune=True):
     """Preview complete warnings; --apply confirms them and uses native Trash."""
     if mode not in {"caches", "derived", "checkouts"}:
         raise ValueError("mode must be caches or checkouts")
@@ -466,6 +467,8 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
         rows.append(row)
     result = {"applied": False, "mode": mode, "targets": rows, "receipts": receipts,
               "physical_bytes_freed": 0}
+    if mode == "checkouts":
+        result["worktree_prunes"] = []
     if apply:
         if any(not row["eligible"] for row in rows):
             result["error"] = "batch refused: active, out-of-scope or unavailable targets; nothing moved"
@@ -495,16 +498,31 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
                         raise ValueError("Git directory now serves a worktree outside the selected targets")
         # Move linked trees before their selected primary Git directory.
         order = sorted(rows, key=lambda row: not row["linked_worktree"]) if mode == "checkouts" else rows
+        moved = []
         for row in order:
             try:
                 recheck(row)
                 receipts.append(system_trash.trash(Path(row["path"])))
+                moved.append(row)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 result["error"] = str(error)
-                return result  # earlier receipts remain truthful; no fallback or rollback
-        result["applied"] = True
-        if mode == "checkouts" and any(row["linked_worktree"] for row in rows):
-            result["worktree_followup"] = "From a remaining checkout, review: git worktree prune --dry-run --verbose"
+                break  # earlier receipts remain truthful; no fallback or rollback
+        result["applied"] = "error" not in result
+        if mode == "checkouts" and prune:
+            moved_paths = [Path(row["path"]) for row in moved]
+            common_dirs = {Path(row["common_dir"]).resolve() for row in moved
+                           if row["linked_worktree"] and row["common_dir"]}
+            for common in sorted(common_dirs):
+                if any(common.is_relative_to(path) for path in moved_paths):
+                    continue  # The main checkout and its Git metadata are already in Trash.
+                receipt = {"common_dir": str(common)}
+                result["worktree_prunes"].append(receipt)
+                try:
+                    _read_git(common, "--git-dir", str(common), "worktree", "prune", "--expire", "now")
+                    receipt["pruned"] = True
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    receipt.update(pruned=False, error=str(error))
+                    result.setdefault("error", f"checkout moved to Trash, but Git worktree prune failed: {common}")
     return result
 
 
@@ -528,6 +546,9 @@ def cli_main(argv=None):
         if name == "clean-caches":
             command.add_argument("--derived-only", action="store_true",
                                  help="select existing .lake/build and .lake/packages only")
+        else:
+            command.add_argument("--no-prune", action="store_true",
+                                 help="keep Git worktree registrations after moving linked checkouts")
     for command in (inventory, *[commands.choices[n] for n in ("clean-caches", "trash-checkouts")]):
         command.add_argument("--json", action="store_true")
         command.add_argument("--hot-hours", type=float, default=24)
@@ -546,7 +567,7 @@ def cli_main(argv=None):
                 mode = "derived" if args.derived_only else "caches"
             result = clean(args.checkout, mode=mode,
                            apply=args.apply, hot_hours=args.hot_hours, protect=args.protect,
-                           check_remote=args.check_remote)
+                           check_remote=args.check_remote, prune=not getattr(args, "no_prune", False))
         # JSON is the stable agent interface, also the default readable output.
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if result.get("error") or result.get("truncated") else 0

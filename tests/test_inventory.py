@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from qatlib_env import inventory
+from tests._git_fixture import snapshot
 
 
 def fact(path, **changes):
@@ -82,7 +83,9 @@ def test_scan_cli_reports_directory_truncation(tmp_path, capsys):
 
     (tmp_path / "nested").mkdir()
     assert inventory.cli_main(["scan", str(tmp_path), "--max-directories", "1"]) == 1
-    assert json.loads(capsys.readouterr().out)["truncated"] is True
+    result = json.loads(capsys.readouterr().out)
+    assert result["truncated"] is True
+    assert result["errors"] == [f"directory limit 1 reached at {tmp_path / 'nested'}; narrow roots"]
 
 
 def test_derived_cleanup_selects_only_build_and_packages(monkeypatch):
@@ -288,7 +291,51 @@ def test_all_selected_worktrees_can_move_with_primary_last(monkeypatch):
         groups=lambda *a, **k: group(worktrees=["/r/a", "/r/b"]))
     result = inventory.clean(["/r/a", "/r/b"], mode="checkouts", apply=True)
     assert result["applied"]
+    assert result["worktree_prunes"] == []
     assert [call.args[0] for call in moved.call_args_list] == [Path("/r/b"), Path("/r/a")]
+
+
+@pytest.mark.parametrize("prune", [True, False])
+def test_trash_linked_worktree_prunes_by_default(tmp_path, monkeypatch, capsys, prune):
+    import json
+
+    main, topic, trashed = (tmp_path / name for name in ("main", "topic", "trashed"))
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    snapshot(main)
+    inventory._read_git(main, "worktree", "add", "--detach", str(topic))
+    monkeypatch.setattr(inventory, "processes", lambda: ([], []))
+    monkeypatch.setattr(inventory.system_trash, "probe", lambda p: {"supported": True})
+
+    def trash(path):
+        path.rename(trashed)
+        return {"original_path": str(path)}
+
+    monkeypatch.setattr(inventory.system_trash, "trash", trash)
+    args = ["trash-checkouts", "--checkout", str(topic)]
+    assert inventory.cli_main(args + ["--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["worktree_prunes"] == []
+    assert topic.is_dir()
+    assert inventory.cli_main(args + ["--apply"] + ([] if prune else ["--no-prune"])) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert not topic.exists()
+    assert (trashed / ".git").is_file()
+    assert result["applied"] is True
+    registered = inventory._read_git(main, "worktree", "list", "--porcelain")
+    assert (topic.as_posix() in registered) is not prune
+    assert inventory._read_git(main, "rev-parse", "HEAD").strip()
+    assert result["worktree_prunes"] == ([{"common_dir": str((main / ".git").resolve()),
+                                          "pruned": True}] if prune else [])
+
+
+def test_prune_failure_keeps_successful_trash_receipt(monkeypatch):
+    moved = mock_cleanup(monkeypatch, facts=lambda p, **k: fact(p, linked_worktree=True))
+    monkeypatch.setattr(inventory, "_read_git", Mock(side_effect=ValueError("prune failed")))
+    result = inventory.clean(["/r/a"], mode="checkouts", apply=True)
+    assert result["applied"] is True
+    moved.assert_called_once_with(Path("/r/a"))
+    assert result["receipts"] == [{"original_path": "/r/a", "backend": "send2trash.native"}]
+    assert result["worktree_prunes"][0]["pruned"] is False
+    assert "worktree prune failed" in result["error"]
 
 
 def test_new_unselected_worktree_registration_refuses_before_move(monkeypatch):
