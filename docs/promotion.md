@@ -27,6 +27,18 @@ qatlib-env promotion smoke --probe verification/Consumer.lean
 
 探针应以尽可能少的导入测试真实用法。用 `example` 复述关键定理的签名，用普通 `def` 调用承诺可计算的函数，用 `rfl` 或受限 `simp` 验证承诺可展开的定义。普通 `import` 让探针遵守下游实际的可见性规则。 `smoke` 使用已有依赖工件检查 Lean 文件，记录 HEAD、工具链和诊断，区分 `PASS`、`REGRESSION` 与 `NOT-RUN`。有意改名时可用 `--migration-map migration.toml` 记录 `[[rename]]` 的 `old`、`new`、`reason`。 [模块可见性](build.md#modules)
 
+<a id="check-export"></a>
+
+### 检查仅供开发期使用的旧接口
+
+改名时，可按项目约定把旧别名或测试转发文件保留一个发布周期，给尚在进行的工作留出切换时间。用独立行注释 `-- promotion: dev-only` 标记这些临时项，并在本批迁移清单里记录旧名、新名和路径。导出到接收仓时，去掉标记的临时别名和转发文件，并让消费者改用新接口。公开库按自身兼容政策使用的 `@[deprecated]` 声明可以照常保留。
+
+```bash
+qatlib-env promotion check-export MyLib/Facts.lean verification/Consumer.lean
+```
+
+向命令显式传入本批导出的全部目标 Lean 文件，包括尚未纳入 Git 的新文件。工具只读扫描真实的 Lean 行注释，忽略块注释和字符串里的示例。找到残留标记时输出文件、行号和错误，退出码非零。检查完成后再按迁移清单反查旧名和路径，确认没有漏标的过渡项，并运行普通模块的消费者探针。
+
 ## 提前演练下游切换
 
 上游接收包进入预发分支后，下游可先建 Draft PR，在草稿里用候选依赖演练导入路径、限定名、探针和查重。按项目规则标明草稿所用的候选提交与预发验证结果。这样可以在正式发布前发现消费者的兼容问题。公开版本和对应预编译工件全部可用后，才可合并下游切换及删源。在此期间，下游主线继续保留现有实现和依赖锁。
@@ -43,7 +55,7 @@ qatlib-env prepare
 
 `bump-lock` 更新既有直接 Git 依赖并核对更新后的检出。 `verify-lock` 要求能读取锁定的本地源码，因此在没有依赖检出的干净环境里，先运行 `prepare`，再核对锁。把锁定 SHA、缓存准备和构建结果对应到同一版本。
 
-在同一张下游 PR 里，将 `import`、`open`、完整限定名、测试和项目元数据切换到公开接口，清退旧源码与只剩空壳的模块。核对被删书目键已由上游完整收录，再检查未改动文件中的反向引用。最后对新锁运行以下检查。
+在同一张下游 PR 里，将 `import`、`open`、完整限定名、测试和项目元数据切换到公开接口，清退旧源码、临时别名与只剩空壳的模块。核对被删书目键已由上游完整收录，再检查未改动文件中的反向引用。最后对新锁运行以下检查。
 
 ```bash
 qatlib-env promotion check-retired --package MyLib
