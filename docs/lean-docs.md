@@ -4,7 +4,7 @@
 
 ## 文档注释和网站链接
 
-`/-! ... -/` 是模块文档，适合交代文件职责、主要定义和依赖关系。`/-- ... -/` 紧贴声明，说明语义、前提和用法。传统 Markdown 注释用反引号包住声明的完整限定名，例如 `Qatlib.Concepts.Example.foo`。生成网站时，doc-gen4 根据已分析的环境和符号表查找链接目标。编辑器的 Lean LSP hover 渲染本地文档，缺少网站的路由和书目索引。要在 hover 中直接打开论文，可以用标准 Markdown 链接指向 DOI 或 arXiv。 [doc-gen4 分析实现](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Process/Analyze.lean#L164-L171) · [文档链接渲染](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Output/DocString.lean#L167-L228)
+`/-! ... -/` 是模块文档，适合交代文件职责、主要定义和依赖关系。`/-- ... -/` 紧贴声明，说明语义、前提和用法。传统 Markdown 注释用反引号包住声明的完整限定名，例如 `MyLib.Facts.some_fact`。生成网站时，doc-gen4 根据已分析的环境和符号表查找链接目标。编辑器的 Lean LSP hover 渲染本地文档，缺少网站的路由和书目索引。要在 hover 中直接打开论文，可以用标准 Markdown 链接指向 DOI 或 arXiv。 [doc-gen4 分析实现](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Process/Analyze.lean#L164-L171) · [文档链接渲染](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Output/DocString.lean#L167-L228)
 
 启用 Verso 的文件可用 `{name}` 角色，让编译器解析名称。扩大使用范围前，分别检查错拼名称能否被编译器发现、编辑器 hover 是否正常、网站链接能否跳转，以及模板摘要是否显示了原始标记。传统注释可与 Verso 试点并存。
 

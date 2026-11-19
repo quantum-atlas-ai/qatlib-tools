@@ -1,54 +1,61 @@
 # 共享成果如何进入公开库
 
-## 收集整文件依赖
+## 手册与各仓晋升说明的分工
 
-晋升以可复用的叶模块为起点，沿仓内导入链向下闭包收集全部依赖。**最小迁移单元是完整的 `.lean` 源文件**（连同文件内的定义、类型类实例、英文文档注释与私有辅助引理一并迁移，不做半文件拆解）。若遇到依赖缺失、循环依赖或目标路径已存在不同实现，须先由上下游维护者对齐接口设计，并如实记录留在原仓未晋升的模块与原因；开发仓自身的结构化元数据与生成页按其仓内规范同步刷新（参见 [Dev 晋升接收规范](https://github.com/quantum-atlas-ai/example-library/blob/ad7eccff36857b11d6cdf1bcf337bcb77f9e2ef0/.agents/skills/qatlas-promote-to-staging/SKILL.md)）。
+这里说明一项成果从孵化仓进入预发验收仓、再随正式版本进入公开库的通用技术步骤。整文件依赖、普通 Lean 模块的消费者探针、增量书目归并和跨库冲突检查都适用于不同项目。具体目录、元数据、评审角色与准入标准由各仓自己的 `promote` skill 维护，并从那里链接本手册。
 
-迁移模块时从叶文件开始，并核对实际消费者的公开接口。详见[模块的公开接口](lake.md#modules)。
+## 第一阶段：迁移整文件并在预发仓验证
 
-## 预发仓的消费者验证
+从拟公开的模块出发，沿项目内的 `import` 递归收集依赖，区分已由接收仓或其外部依赖提供的模块。按完整的 `.lean` 文件迁移，将实例、文档注释与私有辅助引理一起保留。遇到缺少依赖或目标路径已有不同实现，先解决接口冲突，再继续迁移。对留在原仓的依赖和未迁移模块，记录原因供接收方复核。
 
-晋升书目时，在接收仓根目录运行 `qatlib-env promotion merge-bibliography --increment /path/to/dev/docs/references.bib` 按键预检；确认后加 `--write`，工具会保留上游 `docs/references.bib` 原有字节并追加新增条目原文，同键异文会阻止写入。开发仓只保留尚未公开的增量书目，允许清退后为 0 条目；引用校验叠加锁定 Public 基线。
+有项目适配器时，可调用 Python 接口 `qatlib_search.promotion_closure.candidate_closure`。调用方先验证依赖锁，再传入候选模块、源码库根和适用的导入规则。接口只读源码，返回依赖在前的整文件清单和各文件的导入关系。查到错误时只返回诊断和已读到的导入关系，迁移清单为空。
 
-`qatlib-staging` 除了运行全套 `Lint` 与 `Build`，还应在普通 `module` 环境下以最小窄导入验证公开接口的实际可消费性（例如编写探针 `verification/Consumer.lean`）：
+在预发仓根目录运行 `qatlib-env promotion merge-bibliography --increment /path/to/increment/references.bib` 预检。加 `--write` 后，工具保留目标 `docs/references.bib` 的原有字节，只追加未收录的条目原文。同键异文会阻止写入。增量仓仍用锁定的公开书目和自己的增量一起验证引用。 [增量书目](lean-docs.md#bibliography)
+
+预发验收同时运行项目静态检查和构建，并从普通 `module` 的视角检查外部可用的接口。例如在 `verification/Consumer.lean` 里导入并使用拟发布的模块。
 
 ```lean
 module
-import Qatlib.Concepts.BlockEncoding.Postselection
+import MyLib.Facts
 
-#check Qatlib.Concepts.BlockEncoding.Postselection.normalize_error_of_gap
+#check MyLib.Facts.some_fact
 ```
 
 ```bash
 qatlib-env promotion smoke --probe verification/Consumer.lean
 ```
 
-正式晋升探针建议用独立 `example` 显式复述关键定理签名：对承诺可计算的函数，用普通 `def` 调用并在小规模输入上验算；对承诺可展开的定义，用 `rfl` 或受限 `simp` 验证归约；全程使用普通 `import`，禁止用 `import all` 或套一层 `noncomputable` 掩盖接口退化。`promotion smoke` 会在回执中记录精确 HEAD、工具链与诊断详情，明确区分 `PASS`、`REGRESSION` 与 `NOT-RUN`。若晋升包含有意的规范化改名，可通过 `--migration-map migration.toml` 登记 `[[rename]]`（含 `old`、`new`、`reason`）供下游适配参考，最终门禁结论仍以真实编译结果为准。
+探针应以尽可能少的导入测试真实用法。用 `example` 复述关键定理的签名，用普通 `def` 调用承诺可计算的函数，用 `rfl` 或受限 `simp` 验证承诺可展开的定义。普通 `import` 让探针遵守下游实际的可见性规则。 `smoke` 使用已有依赖工件检查 Lean 文件，记录 HEAD、工具链和诊断，区分 `PASS`、`REGRESSION` 与 `NOT-RUN`。有意改名时可用 `--migration-map migration.toml` 记录 `[[rename]]` 的 `old`、`new`、`reason`。 [模块可见性](build.md#modules)
 
-## 发布后的升锁和清退
+## 提前演练下游切换
 
-预发仓合入后，下游可在独立草稿分支提前演练路径切换，但在公开仓正式发版且对应预编译缓存就绪前，开发仓主线不得提前删源断供。待新版本 `Qatlib` 及其缓存正式可消费后，按序执行定向升锁与源码清退：
+上游接收包进入预发分支后，下游可先建 Draft PR，在草稿里用候选依赖演练导入路径、限定名、探针和查重。按项目规则标明草稿所用的候选提交与预发验证结果。这样可以在正式发布前发现消费者的兼容问题。公开版本和对应预编译工件全部可用后，才可合并下游切换及删源。在此期间，下游主线继续保留现有实现和依赖锁。
+
+## 第二阶段：按正式版本更新依赖锁并清退旧副本
+
+先确认正式版本、完整提交 SHA 和对应预编译工件都可获取。将草稿切到正式依赖，检查定向更新的版本和锁文件差异。
 
 ```bash
-qatlib-env promotion bump-lock --package Qatlib
-qatlib-env promotion verify-lock --package Qatlib
+qatlib-env promotion bump-lock --package MyLib
+qatlib-env promotion verify-lock --package MyLib
 qatlib-env prepare
 ```
 
-随后将仓内受影响的 `import`、`open`、完整限定名（FQN）、测试及元数据引用统一切至新公开接口，清退已发布的旧 `.lean` 源文件与空壳模块，并同步核对 `docs/references.bib`（仅清退上游已完整收录且内容一致的书目键，并反查未改动文件是否仍引用已移除的声明或书目键），最后在精确新锁上跑通查重与跨库冲突检查：
+`bump-lock` 更新既有直接 Git 依赖并核对更新后的检出。 `verify-lock` 要求能读取锁定的本地源码，因此在没有依赖检出的干净环境里，先运行 `prepare`，再核对锁。把锁定 SHA、缓存准备和构建结果对应到同一版本。
+
+在同一张下游 PR 里，将 `import`、`open`、完整限定名、测试和项目元数据切换到公开接口，清退旧源码与只剩空壳的模块。核对被删书目键已由上游完整收录，再检查未改动文件中的反向引用。最后对新锁运行以下检查。
 
 ```bash
-qatlib-env promotion check-retired --package Qatlib
-qatlib-env conflicts --package Qatlib
+qatlib-env promotion check-retired --package MyLib
+qatlib-env conflicts --package MyLib
 ```
 
-| 门禁环节 | 核心核验内容 |
+| 检查 | 核验内容 |
 | --- | --- |
-| `verify-lock` | 校验 `lake-manifest.json` 记录的完整 SHA 与本地实际检出的依赖源码树严格一致 |
-| `check-retired` | 拦截归一化库根下尚未清退的同名重复公开声明或整文件残留副本 |
-| `conflicts` | 扫描跨库模块重名、显式公开 FQN 碰撞与全局语法注册冲突（合法符号重载由人工复核） |
-| 项目静态门禁 | 校验目录导入层级、结构化元数据、自动生成文档、增量书目及被删提供者的反向引用 |
-| 受控 Build、`EnvLint` 与内核审计 | 编译全量消费者，在内核层验证零 `sorry` 与公理白名单契约（覆盖构造器、投影与宏生成项） |
-| 普通 `module` `smoke` | 从外部普通模块视角提前拦截公开接口签名、可计算性或定义展开可见性的无意退化 |
+| `verify-lock` | 清单锁定的完整 Git SHA 与该依赖实际检出一致 |
+| `prepare` | 按锁准备依赖源码和所配置的缓存 |
+| `check-retired` | 按库根匹配残留的同路径模块和重复的显式公开声明 |
+| `conflicts` | 扫描跨库模块、显式公开声明和全局语法的冲突。合法的重载需要复核 |
+| 项目静态检查、构建和消费者探针 | 根据各仓标准核对目录、引用、元数据及接口可用性。可用 `qatlib-env ci lint` 和 `qatlib-env ci build` 接入项目流程 |
 
-外层 CI 工作流可直接调用 `qatlib-env ci lint` 与 `qatlib-env ci build`（完整构建按 Runner 预算对该次调用显式传入 `--allow-local-heavy`；增量环境审计 `python -m qatlib_env.check_scoped_env_lint --base "$BASE_SHA"` 须确保 `BASE_SHA` 在本地 Git 对象库中真实可读）。
+依赖锁、接口调用、旧副本和书目通过同一张验证通过的 PR 一起切换，主线才能持续提供可用接口。以上命令是各自独立的检查与准备步骤，遇到失败应修复后再合入。
