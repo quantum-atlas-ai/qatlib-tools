@@ -6,6 +6,9 @@ export default defineConfig({
   outDir: 'src/.vitepress/dist',
   cleanUrls: true,
   lastUpdated: false,
+  markdown: {
+    theme: 'github-dark',
+  },
   head: [
     ['meta', { name: 'theme-color', content: '#263f5f' }],
   ],
@@ -43,7 +46,7 @@ export default defineConfig({
           { text: '快速上手', link: '/guide' },
           { text: '维护机制手册', link: '/docs/build' },
           { text: '设计原则', link: '/design' },
-          { text: 'Qatlib 主站 ↗', link: 'https://quantum-atlas-ai.github.io/qatlib/' },
+          { text: 'Qatlib 主站', link: 'https://quantum-atlas-ai.github.io/qatlib/' },
         ],
         sidebar: [
           {
@@ -95,7 +98,7 @@ export default defineConfig({
           { text: 'Quickstart', link: '/en/guide' },
           { text: 'Engineering Guides', link: '/en/docs/build' },
           { text: 'Design Principles', link: '/en/design' },
-          { text: 'Qatlib Portal ↗', link: 'https://quantum-atlas-ai.github.io/qatlib/' },
+          { text: 'Qatlib Portal', link: 'https://quantum-atlas-ai.github.io/qatlib/' },
         ],
         sidebar: [
           {

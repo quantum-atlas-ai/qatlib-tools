@@ -22,11 +22,11 @@ features:
     link: /docs/build
     linkText: 阅读编译与缓存机制
   - title: Runner 资源计费与进程回收
-    details: 解析 Linux cgroup v2 页缓存计费假象，通过父死信号守卫、subreaper 子孙收养与瞬态 systemd scope 根治任务取消后的孤儿编译进程驻留。
+    details: 解释 Linux cgroup v2 页缓存计费，以及如何通过父死信号、subreaper 和瞬态 systemd scope 回收取消任务留下的编译进程。
     link: /docs/runner
     linkText: 阅读 Runner 与进程隔离
   - title: 文档注释、书目与静态检索
-    details: 对比 doc-gen4 整站符号路由与本地 LSP hover 的渲染边界，支持增量 BibTeX 书目校验与无需启动编译器的毫秒级源码词法检索。
+    details: 对比 doc-gen4 整站符号路由与本地 LSP hover，介绍增量 BibTeX 书目校验，以及无需启动编译器的源码词法检索。
     link: /docs/lean-docs
     linkText: 阅读文档与检索机制
   - title: GitHub 与 Gitea 并发门禁核验
