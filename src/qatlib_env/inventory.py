@@ -211,6 +211,7 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
         data["stash_count"] = len(_read_git(path, "stash", "list", "--format=%H").splitlines())
         raw = _read_git(path, "worktree", "list", "--porcelain", "-z")
         data["worktrees"] = [x.removeprefix("worktree ") for x in raw.split("\0") if x.startswith("worktree ")]
+        data["locked_worktrees"] = []
         local = _read_git(path, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads").splitlines()
         origin = _read_git(path, "remote", "get-url", "origin").strip()
         local_origin = origin.startswith(("/", "./", "../", "file:", "~", "\\\\")) or ("://" not in origin and ":" not in origin)
@@ -246,6 +247,8 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
                 current = token.removeprefix("worktree ")
             elif token.startswith("HEAD "):
                 heads.append(token.removeprefix("HEAD ") + " worktree:" + current)
+            elif token == "locked" or token.startswith("locked "):
+                data["locked_worktrees"].append(current)
         for line in local + heads:
             sha, ref = line.split(" ", 1)
             if sha in tips or sha in reachable:
@@ -260,7 +263,7 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
 
 
 def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), now=None,
-         exact=False, semantic=None, max_directories=100000):
+         exact=False, semantic=None, max_directories=100000, history=None, protect_refs=()):
     if not math.isfinite(hot_hours) or hot_hours < 24:
         raise ValueError("hot-hours must be finite and at least 24")
     now = time.time() if now is None else now
@@ -274,7 +277,8 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
     active, process_errors = processes()
     # Git operations do not contend for shared write locks. Four workers bound load.
     with ThreadPoolExecutor(max_workers=4) as executor:
-        observe = checkout_facts if semantic is None else lambda p: checkout_facts(p, semantic=semantic)
+        def observe(path):
+            return checkout_facts(path, inspect_ignored=history is not None, semantic=semantic)
         rows = list(executor.map(observe, repos))
     groups, remote_cache = {}, {}
     representatives = {}
@@ -296,6 +300,10 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
         path = Path(row["path"])
         if any(_related(path.resolve(), Path(p).expanduser().resolve()) for p in protect):
             row["protection"].append("explicitly protected by operator")
+        if row.get("branch") in protect_refs or row.get("head") in protect_refs:
+            row["protection"].append("protected branch or HEAD")
+        if row["path"] in groups.get(common, {}).get("locked_worktrees", []):
+            row["protection"].append("Git worktree is locked")
         row["active_processes"] = _active_for(path, active)
         if row["active_processes"]:
             row["protection"].append("active Lean/Lake process")
@@ -310,13 +318,24 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
                 row["lake"]["trash_probe"] = system_trash.probe(lake)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 row["lake"]["error"] = str(error)
-    return {"schema_version": 1, "captured_at": now, "roots": [str(p) for p in roots], "exact": exact,
+    result = {"schema_version": 1, "captured_at": now, "roots": [str(p) for p in roots], "exact": exact,
             "checkouts": rows, "common_dirs": groups, "research_markers": markers,
             "errors": errors, "skipped": skipped, "process_errors": process_errors,
             "truncated": any(error.startswith(f"directory limit {max_directories} reached at ") for error in errors),
             "notes": ["No fetch/bootstrap/cache lock/config write; no proof that all research is harvested.",
                       "Sizes are optional; same-filesystem Trash does not reclaim physical space.",
                       "Processes visible to this user only; coordinate idle writers before apply."]}
+    if history is not None:
+        result["history_root"] = str(history)
+        result["history_unclassified"] = []
+        try:
+            if history.is_dir() and not history.is_symlink():
+                result["history_unclassified"] = [
+                    str(entry) for entry in sorted(history.iterdir())
+                    if not any(Path(repo).is_relative_to(entry) for repo in repos)]
+        except OSError as error:
+            errors.append(f"{history}: {error}")
+    return result
 
 
 def _warning(path, reason, *, recursive=False, **details):
@@ -402,11 +421,30 @@ def _runtime_reasons(checkout, target, active, protect):
     return reasons
 
 
+def _merged_reasons(path, fact, group, merged_into, expected_common):
+    """Prove that this linked checkout can be retired without losing local work."""
+    if (not fact.get("linked_worktree") or not fact.get("common_dir")
+            or Path(fact["common_dir"]).resolve() != expected_common):
+        return ["auto-retirement requires a linked worktree of the current Git repository"]
+    if (fact["errors"] or fact.get("warnings") or fact.get("dirty_count") or fact.get("ignored_count")
+            or group.get("errors") or group.get("stash_count")):
+        return ["Git inspection found changes, local material, a stash or an unreadable checkout"]
+    if git(path, "merge-base", "--is-ancestor", fact["head"], merged_into).returncode:
+        return ["HEAD is not verified as an ancestor of the supplied main SHA"]
+    return []
+
+
 def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), check_remote=False,
-          prune=True):
+          prune=True, protect_refs=(), merged_into=None):
     """Preview complete warnings; --apply confirms them and uses native Trash."""
     if mode not in {"caches", "derived", "checkouts"}:
         raise ValueError("mode must be caches or checkouts")
+    expected_common = None
+    if merged_into is not None:
+        if mode != "checkouts" or len(merged_into) not in {40, 64} or any(c not in "0123456789abcdef" for c in merged_into):
+            raise ValueError("--merged-into requires trash-checkouts and a full commit SHA")
+        expected_common = Path(_read_git(Path.cwd(), "rev-parse", "--path-format=absolute",
+                                         "--git-common-dir").strip()).resolve()
     selected = [Path(p).expanduser().absolute() for p in checkouts]
     selected = [Path(os.path.abspath(p)) for p in selected]
     if not selected or len(set(selected)) != len(selected):
@@ -424,6 +462,14 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
         reasons = _runtime_reasons(path, target, active, protect)
         fact = checkout_facts(path, inspect_ignored=True)
         group = common_facts(path, check_remote=check_remote, remote_cache=remote_cache)
+        if fact.get("branch") in protect_refs or fact.get("head") in protect_refs:
+            reasons.append("protected branch or HEAD")
+        if str(path) in group.get("locked_worktrees", []):
+            reasons.append("Git worktree is locked")
+        if merged_into:
+            reasons.extend(_merged_reasons(path, fact, group, merged_into, expected_common))
+            if process_errors or time.time() - fact.get("last_activity", time.time()) < hot_hours * 3600:
+                reasons.append("recent activity or incomplete process inspection")
         warnings = _git_warnings(path, fact, group)
         warnings.extend(_warning(path, message) for message in process_errors)
         if time.time() - fact.get("last_activity", time.time()) < hot_hours * 3600:
@@ -438,6 +484,10 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
                 warnings.extend(_warning(path / p, "Lake content is tracked by the checkout") for p in tracked if p)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 warnings.append(_warning(lake, f"tracked-content inspection incomplete: {error}"))
+        if merged_into and lake.exists() and any(
+                Path(w["path"]).is_relative_to(lake) and w["reason"] != "remote preservation is not verified"
+                for w in warnings):
+            reasons.append("local or unverified material in .lake")
         for warning in warnings:
             common = warning.get("common_dir")
             if common and Path(common).is_relative_to(target) and any(
@@ -484,6 +534,25 @@ def clean(checkouts, *, mode="caches", apply=False, hot_hours=24, protect=(), ch
             checkout = Path(row["checkout"])
             row["warnings"].extend(_warning(checkout, message) for message in live_errors)
             blockers = _runtime_reasons(checkout, Path(row["path"]), live, protect)
+            if merged_into or protect_refs:
+                fact = checkout_facts(checkout, inspect_ignored=bool(merged_into))
+                if fact.get("branch") in protect_refs or fact.get("head") in protect_refs:
+                    blockers.append("protected branch or HEAD")
+                if merged_into:
+                    group = common_facts(checkout)
+                    blockers.extend(_merged_reasons(checkout, fact, group, merged_into, expected_common))
+                    if (str(checkout) in group.get("locked_worktrees", []) or live_errors
+                            or time.time() - fact.get("last_activity", time.time()) < hot_hours * 3600
+                            or fact.get("head") != row["head"]):
+                        blockers.append("worktree locked, active, changed or incompletely inspected")
+                    lake = checkout / ".lake"
+                    if lake.is_symlink():
+                        blockers.append("Lake directory is a symbolic link")
+                    elif lake.is_dir() and (any(
+                            w["reason"] != "remote preservation is not verified"
+                            for w in _lake_warnings(lake))
+                            or _read_git(checkout, "ls-files", "-z", "--", ".lake")):
+                        blockers.append("local or unverified material in .lake")
             if blockers:
                 raise ValueError("; ".join(blockers))
             for warning in row["warnings"][:]:
@@ -531,6 +600,8 @@ def cli_main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     inventory = commands.add_parser("scan", description="Inspect Git and Lake state without preparing a workspace. A truncated scan reports its limit and exits 1.")
     inventory.add_argument("roots", type=Path, nargs="*")
+    inventory.add_argument("--history", action="store_true",
+                           help="scan ~/.legacy-worktrees/tmp first, including ignored Git files and unclassified entries")
     inventory.add_argument("--measure", action="store_true", help="measure .lake bytes (slower)")
     inventory.add_argument("--exact", action="store_true", help="inspect known checkout roots without recursive discovery")
     inventory.add_argument("--max-directories", type=int, default=100000, help="limit recursive discovery")
@@ -549,25 +620,41 @@ def cli_main(argv=None):
         else:
             command.add_argument("--no-prune", action="store_true",
                                  help="keep Git worktree registrations after moving linked checkouts")
+            command.add_argument("--merged-into", metavar="SHA",
+                                 help="only retire idle, clean linked trees of the current repository whose HEAD is an ancestor of this verified main commit")
     for command in (inventory, *[commands.choices[n] for n in ("clean-caches", "trash-checkouts")]):
         command.add_argument("--json", action="store_true")
         command.add_argument("--hot-hours", type=float, default=24)
         command.add_argument("--protect", action="append", type=Path, default=[])
+        command.add_argument("--protect-ref", action="append", default=[], metavar="BRANCH_OR_SHA",
+                             help="protect checkouts matching this branch or exact HEAD (repeat for open PRs)")
     args = parser.parse_args(argv)
     try:
         if args.command == "scan":
-            roots = args.roots or [Path.cwd().parent, Path.home() / ".legacy-worktrees/tmp"]
+            history = Path.home() / ".legacy-worktrees/tmp"
+            roots = args.roots
+            if args.history:
+                if args.exact:
+                    raise ValueError("--history requires recursive discovery")
+                roots = ([history] if os.path.lexists(history) else []) + roots
+            elif not roots:
+                if args.exact:
+                    roots = [Path.cwd()]
+                else:
+                    roots = ([history] if os.path.lexists(history) else []) + [Path.cwd().parent]
             result = scan(roots, measure=args.measure, check_remote=args.check_remote,
                           hot_hours=args.hot_hours, protect=args.protect, exact=args.exact,
                           semantic=SEMANTIC | set(args.marker) if args.marker else None,
-                          max_directories=args.max_directories)
+                          max_directories=args.max_directories, history=history if args.history else None,
+                          protect_refs=args.protect_ref)
         else:
             mode = "checkouts"
             if args.command == "clean-caches":
                 mode = "derived" if args.derived_only else "caches"
             result = clean(args.checkout, mode=mode,
                            apply=args.apply, hot_hours=args.hot_hours, protect=args.protect,
-                           check_remote=args.check_remote, prune=not getattr(args, "no_prune", False))
+                           check_remote=args.check_remote, prune=not getattr(args, "no_prune", False),
+                           protect_refs=args.protect_ref, merged_into=getattr(args, "merged_into", None))
         # JSON is the stable agent interface, also the default readable output.
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if result.get("error") or result.get("truncated") else 0

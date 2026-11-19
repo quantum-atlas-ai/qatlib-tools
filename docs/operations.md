@@ -65,7 +65,7 @@
 | --- | --- |
 | 1. 默认值与项目推导 | 根据宿主与 cgroup 实时探测结果给出保守默认值；主库根、测试根与 `srcDir` 从 `lakefile.toml` 动态解析，仓库标识与工作流从项目目录自动推导 |
 | 2. Runner 兼容配置 | 环境变量 `QATLAS_RUNNER_CONFIG` 指向的实例配置文件 |
-| 3. 个人本机设置 | 先读兼容路径 `${XDG_CONFIG_HOME:-~/.config}/qatlib/env.toml`，再读标准个人配置 `~/.qatlib/env.toml`（存放与机器规模绑定的并发池与单任务资源） |
+| 3. 个人本机设置 | 依次读旧 XDG 配置、`~/.qatlib/env.toml` 和明确指定的 `$QATLIB_HOME/env.toml`，后者覆盖前者 |
 | 4. 项目共享策略 | 先读仓库根 `pyproject.toml` 的 `[tool.qatlib-env]`，再读根 `qatlib-env.toml`；二者均不存在时回退读取 `python/pyproject.toml` |
 | 5. 工作树本地覆盖 | 工作树根目录 `.qatlib-env.local.toml`（次级 `worktree` 未单独放置时，可只读继承主检出的同名文件） |
 | 6. 环境变量覆盖 | 如 `QATLAS_POOL_BUDGET_MIB`、`QATLAS_POOL_CPU`、`QATLAS_JOBS`；线程数变量优先级为 `QATLAS_LEAN_THREADS` 高于 `LEAN_NUM_THREADS` |
@@ -82,7 +82,22 @@ require_explicit_local_heavy = true
 
 - 将阈值设为 `0` 表示禁止对应类别的本地冷编或反向波及；临时调试可通过环境变量 `QATLAS_MAX_COLD_MODULES`、`QATLAS_MAX_REVERSE_MODULES` 覆盖。配置文件若出现未知键名或类型不匹配，工具会直接报错指出具体文件与字段路径。
 - `--allow-local-heavy` 仅对当次命令行调用生效，且依然受共享池容量、系统 cgroup 控制器与超时上限约束；`QATLAS_POOL_WAIT_TIMEOUT` 仅调整排队等待已有租约释放的超时时间，一旦单次请求本身超出池硬上限仍会立即拒绝。
-- 上游依赖版本由 `lake-manifest.json` 唯一锁定，远端缓存端点由 `lake-cache.toml` 配置，本地工件存储目录由 `LAKE_CACHE_DIR` 指定；并发租约账本按 `XDG_STATE_HOME` / `XDG_CACHE_HOME` 定位（需要共享机器配额的多任务须指向同一账本路径）；`qatlib-retrieve` 独立按 Lake 配置发现语料并通过 `--project` 与 `--db` 管理索引位置。
+<a id="local-paths"></a>
+
+## 本机数据目录
+
+`qatlib-env config explain --json` 的 `paths` 显示实际路径，不创建目录。表中工具根指 `${QATLIB_HOME:-~/.qatlib}`。
+
+| 数据 | 默认位置 | 覆盖和兼容 |
+| --- | --- | --- |
+| 个人配置 | 工具根的 `env.toml` | 保留 `${XDG_CONFIG_HOME:-~/.config}/qatlib/env.toml` 和 `~/.qatlib/env.toml` 的低优先级读取 |
+| R2 密钥文件 | 工具根的 `secrets` | `QATLAS_R2_KEY_FILE` 优先。改过工具根且新文件不存在时，仍可读旧文件 |
+| 构建池租约 | 工具根的 `state/pool/ledger.json` 与 `ledger.lock` | 明确设置 `XDG_STATE_HOME` 或 `XDG_CACHE_HOME` 时，仍使用该目录下的 `qatlib-env/pool`。默认旧目录 `~/.cache/qatlib-env/pool` 已有账本或锁时沿用原位置 |
+| 检索索引 | 工具根的 `retrieve/<corpus-key>.sqlite3` | `--db` 优先。查询可读取旧 XDG 缓存，见[本地索引](lean-docs.md#lexical-index) |
+| 云端作业回执 | 工具根的 `state/cloud/<corpus-key>.json` | `--state` 优先。已有检出根 `.qatlib-env/cloud-state.json` 时继续读写旧回执 |
+| Lake 工件和本地检查点 | Lake 工件目录与其 `checkpoints/` 子目录 | `LAKE_CACHE_DIR` 优先；否则沿用 elan 的对应工具链目录或独立 Lake 的 XDG 缓存。保留原有数据 |
+
+同一台机器的构建调用应使用同一账本和锁。迁移旧账本前先停止使用该池的构建，再统一调用者使用的工具版本和环境。旧锁文件仍存在时工具会继续选择旧池。历史工作树池 `~/.legacy-worktrees/tmp/` 由相应仓库维护，可用 `qatlib-env workspace scan --history` 查找。它与用户工具目录无关。
 
 ---
 

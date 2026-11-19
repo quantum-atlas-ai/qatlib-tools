@@ -69,6 +69,24 @@ def query(corpus, text='', **kwargs):
     return r.query(text, project, db, **kwargs)
 
 
+def test_default_index_migrates_without_touching_legacy(corpus, tmp_path, monkeypatch):
+    from qatlib_env.locations import index_paths
+
+    project, _, _ = corpus
+    monkeypatch.setenv("QATLIB_HOME", str(tmp_path / "qatlib"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "old-cache"))
+    current, legacy = index_paths(project)
+    r.build_index(project, legacy)
+    old_bytes = legacy.read_bytes()
+    result = r.query("phaseGap", project)
+    assert result["results"] and any("Reading legacy index" in s for s in result["warnings"])
+    assert not current.exists()
+    r.build_index(project, changed=True)
+    assert current.is_file() and legacy.read_bytes() == old_bytes
+    assert r.query("phaseGap", project)["results"]
+    assert not any("Reading legacy index" in s for s in r.query("phaseGap", project)["warnings"])
+
+
 def test_lexical_fields_visibility_and_background_relations(corpus):
     result = build(corpus)
     assert result['declarations'] == 7

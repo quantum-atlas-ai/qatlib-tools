@@ -644,6 +644,24 @@ def cache_directory(project, env):
     return official_cache(env)
 
 
+def explain_paths(project, env):
+    from .locations import cloud_state_path, config_paths, index_paths, pool_paths, qatlib_home, secrets_path
+    index, legacy_index = index_paths(project, env)
+    canonical_pool, legacy_pool, pool = pool_paths(env)
+    cache = cache_directory(project, env) if env.get("LAKE_CACHE_DIR") or (project / "lean-toolchain").is_file() else None
+    return {
+        "qatlib_home": str(qatlib_home(env)),
+        "user_config_layers": [str(path) for path in config_paths(env)],
+        "r2_key_file": str(secrets_path(env)),
+        "pool": {"directory": str(pool), "canonical": str(canonical_pool), "compatibility": str(legacy_pool)},
+        "retrieve": {"write": str(index), "read": str(legacy_index if not index.exists() and legacy_index.is_file() else index),
+                     "legacy": str(legacy_index)},
+        "cloud_state": str(cloud_state_path(project, env)),
+        "lake_cache": str(cache) if cache is not None else None,
+        "checkpoints": str(cache / "checkpoints") if cache is not None else None,
+    }
+
+
 def dependency_url_map(project, source=None, env=None):
     env = dict(os.environ if env is None else env)
     try:
@@ -1006,7 +1024,7 @@ def main(argv=None):
     for name in ("env", "shell", "bootstrap", "prepare"):
         options(commands.add_parser(name))
     config = commands.add_parser("config", help="explain resource configuration without preparing a workspace",
-                                 description="Report host/cgroup capacity, automatic defaults, effective settings and sources as JSON. This does not prepare dependencies or acquire a lease.")
+                                 description="Report host/cgroup capacity, effective settings and user storage paths as JSON. QATLIB_HOME defaults to ~/.qatlib. This does not prepare dependencies or acquire a lease.")
     config.add_argument("action", choices=("explain",))
     config.add_argument("--json", action="store_true", help="emit JSON (the default)")
     options(config)
@@ -1055,7 +1073,7 @@ def main(argv=None):
     cloud = commands.add_parser("cloud")
     cloud.add_argument("action", choices=("submit", "status", "logs", "wait", "fetch"))
     cloud.add_argument("--head", default="HEAD")
-    cloud.add_argument("--state", type=Path, default=Path(".qatlib-env/cloud-state.json"))
+    cloud.add_argument("--state", type=Path, help="override the per-checkout receipt under QATLIB_HOME/state/cloud (an existing checkout-local receipt is reused)")
     cloud.add_argument("--job-id")
     cloud.add_argument("--bundle", type=Path)
     cloud.add_argument("--destination", type=Path)
@@ -1094,7 +1112,8 @@ def main(argv=None):
             sys.stdout.write(manual_path.read_bytes().decode("utf-8"))
         return 0
     if args.command == "config":
-        print(json.dumps(resources.resolve_config(project, cli).explain(), indent=2))
+        print(json.dumps({**resources.resolve_config(project, cli).explain(),
+                          "paths": explain_paths(project, os.environ)}, indent=2))
         return 0
     if args.command in {"pool", "plan", "cloud"}:
         if args.command == "pool":
@@ -1124,7 +1143,9 @@ def main(argv=None):
             raise ValueError("cloud mode requires repository and workflow in qatlib-env.toml")
         request = make_request(config, head=args.head, policy="cloud", cold=True)
         ref = RepoRef.parse(config.repository, platform=config.cloud_platform if config.cloud_platform in {"github", "gitea"} else None)
-        loop = CloudLoop(RepoAPI(ref, token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GITEA_TOKEN")), args.state)
+        from .locations import cloud_state_path
+        state_path = args.state or cloud_state_path(project)
+        loop = CloudLoop(RepoAPI(ref, token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GITEA_TOKEN")), state_path)
         if args.action == "submit":
             result = loop.submit(request)
         elif args.action == "status":
@@ -1136,7 +1157,7 @@ def main(argv=None):
                 raise ValueError("cloud fetch requires --destination")
             result = loop.fetch(args.destination)
         else:
-            state = json.loads(args.state.read_text(encoding="utf-8"))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
             job_id = args.job_id or state.get("job_id")
             if not job_id:
                 raise ValueError("cloud logs requires --job-id or a saved job id")

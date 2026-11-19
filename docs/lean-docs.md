@@ -24,6 +24,6 @@
 
 `qatlib-retrieve index` 静态扫描 Lake TOML 定义的本地正式库、已按锁检出的受支持 Git 依赖，以及这些仓库的 `docs/references.bib`。尚未检出的依赖会被跳过并提示。索引无需启动 Lean 编译器或 Lake，也不联网补依赖或申请构建配额。扫描以各源码仓的正式库根为基准，排除 `.git`、`.lake`、`.venv` 和 `.agent-tasks`。首次建索引后，可用 `qatlib-retrieve index --changed` 增量更新。
 
-默认索引为 `${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/<corpus-key>.sqlite3`。键取解析后的项目根绝对路径的 SHA-256 前 24 个十六进制字符。用 `--project` 指定项目，用 `--db` 另选文件，路径须在所有纳入索引的源码仓之外。
+默认索引为 `${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlite3`。键取解析后的项目根绝对路径的 SHA-256 前 24 个十六进制字符。用 `--project` 指定项目，用 `--db` 另选文件，路径须在所有纳入索引的源码仓之外。新索引尚未建立时，查询可只读打开旧 `${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/` 中对应的文件。直接运行 `index` 可重建到新目录；若仅有旧索引，首次 `index --changed` 同样在新目录全量重建，保留旧文件。
 
 `query` 和 `find` 只读已有索引。可以先用命中结果中的源码签名和外层 `section` 的 `variable` 查重、核对隐式前提，再打开源码确认。宏展开、结构体自动生成项和编译器派生声明可能未被收录，最终以 Lean 编译和消费者验证为准。旧格式索引可直接重新建立。

@@ -10,6 +10,7 @@ import re
 import subprocess
 import tomllib
 
+from qatlib_env.locations import index_paths
 from .doc_references import parse_bibliography_entries
 from .paths import project_root
 
@@ -179,9 +180,9 @@ def discover(project: str | Path | None = None) -> Corpus:
     return Corpus(root, repos, inputs, bib, warnings)
 
 
-def default_db(corpus: Corpus) -> Path:
-    cache = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')).expanduser()
-    return cache / 'qatlib/retrieve' / (corpus.key + '.sqlite3')
+def default_db(corpus: Corpus, *, read=False) -> Path:
+    current, legacy = index_paths(corpus.project)
+    return legacy if read and not current.exists() and legacy.is_file() else current
 
 
 def check_destination(path: Path, corpus: Corpus) -> None:

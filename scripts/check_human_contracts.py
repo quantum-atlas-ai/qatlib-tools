@@ -1,4 +1,4 @@
-"""Validate the two marked contracts and compare them to approved digests."""
+"""Validate the marked AGENTS contract and compare it to its approved digest."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -6,7 +6,7 @@ import re
 
 START = "<!-- human-contract:start -->"
 END = "<!-- human-contract:end -->"
-PATHS = ("AGENTS.md", "README.md")
+PATHS = ("AGENTS.md",)
 MANIFEST = "docs/design/human-contracts.sha256"
 MARKER = re.compile(r"<!--\s*human-contract:[^>]*-->")
 
@@ -26,11 +26,14 @@ def block(text: str, path: str) -> str:
 
 def pending(root: Path) -> dict[str, str]:
     """Validate the manifest and return the digests awaiting approval."""
+    if any(line.strip() in (START, END)
+           for line in (root / "README.md").read_text(encoding="utf-8").splitlines()):
+        raise ValueError("README.md: contract markers belong only in AGENTS.md")
     approved = {}
     for line in (root / MANIFEST).read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
-        match = re.fullmatch(r"([a-f0-9]{64})  (AGENTS\.md|README\.md)", line)
+        match = re.fullmatch(r"([a-f0-9]{64})  (AGENTS\.md)", line)
         if not match or match[2] in approved:
             raise ValueError(f"{MANIFEST}: invalid or duplicate approval entry")
         approved[match[2]] = match[1]

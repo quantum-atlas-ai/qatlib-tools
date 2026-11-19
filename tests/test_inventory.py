@@ -88,6 +88,92 @@ def test_scan_cli_reports_directory_truncation(tmp_path, capsys):
     assert result["errors"] == [f"directory limit 1 reached at {tmp_path / 'nested'}; narrow roots"]
 
 
+def test_hello_history_preview_and_guarded_cleanup(tmp_path, monkeypatch, capsys):
+    import json
+    import os
+    import time
+
+    if not inventory.sys.platform.startswith("linux"):
+        pytest.skip("isolated FreeDesktop receipt probe")
+    project = tmp_path / "development/research-repo"
+    history = tmp_path / ".legacy-worktrees/tmp"
+    project.parent.mkdir()
+    history.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(project)], check=True)
+    (project / ".gitignore").write_text(".lake/\nnotes/\n")
+    main_sha = snapshot(project)
+    inventory._read_git(project, "remote", "add", "origin", str(project))
+    trees = {}
+    for name in ("merged", "cache", "open-pr", "changed", "unpushed", "ignored"):
+        trees[name] = history / name
+        inventory._read_git(project, "worktree", "add", "-b", name, str(trees[name]), main_sha)
+    (trees["changed"] / "draft.lean").touch()
+    (trees["ignored"] / "notes").mkdir()
+    (trees["ignored"] / "notes/note.lean").touch()
+    (trees["unpushed"] / "experiment.lean").touch()
+    snapshot(trees["unpushed"])
+    for name in ("build", "packages", "preserve"):
+        (trees["cache"] / ".lake" / name).mkdir(parents=True)
+    (history / "loose-drafts").mkdir()
+    aged = time.time() - 48 * 3600
+    for name in ("merged", "open-pr", "changed", "ignored", "unpushed"):
+        tree = trees[name]
+        git_dir = Path(inventory._read_git(tree, "rev-parse", "--absolute-git-dir").strip())
+        for p in (tree, git_dir, git_dir / "HEAD", git_dir / "index", git_dir / "logs/HEAD"):
+            if p.exists():
+                os.utime(p, (aged, aged))
+    original = inventory.checkout_facts
+
+    def observe(path, **kwargs):
+        result = original(path, **kwargs)
+        if Path(path) in trees.values():
+            result["last_activity"] = aged
+        return result
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(inventory, "checkout_facts", observe)
+    monkeypatch.setattr(inventory, "processes", lambda: ([], []))
+    native = inventory.system_trash.trash
+    xdg = tmp_path / "test-trash"
+    monkeypatch.setattr(inventory.system_trash, "trash",
+                        lambda path: native(path, {"HOME": str(tmp_path), "XDG_DATA_HOME": str(xdg)}))
+    protection = ["--protect", str(project), "--protect-ref", "open-pr"]
+    assert inventory.cli_main(["scan", str(project), *protection]) == 0
+    assert str(history) not in json.loads(capsys.readouterr().out)["roots"]
+    assert inventory.cli_main(["scan", "--history", str(project), *protection]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["roots"] == [str(history), str(project)]
+    assert data["history_unclassified"] == [str(history / "loose-drafts")]
+    facts = {row["branch"]: row for row in data["checkouts"]}
+    assert facts["changed"]["untracked_count"] == 1
+    assert facts["open-pr"]["protection"] == ["protected branch or HEAD"]
+    assert facts["ignored"]["ignored_paths"] == ["notes/"]
+    assert facts["unpushed"]["head"] != main_sha
+
+    def checkout(name, operation):
+        args = ["trash-checkouts", "--checkout", str(trees[name]), "--merged-into", main_sha,
+                operation, *protection]
+        status = inventory.cli_main(args)
+        return status, json.loads(capsys.readouterr().out)
+
+    assert checkout("merged", "--dry-run")[1]["targets"][0]["eligible"]
+    for name in ("open-pr", "changed", "ignored", "unpushed"):
+        status, blocked = checkout(name, "--apply")
+        assert status == 1 and not blocked["receipts"] and trees[name].exists()
+    status, moved = checkout("merged", "--apply")
+    assert status == 0 and moved["worktree_prunes"][0]["pruned"]
+    assert (xdg / "Trash/files/merged/.git").is_file()
+    assert str(trees["merged"]) not in inventory._read_git(project, "worktree", "list", "--porcelain")
+    assert inventory.git(project, "show-ref", "--verify", "refs/heads/merged").returncode == 0
+    assert inventory.cli_main(["clean-caches", "--derived-only", "--checkout", str(trees["cache"]),
+                               "--apply", *protection]) == 0
+    assert len(json.loads(capsys.readouterr().out)["receipts"]) == 2
+    assert (trees["cache"] / ".lake/preserve").is_dir()
+    assert not (trees["cache"] / ".lake/build").exists()
+    assert not (trees["cache"] / ".lake/packages").exists()
+
+
 def test_derived_cleanup_selects_only_build_and_packages(monkeypatch):
     moved = mock_cleanup(monkeypatch)
     result = inventory.clean(["/r/a"], mode="derived", apply=True)

@@ -13,8 +13,8 @@ import uuid
 
 
 def pool_state_dir() -> Path:
-    base = os.environ.get("XDG_STATE_HOME") or os.environ.get("XDG_CACHE_HOME")
-    return Path(base or (Path.home() / ".cache")) / "qatlib-env" / "pool"
+    from .locations import pool_paths
+    return pool_paths()[2]
 
 
 @contextlib.contextmanager

@@ -98,10 +98,9 @@ def native_key_environment(env: dict[str, str], key: str) -> dict[str, str]:
     return result
 
 
-def default_key_file(env: dict[str, str] | None = None) -> Path:
-    values = os.environ if env is None else env
-    explicit = values.get("QATLAS_R2_KEY_FILE", "").strip()
-    return Path(explicit).expanduser() if explicit else Path(values.get("HOME", str(Path.home()))) / ".qatlib/secrets"
+def default_key_file(env: dict[str, str] | None = None, *, read=True) -> Path:
+    from .locations import secrets_path
+    return secrets_path(os.environ if env is None else env, read=read)
 
 
 def _private_path(path: Path, *, directory: bool = False) -> None:
@@ -441,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
     repo = args.repo.resolve()
     profile = detect_repo_profile(repo)
     if args.save_key:
-        save_key_file(args.key_file or default_key_file(), getpass.getpass("R2 write key (<AK>:<SK>): "),
+        save_key_file(args.key_file or default_key_file(read=False), getpass.getpass("R2 write key (<AK>:<SK>): "),
                       credential_variables(str(profile["package"]), project=repo)[0])
         print("Saved private R2 credential file (mode 0600).")
         return 0

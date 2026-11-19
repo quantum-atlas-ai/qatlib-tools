@@ -158,6 +158,11 @@ def build_index(project=None, db: str | Path | None = None, *, changed=False, us
     corpus = discover(project)
     path = Path(db).expanduser().resolve() if db else default_db(corpus)
     check_destination(path, corpus)
+    if changed and not path.is_file():
+        if db or not default_db(corpus, read=True).is_file():
+            raise ValueError('index missing; run qatlib-retrieve index')
+        changed = False
+        corpus.warnings.append('Legacy index found; rebuilt at the new default path')
     path.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(path, timeout=10)
     c.row_factory = sqlite3.Row
@@ -340,7 +345,7 @@ def query(text: str, project=None, db=None, *, limit=10, cite=None, kind=None, r
     if len(words) > 32:
         raise ValueError('query supports at most 32 distinct tokens')
     corpus = discover(project)
-    path = Path(db).expanduser().resolve() if db else default_db(corpus)
+    path = Path(db).expanduser().resolve() if db else default_db(corpus, read=True)
     check_destination(path, corpus)
     if not path.is_file():
         raise ValueError('index missing; run qatlib-retrieve index')
@@ -356,6 +361,8 @@ def query(text: str, project=None, db=None, *, limit=10, cite=None, kind=None, r
         if meta['project'] != str(corpus.project) or meta['repos'] != json.loads(json.dumps(corpus.repos)) or meta['inputs'] != corpus.inputs:
             raise ValueError('stale corpus identity/configuration; run qatlib-retrieve index --changed')
         additions, warnings = read_map(map_path, corpus.repos, c, meta['dirty'])
+        if not db and path != default_db(corpus):
+            warnings.append(f'Reading legacy index; run qatlib-retrieve index to build {default_db(corpus)}')
         filters, filter_args = [], []
         if repo:
             filters.append('ff.repo=?')
@@ -516,7 +523,7 @@ def main(argv=None) -> int:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--project', default=argparse.SUPPRESS, help='target Lake TOML project')
     common.add_argument('--db', default=argparse.SUPPRESS,
-                        help='index path outside source repositories (default: ${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/<corpus-key>.sqlite3)')
+                        help='index path outside source repositories (default: ${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlite3; queries can read an existing legacy XDG index)')
     for action in common._actions:
         if action.option_strings:
             p.add_argument(*action.option_strings, default=argparse.SUPPRESS, help=action.help)

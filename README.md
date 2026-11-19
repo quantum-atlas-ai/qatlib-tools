@@ -3,11 +3,9 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-<!-- human-contract:start -->
 `qatlib-tools` 维护 Lean 数学库和下游研究仓共用的工程手册与工具。各项目维护自己的数学接口、书目和合入标准。
 
 日常操作直接使用 `git`、GitHub 的 `gh`、Gitea 的 `tea` 或 `gt`，也可以调用平台 API。多个仓库都需要处理的平台差异、检查结果汇总和写入前的提交校验，由公共工具负责。
-<!-- human-contract:end -->
 
 ## 命令
 
@@ -18,6 +16,16 @@
 | `qatlib-forge` | 核对 GitHub 和 Gitea 的 PR 检查结果与预期提交 |
 
 安装后用 `qatlib-env docs` 离线阅读本页。用 `qatlib-env docs --list` 列出可读的专题，再用 `qatlib-env docs <专题>` 阅读。命令参数以当前安装版本的 `--help` 为准。
+
+## 工程机制手册导览
+
+| 专题 | 离线命令 | 内容 |
+| --- | --- | --- |
+| [Lean 模块、编译与缓存](docs/lake.md) | `qatlib-env docs lake` | 公开接口、增量构建、Lake 与 Mathlib 的工件存放方式 |
+| [Lean 文档、书目与源码检索](docs/lean-docs.md) | `qatlib-env docs lean-docs` | doc-gen4 链接、增量书目校验、静态词法索引 |
+| [GitHub 和 Gitea 上的拉取请求](docs/forge.md) | `qatlib-env docs forge` | 两种草稿机制、CI 状态核对、并发合入与删分支 |
+| [共享成果如何进入公开库](docs/promotion.md) | `qatlib-env docs promotion` | 整文件闭包、真实消费者、发布升锁及旧副本清理 |
+| [构建资源与排障](docs/operations.md) | `qatlib-env docs operations` | 本机目录、构建预算、cgroup 计费、Runner 的进程回收 |
 
 <a id="quickstart"></a>
 
@@ -75,6 +83,10 @@ Windows PowerShell 下改用 `.venv\Scripts\Activate.ps1` 激活环境，并将�
 
 用只读命令 `qatlib-env config explain --json` 查看 `resources`（探测容量）、`automatic`（无覆盖时的默认值）以及 `values` 和 `configuration.routing`（生效值）。结合 `sources`、`configuration.sources` 和 `warnings` 判断是否需要调整。该命令不会准备依赖或申请构建配额。长期设置可写入 `~/.qatlib/env.toml`，也可用支持的命令行参数调整单次构建。工具保留显式配置的值，实际运行还受构建池和平台资源限额约束。 [配置来源与资源探测](docs/operations.md#configuration)
 
+## 本机目录
+
+工具自己的默认根目录是 `~/.qatlib`，可用 `QATLIB_HOME` 改到另一处。个人配置为 `env.toml`，检索索引在 `retrieve/`，新构建池账本和云端作业回执分别在 `state/pool/` 和 `state/cloud/`。查看 `qatlib-env config explain --json` 的 `paths` 可以核对实际读写位置。升级后仍可读旧配置和索引，已有构建池继续使用原来的账本和锁。Lake 工件、上游 CLI 登录配置和历史工作树池各有自己的位置。 [目录与兼容规则](docs/operations.md#local-paths)
+
 <a id="artifact-cache"></a>
 
 ## 编译与共享工件缓存
@@ -85,12 +97,14 @@ qatlib-env plan ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.RootCountOrder
 qatlib-env run -- lake build ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.RootCountOrder
 ```
 
-有匹配的依赖产物后，可以运行 `qatlib-env run -- lake --no-build lean <File.lean>` 检查单个文件。发布下游可用的定义时，用普通 `module` 消费者验证名称可见性和实际展开行为。非 `module` 文件可读到模块的私有信息，容易掩盖下游编译错误。
+Lake 按导入关系编译目标及其依赖。依赖工件已匹配时，可用 `qatlib-env run -- lake --no-build lean <File.lean>` 检查单个文件，缺少须构建的依赖时会报错。
+
+Lean v4.35 的 `module` 中，声明默认私有。`public section` 或声明上的 `public` 让下游可引用名称，`public import` 转发被导入模块的公开接口。下游若还要展开普通定义体，需核对 `@[expose]`，并用确实依赖展开的例子验证。非 `module` 文件可以读到模块的私有信息，用它测试可能看不出真正的模块消费者拿不到名称或定义体。
 
 三类工件的存放方式不同。
 
 1. **Lake 本地共享工件**。Lean v4.35 启用 `enableArtifactCache = true` 并保持全量恢复关闭时，Lake 根据输入跟踪信息找到工件的内容哈希，直接从 `LAKE_CACHE_DIR` 读取 `.olean` 等匹配工件。各工作树仍有独立的 `.lake`，无需重复拷贝或解包这些共享工件。这种共享读取适用于 Linux、macOS 和 Windows，无需 reflink 或跨工作树硬链接。
-2. **R2 远端工件**。对配置了 R2 缓存的包，`qatlib-env prepare` 校验可用的共享工件，补齐缺失文件并注册映射。
+2. **R2 远端工件**。对配置了 R2 缓存的包，`qatlib-env prepare` 按锁检出依赖源码，下载并校验缺失的工件，再把映射注册到 Lake 本地缓存。后续构建由 Lake 查找和读取工件，无需把 R2 归档逐工作树解包。
 3. **Mathlib 专用缓存**。在标准依赖布局下，Mathlib 的 `lake exe cache get` 会把归档解包到当前工作树的 `.lake/packages/mathlib/.lake/build/`。 [Lean 模块、编译与缓存](docs/lake.md)
 
 要回收闲置工作树的磁盘空间，先用 `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run` 预览 `.lake/build` 和 `.lake/packages`。回收整个关联工作树时，使用 `qatlib-env workspace trash-checkouts --checkout <路径>` 预览，确认后改用 `--apply`。成功移入回收站后，工具默认清理所属 Git 仓库的失效工作树登记。 [工作树与工件存储](docs/lake.md#cache-layout)
@@ -99,7 +113,7 @@ qatlib-env run -- lake build ExampleLibrary.Foundations.ScaledSqrt.SqrtBounds.Ro
 
 ## Lean 文档和检索
 
-`qatlib-retrieve index` 建立本地词法索引，默认写入 `${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/<corpus-key>.sqlite3`。键取解析后的项目根绝对路径的 SHA-256 前 24 个十六进制字符。用 `--db` 可以另选文件，路径须在所有纳入索引的源码仓之外。查询可定位声明及其外层 `section` 的 `variable`，无需启动 Lean 编译器或 Lake。
+`qatlib-retrieve index` 建立本地词法索引，默认写入 `${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlite3`。键取解析后的项目根绝对路径的 SHA-256 前 24 个十六进制字符。用 `--db` 可以另选文件，路径须在所有纳入索引的源码仓之外。查询可定位声明及其外层 `section` 的 `variable`，无需启动 Lean 编译器或 Lake。
 
 ```bash
 qatlib-retrieve index
@@ -107,7 +121,9 @@ qatlib-retrieve query 'postselection normalization' --kind theorem
 qatlib-retrieve query --cite GilyenSuLowWiebe2019
 ```
 
-模块文档使用 `/-! ... -/`，声明注释使用 `/-- ... -/`。跨声明链接使用反引号包裹完整限定名，书目引用使用 `[CiteKey]`。文档网站和编辑器 hover 的渲染条件不同。 [Lean 文档、书目与源码检索](docs/lean-docs.md)
+用 `/-! ... -/` 说明模块职责，用紧接声明的 `/-- ... -/` 写语义、前提和用法。跨声明引用用反引号包住完整限定名，书目引用用 `[CiteKey]` 对应 `docs/references.bib`。开发仓可只维护新增书目，校验时和锁定的公开基线一同检查缺键、重复键和同键异文。
+
+doc-gen4 生成整站时有符号表、页面路由和书目索引，因此可把声明名和书目键变成跨页链接。编辑器的 Lean LSP hover 只渲染当前声明的文档，没有整站路由和书目索引。要在 hover 中打开论文，可以加普通 Markdown 链接指向 DOI 或 arXiv。 [Lean 文档、书目与源码检索](docs/lean-docs.md)
 
 <a id="forge"></a>
 
@@ -125,7 +141,11 @@ qatlib-retrieve query --cite GilyenSuLowWiebe2019
 | `qatlib-forge pr merge` | 带预期 head 合并 |
 | `qatlib-forge branch delete` | 核对远端 SHA 与保护规则后删除分支 |
 
-GitHub 有独立的草稿状态。Gitea 用实例配置的标题前缀标记草稿，提交状态摘要也可能与实际作业结论不同。核查时以同一 `head` SHA 为准。 [GitHub 和 Gitea 上的拉取请求](docs/forge.md)
+GitHub 有独立的 `isDraft`，并分别提供 check-runs、提交 statuses 和 Actions 作业接口。Gitea 的草稿状态跟随实例配置的标题前缀，如 `WIP:` 或 `[WIP]`。草稿里的 Build 可能已条件跳过，外层提交摘要仍是 `pending`。核查时按同一个 PR head SHA 查运行和具体作业，区分 `skipped`、尚未运行和成功。
+
+文档改动没有命中构建路径时，按仓库规则执行静态检查。若受测 head 没变，主线新增的也是不命中构建规则的文档，且与 PR 改动互不相交，可以复用该 head 已验证的成功作业。路径规则、受测基线和作业证据仍要逐项核对。
+
+合并或删分支时，审阅和操作之间仍可能有新推送。合并把预期 head 交给服务端核对。删分支先核对默认分支和保护规则，再由 Git 的 `--force-with-lease` 要求远端引用仍指向预期 SHA。 [GitHub 和 Gitea 上的拉取请求](docs/forge.md)
 
 <a id="promotion"></a>
 
@@ -137,7 +157,11 @@ GitHub 有独立的草稿状态。Gitea 用实例配置的标题前缀标记草�
 
 ## 构建排障与 Runner
 
-构建范围、cgroup 内存计费、取消与子进程回收、Runner 账户配置各有不同的检查方法。 [构建资源与排障](docs/operations.md)
+Linux cgroup v2 的 `memory.current` 同时计入匿名内存和文件页缓存（`file`）。大量工件读写结束后，即使编译进程已经退出，页缓存仍可能占用该组的账面额度。排查准入等待时，应同时查看 `memory.current`、`memory.stat` 和各级限制。
+
+常驻 Runner 取消单次作业通常不会停止整个服务，因此不会触发服务的 `KillMode=control-group`。在 Linux 上，工具以 `PR_SET_PDEATHSIG` 让守卫在父进程退出时收到信号，用 `PR_SET_CHILD_SUBREAPER` 接管失去父进程的子孙以便回收。在可用的 systemd 后端，重任务还可进入单独的瞬态 scope，取消时清扫该任务所属控制组。
+
+`jobs` 是并行编译进程数，`lean_threads` 是每进程线程数。构建池按两者相乘计算 CPU 申请，所以四个进程各四线程会申请 16 个 CPU 配额。并行工作树应共用同一账本，各工作树的 `.lake` 仍各自独立。 [构建资源与排障](docs/operations.md)
 
 <a id="self-test"></a>
 
