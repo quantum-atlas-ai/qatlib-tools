@@ -8,4 +8,8 @@ dist/
 build/
 .lake/
 .qatlib-env.local.toml
+/site/node_modules/
+/site/src/
+/site/.vitepress/dist/
+/site/.vitepress/cache/
 

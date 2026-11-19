@@ -1,0 +1,231 @@
+/*
+ * Qatlib-Tools VitePress Theme — Crafted by Gemini 4 Carbon
+ * Visual tokens harmonized with Qatlib Portal (https://quantum-atlas-ai.github.io/qatlib/):
+ * Ink Blue (#263F5F), Teal Ink (#245858), Plum Slate (#5B4D68), Paper Cool (#F8FAFD)
+ */
+
+:root {
+  --wordmark-cutout: #f8fafd;
+
+  --vp-c-bg: #f8fafd;
+  --vp-c-bg-alt: #f0f4fa;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: #eef3fa;
+
+  --vp-c-text-1: #182232;
+  --vp-c-text-2: #415168;
+  --vp-c-text-3: #68778d;
+
+  --vp-c-divider: #dde5f0;
+  --vp-c-gutter: #dde5f0;
+  --vp-c-border: #cfd9e8;
+
+  --vp-c-brand-1: #263f5f;
+  --vp-c-brand-2: #1b2e47;
+  --vp-c-brand-3: #245858;
+  --vp-c-brand-soft: rgba(38, 63, 95, 0.085);
+
+  --vp-button-brand-bg: #263f5f;
+  --vp-button-brand-hover-bg: #1b2e47;
+  --vp-button-brand-active-bg: #152438;
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #ffffff;
+
+  --vp-button-alt-bg: #ffffff;
+  --vp-button-alt-hover-bg: #eef3fa;
+  --vp-button-alt-border: #cfd9e8;
+  --vp-button-alt-text: #1e2d42;
+
+  --vp-code-block-bg: #0f1724;
+  --vp-code-color: #203a58;
+  --vp-code-bg: rgba(38, 63, 95, 0.075);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(125deg, #1d334f 15%, #263f5f 52%, #245858 92%);
+
+  --vp-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Hiragino Sans GB', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular,
+    Menlo, Monaco, Consolas, monospace;
+}
+
+.dark {
+  --wordmark-cutout: #0c121d;
+
+  --vp-c-bg: #0c121d;
+  --vp-c-bg-alt: #090e17;
+  --vp-c-bg-elv: #131c2b;
+  --vp-c-bg-soft: #162133;
+
+  --vp-c-text-1: #e8eef7;
+  --vp-c-text-2: #a5b4ca;
+  --vp-c-text-3: #7687a0;
+
+  --vp-c-divider: #1f2d42;
+  --vp-c-gutter: #1f2d42;
+  --vp-c-border: #25364f;
+
+  --vp-c-brand-1: #8cb6eb;
+  --vp-c-brand-2: #b2d0f5;
+  --vp-c-brand-3: #6eb0b0;
+  --vp-c-brand-soft: rgba(140, 182, 235, 0.13);
+
+  --vp-button-brand-bg: #2c4c73;
+  --vp-button-brand-hover-bg: #375d8c;
+  --vp-button-brand-active-bg: #243f60;
+  --vp-button-brand-text: #f3f7fc;
+
+  --vp-button-alt-bg: #131c2b;
+  --vp-button-alt-hover-bg: #192538;
+  --vp-button-alt-border: #25364f;
+  --vp-button-alt-text: #dce6f5;
+
+  --vp-code-block-bg: #080d16;
+  --vp-code-color: #a9ccf5;
+  --vp-code-bg: rgba(140, 182, 235, 0.12);
+
+  --vp-home-hero-name-background: linear-gradient(125deg, #b2d0f5 10%, #8cb6eb 55%, #79baba 95%);
+}
+
+/* Dark code block contrast in light mode (matching Qatlib portal) */
+html:not(.dark) .vp-doc div[class*='language-'] {
+  background-color: #0f1724;
+  border: 1px solid #1e2b3e;
+  border-radius: 10px;
+}
+
+html:not(.dark) .vp-doc div[class*='language-'] code {
+  color: #e4ecf7;
+}
+
+html:not(.dark) .vp-doc [class*='language-'] > span.lang {
+  color: #7c90ab;
+}
+
+/* Navbar Qatlib · tools lockup */
+.qatlib-brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--vp-c-brand-1);
+  transition: opacity 0.18s ease;
+}
+
+.qatlib-brand-lockup:hover {
+  opacity: 0.86;
+}
+
+.qatlib-wordmark-svg {
+  height: 23px;
+  width: auto;
+  display: block;
+}
+
+.qatlib-tools-pill {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
+  border: 1px solid color-mix(in srgb, var(--vp-c-brand-1) 24%, transparent);
+}
+
+/* Refined Hero & Feature Cards */
+.VPHero .name {
+  font-family: var(--vp-font-family-mono);
+  letter-spacing: -0.02em;
+}
+
+.VPHero .text {
+  font-size: clamp(1.75rem, 3.1vw, 2.55rem) !important;
+  line-height: 1.26 !important;
+  letter-spacing: -0.015em;
+  max-width: 760px;
+}
+
+.VPHero .tagline {
+  max-width: 720px;
+  line-height: 1.72;
+  font-size: 1.04rem;
+}
+
+.VPFeature {
+  background-color: var(--vp-c-bg-elv) !important;
+  border: 1px solid var(--vp-c-divider) !important;
+  border-radius: 12px !important;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.VPFeature:hover {
+  border-color: color-mix(in srgb, var(--vp-c-brand-1) 45%, var(--vp-c-divider)) !important;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -12px rgba(24, 34, 50, 0.12);
+}
+
+.dark .VPFeature:hover {
+  box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.45);
+}
+
+.VPFeature .title {
+  font-size: 1.03rem !important;
+  font-weight: 650 !important;
+  color: var(--vp-c-text-1);
+}
+
+.VPFeature .details {
+  line-height: 1.68 !important;
+  font-size: 0.92rem !important;
+}
+
+/* Home bottom quickstart strip */
+.carbon-home-strip {
+  max-width: 1152px;
+  margin: 2.5rem auto 1rem;
+  padding: 1.5rem 24px 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+@media (min-width: 640px) {
+  .carbon-home-strip {
+    padding: 2rem 48px 0;
+  }
+}
+
+@media (min-width: 960px) {
+  .carbon-home-strip {
+    padding: 2.25rem 64px 0;
+  }
+}
+
+/* Editorial Prose & Table Rhythm */
+.vp-doc p,
+.vp-doc li {
+  line-height: 1.78;
+}
+
+.vp-doc h2 {
+  margin-top: 2.4rem;
+  padding-top: 1.4rem;
+  letter-spacing: -0.01em;
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93rem;
+}
+
+.vp-doc th {
+  background-color: var(--vp-c-bg-soft);
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+}
+
+.vp-doc tr:nth-child(2n) {
+  background-color: color-mix(in srgb, var(--vp-c-bg-soft) 45%, transparent);
+}

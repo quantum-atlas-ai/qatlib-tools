@@ -161,7 +161,10 @@ def test_docs_reads_the_unique_root_readme(capsys):
     assert capsys.readouterr().out == (root / "README.md").read_text()
     assert main(["docs", "--path"]) == 0
     assert Path(capsys.readouterr().out.strip()) == root / "README.md"
+    site_outputs = tuple(root / "site" / name for name in
+                         ("node_modules", "src", ".vitepress/dist", ".vitepress/cache"))
     readmes = [path for path in root.rglob("README.md") if not any(
         part in {".git", ".venv", "dist", "build", ".pytest_cache"}
-        or part.startswith(".wheel-venv") for part in path.relative_to(root).parts)]
+        or part.startswith(".wheel-venv") for part in path.relative_to(root).parts)
+        and not any(path.is_relative_to(directory) for directory in site_outputs)]
     assert readmes == [root / "README.md"]
