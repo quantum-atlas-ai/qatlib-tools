@@ -15,11 +15,12 @@ import re
 import subprocess
 
 from .lean_declarations import IDENT_RE, declaration_kinds
-from .lean_source import LEAN_ID_REST, mask_comments
+from .lean_source import LEAN_ID_REST, comments, mask_comments
 
 PUBLIC_LAYERS = ('Foundations', 'Concepts', 'Papers')
 _ROOT = re.compile(r'[A-Za-z][A-Za-z0-9_]*\Z')
 _REV = re.compile(r'[0-9a-f]{40}\Z')
+DEV_ONLY_MARKER = '-- promotion: dev-only'
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -79,6 +80,29 @@ def source_files(repo: Path, root: str) -> list[Path]:
             continue
         files.append(_source(repo, relative, tree))
     return files
+
+
+def check_export(repo: Path, paths: list[Path]) -> dict:
+    """Reject dev-only markers in the destination's explicit Lean file list."""
+    if not paths:
+        raise ValueError('select at least one Lean export file')
+    repo = repo.resolve()
+    files = sorted({_source(repo, str(path), repo) for path in paths})
+    errors = []
+    for path in files:
+        relative = path.relative_to(repo).as_posix()
+        source = path.read_text(encoding='utf-8')
+        if DEV_ONLY_MARKER not in source:
+            continue
+        try:
+            spans = comments(source)
+        except ValueError as error:
+            raise ValueError(f'{relative}: {error}') from error
+        for span in spans:
+            if span.kind == 'line' and source[span.start:span.end].rstrip() == DEV_ONLY_MARKER:
+                line = source.count('\n', 0, span.start) + 1
+                errors.append(f'{relative}:{line}: dev-only promotion marker in export')
+    return {'files': len(files), 'errors': errors}
 
 
 def locked_revision(consumer_repo: Path, package: str | None = None, *, allow_inherited: bool = False) -> str:
