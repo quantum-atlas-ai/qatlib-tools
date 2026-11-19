@@ -175,6 +175,51 @@ qatlib-env conflicts --package Qatlib
 
 外层 CI 工作流可直接调用 `qatlib-env ci lint` 与 `qatlib-env ci build`（完整构建按 Runner 预算对该次调用显式传入 `--allow-local-heavy`；增量环境审计 `python -m qatlib_env.check_scoped_env_lint --base "$BASE_SHA"` 须确保 `BASE_SHA` 在本地 Git 对象库中真实可读）。
 
+### 4. 单周期重命名兼容
+
+在薄中转开发仓规范化声明名称（如清退早期内部编号）或迁移模块路径时，往往面临两难：若当场硬删旧名，会直接打断同周期尚未合入的其他在途开发分支；若任由内部过渡别名随整文件依赖闭包流进预发仓与公开仓，又会把本不该对外暴露的旧名称变成长期公开接口包袱。
+
+为此，开发仓允许为重命名声明或旧测试路径保留**仅存活一个发版周期**的受控过渡兼容，并统一使用独立行注释 `-- promotion: dev-only` 显式标记。之所以不靠扫描 `@[deprecated]` 属性或 `since` 日期做机械删减，是因为正式公开库未来演进正常的数学接口时，本身就需要保留合法的公开 `@[deprecated]` 声明；同时常规跨仓查重主要针对 `theorem` / `def` 等显式声明与同内容模块，纯 `alias` 或单行转发垫片未必触发重名报错。通过 `-- promotion: dev-only` 将“仅限开发仓内部缓冲一轮、绝不进入公开库的临时兼容项”在源码层显式区分出来，即可串联起**「开发仓打标缓冲 → 导出剥离与 `check-export` 确定性拦截 → 发版升锁同步清退」**的完整闭环。
+
+#### 开发仓登记与临时兼容标记
+
+重命名合入当天起，仓内新增与修改的源码、测试及结构化元数据一律立即采用新语义主名与新路径；所有临时兼容项须随同该次改动一并登记入当批迁移清单（写明旧名、新名、所在文件路径及所属晋升批次）：
+
+- **声明级过渡别名**：保留在旧名原本可见的命名空间位置，紧贴上方标注 `-- promotion: dev-only`，再用带引入当天日期的 `@[deprecated]` `alias` 指向语义主声明：
+
+  ```lean
+  -- promotion: dev-only
+  @[deprecated semanticName (since := "2026-11-17")]
+  alias original844 := semanticName
+  ```
+
+- **旧测试路径薄转发垫片**：测试文件迁移至新语义路径后，旧路径仅可暂留一个只含单行 `import` 的薄转发垫片，实质断言统一在新路径维护（启用 Lean `module` 系统的测试按既有可见性规则编写导入或重导出，并用普通消费者验证）：
+
+  ```lean
+  -- promotion: dev-only
+  import QatlasDevTests.SemanticRegression
+  ```
+
+依赖旧接口的在途分支重基后即可根据弃用提示平滑切至新名称（在将弃用警告视为错误的严格构建下应优先完成切换）。
+
+#### 导出剥离与 `check-export` 门禁拦截
+
+向预发仓和公开仓晋升时，仍按完整 `.lean` 源文件收集导入闭包，但在生成目标仓候选副本时，导出脚本须依据当批迁移清单执行定向清洗：整块剥离带 `-- promotion: dev-only` 标记的临时别名块，跳过旧路径薄转发垫片，将目标树中的消费者导入与声明引用统一切至新接口（仅当确认 `Batteries.Tactic.Alias` 等辅助导入专供被剥离的 `alias` 使用时才随之一并移除），随后重新生成聚合入口。
+
+清洗完成后，在接收仓根目录将本次导出的**全部目标 `.lean` 文件**（含业务源码、回归测试、消费者探针与聚合入口，包括尚未纳入 Git 跟踪的新生成文件）显式传给 `qatlib-env promotion check-export` 做只读核验：
+
+```bash
+qatlib-env promotion check-export Qatlib/Path/Feature.lean verification/QatlibTests/SemanticRegression.lean
+```
+
+（上方命令仅以两个路径示意，实际执行时应传入导出脚本生成的完整目标文件列表。）
+
+`check-export` 按 Lean 语法扫描真实行注释（自动忽略嵌套块注释或原始字符串字面量中的文档示例，正常保留无此标记的合法公开 `@[deprecated]` 声明）：一旦发现残留的 `-- promotion: dev-only` 标记，立即在 JSON 回执中报告精确的 `path:line` 并返回非零退出码；遇到缺失文件、非 `.lean` 路径或越界路径同样直接报错拦截。由于 `check-export` 校验的是显式标记本身，为防止漏标或“只删标记未删旧别名”，导出验收时仍须对照当批迁移清单反查旧路径与旧全限定名，并在接收仓运行普通窄导入的 `qatlib-env promotion smoke` 及全套 `Lint`、`Build` 与测试，确认公开消费者仅依赖新语义主名。
+
+#### 公开发版后的升锁清退
+
+待包含新语义主名的公开版本正式发布且对应预编译缓存可用后，开发仓在同一升锁回切变更中完成收尾：将仓内剩余消费者、聚合入口与相关元数据改指公开仓新接口，随已晋升的业务源码一并清退全部临时别名与旧测试路径垫片；最后对照当批迁移清单全局反查旧全名、旧路径及 `-- promotion: dev-only` 标记均已清零，依次运行 `promotion verify-lock`、`promotion check-retired`、跨库 `conflicts` 检查与完整消费构建。至此该批次过渡闭环结束，开发仓与公开仓现行源码均只保留干净的语义主名与新路径。
+
 ---
 
 <a name="field-notes"></a>

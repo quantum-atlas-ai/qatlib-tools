@@ -1,4 +1,4 @@
-"""Generic dependency upgrade and promotion retirement checks for thin adapters."""
+"""Generic promotion checks and dependency upgrades for thin adapters."""
 from __future__ import annotations
 
 import argparse
@@ -67,6 +67,9 @@ def execute(project: Path, args, *, resource_cli: dict | None = None) -> dict:
     project = project.resolve()
     if args.action == "merge-bibliography":
         return merge_bibliography(project, args.increment, write=args.write)
+    if args.action == "check-export":
+        from qatlib_search.promotion import check_export
+        return {"action": args.action, **check_export(project, args.files)}
     if args.action == "smoke":
         from .smoke import run
         return run(project, args.probe, args.migration_map,
@@ -109,6 +112,8 @@ def add_parser(commands):
     bibliography = actions.add_parser("merge-bibliography", help="check and append new BibTeX entries")
     bibliography.add_argument("--increment", type=Path, required=True, help="source Dev bibliography")
     bibliography.add_argument("--write", action="store_true", help="update the destination checkout")
+    export = actions.add_parser("check-export", help="reject dev-only markers in exported Lean files")
+    export.add_argument("files", type=Path, nargs="+", help="Lean files relative to the receiving project")
 
 
 def cli(project: Path, args, *, resource_cli: dict | None = None) -> int:
