@@ -1,6 +1,6 @@
 # Contributing Guide
 
-Before modifying cross-repository shared capabilities in this repository, verify the versions currently pinned by downstream repositories and their actual invocation entry points. Design shared tool interfaces with a single responsibility so they remain easy to compose, while leaving repository-specific domain rules and acceptance contracts to be maintained by each consuming repository.
+Before changing a shared tool, check which version projects pin and how they call it. Give each command a clear purpose so it can be combined with others. Each project maintains its own rules and acceptance criteria.
 
 For local verification, use Python 3.12 to run the same checks as CI. If `uv` is not installed in the current environment, you can still complete the build, run the remaining tests, and validate the offline manual in an isolated environment; see [Tooling Repository Self-Test and Offline Manual Validation](README.en.md#self-test) for the exact commands.
 
