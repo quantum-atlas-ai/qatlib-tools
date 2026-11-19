@@ -29,9 +29,9 @@ def win32(monkeypatch):
 
 @pytest.fixture
 def environment():
-    return {"QATLAS_JOBS": "2", "QATLAS_LEAN_THREADS": "3", "QATLAS_MEMORY_BUDGET": str(4 * resources.GIB),
-            "QATLAS_HEAVY_PATTERNS": "", "QATLAS_HEAVY_JOBS": "1",
-            "QATLAS_STAGE_TIMEOUT": "5", "QATLAS_MODULE_TIMEOUT": "0.12"}
+    return {"QATLIB_JOBS": "2", "QATLIB_LEAN_THREADS": "3", "QATLIB_MEMORY_BUDGET": str(4 * resources.GIB),
+            "QATLIB_HEAVY_PATTERNS": "", "QATLIB_HEAVY_JOBS": "1",
+            "QATLIB_STAGE_TIMEOUT": "5", "QATLIB_MODULE_TIMEOUT": "0.12"}
 
 
 @pytest.mark.parametrize("command", [["lake", "build"], ["lake.exe", "exe", "cache", "get"],
@@ -41,7 +41,7 @@ def test_windows_skips_posix_overlay_and_preserves_module_timeout(win32, environ
     monkeypatch.setattr(compiler, "environment", overlay)
     original = dict(environment)
     effective = workspace.command_runtime_environment(tmp_path, environment, command)
-    assert effective["LEAN_NUM_THREADS"] == "3" and effective["QATLAS_MODULE_TIMEOUT"] == "0.12"
+    assert effective["LEAN_NUM_THREADS"] == "3" and effective["QATLIB_MODULE_TIMEOUT"] == "0.12"
     assert "LEAN_SYSROOT" not in effective and environment == original
     overlay.assert_not_called()
 
@@ -49,9 +49,9 @@ def test_windows_skips_posix_overlay_and_preserves_module_timeout(win32, environ
 @pytest.mark.parametrize("patterns", [None, "BalancedGram", "*.Heavy.*,Expensive"])
 def test_windows_slot_contract_is_rejected_before_launch(win32, environment, tmp_path, patterns):
     if patterns is None:
-        environment.pop("QATLAS_HEAVY_PATTERNS")
+        environment.pop("QATLIB_HEAVY_PATTERNS")
     else:
-        environment["QATLAS_HEAVY_PATTERNS"] = patterns
+        environment["QATLIB_HEAVY_PATTERNS"] = patterns
     with pytest.raises(ValueError, match=r"heavy_patterns/heavy_jobs.*heavy_patterns=\[\]"):
         workspace.command_runtime_environment(tmp_path, environment, ["lake", "build"])
 
@@ -66,7 +66,7 @@ def test_posix_overlay_is_retained(tmp_path, environment, monkeypatch):
 
 
 def test_windows_non_compiler_command_has_no_overlay_contract(win32, environment, tmp_path):
-    environment["QATLAS_HEAVY_PATTERNS"] = "Heavy"
+    environment["QATLIB_HEAVY_PATTERNS"] = "Heavy"
     assert workspace.command_runtime_environment(tmp_path, environment, ["git", "status"]) == environment
 
 
@@ -102,7 +102,7 @@ def test_build_and_bootstrap_share_job_limits_and_timeouts(win32, environment, t
 
 @pytest.mark.parametrize("bootstrap", [False, True])
 def test_disabled_job_is_refused_even_for_light_builds(win32, environment, tmp_path, monkeypatch, bootstrap):
-    environment["QATLAS_USE_JOB_OBJECT"] = "0"
+    environment["QATLIB_USE_JOB_OBJECT"] = "0"
     monkeypatch.setattr(workspace, "_pool_scope", lambda *a, **kw: nullcontext())
     resolved = SimpleNamespace(environment=lambda base: {**base, **environment})
     monkeypatch.setattr(resources, "resolve_config", Mock(return_value=resolved))
@@ -135,7 +135,7 @@ def test_job_failures_close_handle_and_propagate(win32, environment, monkeypatch
 
 
 def test_cache_bootstrap_rejects_slots_before_pool_or_child(win32, environment, tmp_path, monkeypatch):
-    environment["QATLAS_HEAVY_PATTERNS"] = "BalancedGram"
+    environment["QATLIB_HEAVY_PATTERNS"] = "BalancedGram"
     monkeypatch.setattr(resources, "resolve_config", Mock(return_value=SimpleNamespace(environment=lambda base: base)))
     runner = Mock()
     monkeypatch.setattr(workspace.supervisor, "run", runner)

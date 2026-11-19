@@ -14,7 +14,7 @@ from qatlib_env import supervisor
 
 class StageDeadlineTests(unittest.TestCase):
     def test_two_commands_share_one_stage_deadline(self):
-        environment = {**os.environ, "QATLAS_STAGE_DEADLINE": str(time.monotonic() + 0.6)}
+        environment = {**os.environ, "QATLIB_STAGE_DEADLINE": str(time.monotonic() + 0.6)}
         supervisor.run([sys.executable, "-c", "import time; time.sleep(0.25)"], env=environment, check=True)
         started = time.monotonic()
         with self.assertRaises(subprocess.TimeoutExpired):

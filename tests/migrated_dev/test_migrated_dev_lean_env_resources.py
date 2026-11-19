@@ -106,8 +106,8 @@ class ResourceTests(unittest.TestCase):
         (self.repo / "qatlib-env.toml").write_text('[resources]\njobs=4\nlean_threads=3\n')
         inherited = {key: value for key, value in os.environ.items()
                      if key not in {variable for variables in resources.ENV_KEYS.values() for variable in variables}
-                     and key not in {"QATLAS_RUNNER_CONFIG", "XDG_CONFIG_HOME"}}
-        env = {**inherited, "HOME": str(self.home), "QATLAS_JOBS": "5",
+                     and key not in {"QATLIB_RUNNER_CONFIG", "XDG_CONFIG_HOME"}}
+        env = {**inherited, "HOME": str(self.home), "QATLIB_JOBS": "5",
                "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
         result = subprocess.run([sys.executable, "-B", "-m", "qatlib_env.workspace", "--project", str(self.repo),
                                  "config", "explain", "--jobs", "6"], env=env, text=True,
@@ -138,8 +138,8 @@ class ResourceTests(unittest.TestCase):
         kwargs = self.fixture()
         runner = self.root / "runner.toml"
         runner.write_text('[resources]\njobs=3\nlean_threads=3\n')
-        self.env["QATLAS_RUNNER_CONFIG"] = str(runner)
-        user = self.home / ".config/qatlib/env.toml"
+        self.env["QATLIB_RUNNER_CONFIG"] = str(runner)
+        user = self.home / ".qatlib/env.toml"
         user.parent.mkdir(parents=True)
         user.write_text('[resources]\njobs=4\n')
         workspace = self.repo / "qatlib-env.toml"
@@ -149,16 +149,16 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(config.values["jobs"], 5)
         self.assertTrue(config.sources["jobs"].startswith("workspace:"))
         self.assertTrue(config.sources["lean_threads"].startswith("runner:"))
-        env = {**self.env, "LEAN_NUM_THREADS": "6", "QATLAS_HEAVY_JOBS": "2"}
+        env = {**self.env, "LEAN_NUM_THREADS": "6", "QATLIB_HEAVY_JOBS": "2"}
         config = resources.resolve_config(self.repo, {"jobs": 7}, env, probe=host)
         self.assertEqual(config.values["jobs"], 7)
         self.assertEqual(config.values["heavy_jobs"], 2)
         self.assertEqual(config.sources["jobs"], "command-line")
-        self.assertEqual(config.sources["heavy_jobs"], "environment:QATLAS_HEAVY_JOBS")
+        self.assertEqual(config.sources["heavy_jobs"], "environment:QATLIB_HEAVY_JOBS")
         exported = config.environment({})
         self.assertEqual(config.values["lean_threads"], 6)
         self.assertEqual(exported["LEAN_NUM_THREADS"], "6")
-        self.assertEqual(exported["QATLAS_LEAN_THREADS"], "6")
+        self.assertEqual(exported["QATLIB_LEAN_THREADS"], "6")
         self.assertEqual(config.explain()["resources"]["reserve"], host.reserve)
 
     def test_explicit_hard_limit_conflicts_warn_without_truncation(self):

@@ -40,7 +40,7 @@ def test_service_protection_is_inherited_and_replaces_only_missing_user_scope(se
     with patch.object(linux, 'systemd_available', return_value=False), \
          patch.object(linux, 'enclosing_cgroup_limits', side_effect=lambda **kw: inspect(service, **kw)):
         command = ['lake', 'build']
-        assert workspace._backend_command(command, {'QATLAS_JOBS': '1', 'QATLAS_LEAN_THREADS': '2'},
+        assert workspace._backend_command(command, {'QATLIB_JOBS': '1', 'QATLIB_LEAN_THREADS': '2'},
                                           building=True, require_limits=True) == command
 
 
@@ -103,5 +103,5 @@ def test_unbounded_developer_session_still_rejects_heavy_execution(service):
         with pytest.raises(ValueError, match='systemd'):
             workspace._backend_command(['lake', 'build'], {}, building=True, require_limits=True)
     with pytest.raises(ValueError, match='controller'):
-        workspace._backend_command(['lake', 'build'], {'QATLAS_USE_SYSTEMD_SCOPE': '0'},
+        workspace._backend_command(['lake', 'build'], {'QATLIB_USE_SYSTEMD_SCOPE': '0'},
                                    building=True, require_limits=True)

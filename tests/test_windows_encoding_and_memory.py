@@ -42,7 +42,7 @@ def test_artifact_listing_is_utf8_lf_and_preserves_unicode_paths(tmp_path, monke
         return write(path, data, **kwargs)
     monkeypatch.setattr(Path, "write_text", record)
     def native_hash(repo, env, command, **kwargs):
-        raw = Path(env["QATLAS_ARTIFACT_AUDIT_LIST"]).read_bytes()
+        raw = Path(env["QATLIB_ARTIFACT_AUDIT_LIST"]).read_bytes()
         assert b"\r" not in raw and raw.decode("utf-8").splitlines() == [str(p) for p in paths.values()]
         return "0000000000000000\n0000000000000001\n"
     monkeypatch.setattr(r2_cache, "_run", native_hash)

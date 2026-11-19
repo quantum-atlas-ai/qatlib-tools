@@ -263,7 +263,7 @@ def common_facts(path, *, check_remote=False, remote_cache=None):
 
 
 def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), now=None,
-         exact=False, semantic=None, max_directories=100000, history=None, protect_refs=()):
+         exact=False, semantic=None, max_directories=100000, inspect_ignored=False, protect_refs=()):
     if not math.isfinite(hot_hours) or hot_hours < 24:
         raise ValueError("hot-hours must be finite and at least 24")
     now = time.time() if now is None else now
@@ -278,7 +278,7 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
     # Git operations do not contend for shared write locks. Four workers bound load.
     with ThreadPoolExecutor(max_workers=4) as executor:
         def observe(path):
-            return checkout_facts(path, inspect_ignored=history is not None, semantic=semantic)
+            return checkout_facts(path, inspect_ignored=inspect_ignored, semantic=semantic)
         rows = list(executor.map(observe, repos))
     groups, remote_cache = {}, {}
     representatives = {}
@@ -325,16 +325,6 @@ def scan(roots, *, measure=False, check_remote=False, hot_hours=24, protect=(), 
             "notes": ["No fetch/bootstrap/cache lock/config write; no proof that all research is harvested.",
                       "Sizes are optional; same-filesystem Trash does not reclaim physical space.",
                       "Processes visible to this user only; coordinate idle writers before apply."]}
-    if history is not None:
-        result["history_root"] = str(history)
-        result["history_unclassified"] = []
-        try:
-            if history.is_dir() and not history.is_symlink():
-                result["history_unclassified"] = [
-                    str(entry) for entry in sorted(history.iterdir())
-                    if not any(Path(repo).is_relative_to(entry) for repo in repos)]
-        except OSError as error:
-            errors.append(f"{history}: {error}")
     return result
 
 
@@ -599,9 +589,8 @@ def cli_main(argv=None):
     parser = argparse.ArgumentParser(prog="qatlib-env workspace", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     inventory = commands.add_parser("scan", description="Inspect Git and Lake state without preparing a workspace. A truncated scan reports its limit and exits 1.")
-    inventory.add_argument("roots", type=Path, nargs="*")
-    inventory.add_argument("--history", action="store_true",
-                           help="scan ~/.legacy-worktrees/tmp first, including ignored Git files and unclassified entries")
+    inventory.add_argument("roots", type=Path, nargs="*", help="directories to scan (default: parent of the current directory)")
+    inventory.add_argument("--inspect-ignored", action="store_true", help="include ignored Git files")
     inventory.add_argument("--measure", action="store_true", help="measure .lake bytes (slower)")
     inventory.add_argument("--exact", action="store_true", help="inspect known checkout roots without recursive discovery")
     inventory.add_argument("--max-directories", type=int, default=100000, help="limit recursive discovery")
@@ -631,21 +620,11 @@ def cli_main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "scan":
-            history = Path.home() / ".legacy-worktrees/tmp"
-            roots = args.roots
-            if args.history:
-                if args.exact:
-                    raise ValueError("--history requires recursive discovery")
-                roots = ([history] if os.path.lexists(history) else []) + roots
-            elif not roots:
-                if args.exact:
-                    roots = [Path.cwd()]
-                else:
-                    roots = ([history] if os.path.lexists(history) else []) + [Path.cwd().parent]
+            roots = args.roots or [Path.cwd() if args.exact else Path.cwd().parent]
             result = scan(roots, measure=args.measure, check_remote=args.check_remote,
                           hot_hours=args.hot_hours, protect=args.protect, exact=args.exact,
                           semantic=SEMANTIC | set(args.marker) if args.marker else None,
-                          max_directories=args.max_directories, history=history if args.history else None,
+                          max_directories=args.max_directories, inspect_ignored=args.inspect_ignored,
                           protect_refs=args.protect_ref)
         else:
             mode = "checkouts"

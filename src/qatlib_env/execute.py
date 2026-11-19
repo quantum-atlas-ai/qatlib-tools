@@ -26,8 +26,8 @@ def main(argv=None):
     if not sys.platform.startswith("linux") or not systemd_available():
         parser.error("exec requires Linux systemd user CPU/memory controllers; no unbounded fallback")
     unit = f"qatlib-exec-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    pool_env = {**os.environ, "QATLAS_MEMORY_BUDGET": str(args.memory_mib * 1024**2),
-                "QATLAS_JOBS": str(args.cpu), "QATLAS_LEAN_THREADS": "1"}
+    pool_env = {**os.environ, "QATLIB_MEMORY_BUDGET": str(args.memory_mib * 1024**2),
+                "QATLIB_JOBS": str(args.cpu), "QATLIB_LEAN_THREADS": "1"}
     try:
         bounded = linux_command(command, memory_mib=args.memory_mib, cpu=args.cpu, unit=unit,
                                 runtime_sec=args.timeout)

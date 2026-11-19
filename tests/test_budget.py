@@ -60,11 +60,11 @@ def project(tmp_path, monkeypatch):
     for variables in config.ENV_FIELDS.values():
         for variable in variables:
             monkeypatch.delenv(variable, raising=False)
-    monkeypatch.delenv("QATLAS_RUNNER_CONFIG", raising=False)
+    monkeypatch.delenv("QATLIB_RUNNER_CONFIG", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("LAKE_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("QATLAS_REAL_SYSROOT", str(tc))
+    monkeypatch.setenv("QATLIB_REAL_SYSROOT", str(tc))
     outputs(root)
     return root
 
@@ -155,7 +155,7 @@ def test_unified_local_resources_policy_profiles_and_precedence(project, documen
     assert ci.profile("Consumer", project=project)[2] == "mirror/library"
     assert r2_cache.detect_repo_profile(project)["repo_slug"] == "mirror/library"
     assert runtime.sources["jobs"].startswith("local:")
-    runtime = resources.resolve_config(project, {"jobs": 3}, {**os.environ, "QATLAS_JOBS": "2"})
+    runtime = resources.resolve_config(project, {"jobs": 3}, {**os.environ, "QATLIB_JOBS": "2"})
     assert runtime.values["jobs"] == 3 and runtime.sources["jobs"] == "command-line"
 
 
@@ -201,8 +201,8 @@ def test_pool_request_cannot_enlarge_or_wait_for_impossible_capacity(tmp_path):
     assert not instance.state_dir.exists()
     with patch.object(pool, "Pool") as constructor:
         with pytest.raises(ValueError, match="硬上限"):
-            with workspace._pool_scope({"QATLAS_MEMORY_BUDGET": str(8*resources.GIB),
-                                       "QATLAS_POOL_BUDGET_MIB": "4096", "QATLAS_JOBS": "3", "QATLAS_POOL_CPU": "2"}, building=True):
+            with workspace._pool_scope({"QATLIB_MEMORY_BUDGET": str(8*resources.GIB),
+                                       "QATLIB_POOL_BUDGET_MIB": "4096", "QATLIB_JOBS": "3", "QATLIB_POOL_CPU": "2"}, building=True):
                 pytest.fail("must not enter")
         constructor.assert_not_called()
 
@@ -249,8 +249,8 @@ def test_allow_flag_is_single_call_and_hard_pool_still_denies(project):
 
 
 def test_environment_variables_cannot_grant_heavy_permission(project, monkeypatch):
-    monkeypatch.setenv("QATLAS_POOL_BYPASS", "1")
-    monkeypatch.setenv("QATLAS_ALLOW_LOCAL_HEAVY", "1")
+    monkeypatch.setenv("QATLIB_POOL_BYPASS", "1")
+    monkeypatch.setenv("QATLIB_ALLOW_LOCAL_HEAVY", "1")
     with pytest.raises(budget.AdmissionError): budget.admit(project, full_gate=True)
 
 
@@ -335,7 +335,7 @@ def test_missing_controller_or_disabled_scope_cannot_be_bypassed(project):
         with pytest.raises(ValueError, match="systemd"):
             workspace._backend_command(["lake", "build"], {}, building=True, require_limits=True)
     with pytest.raises(ValueError, match="controller"):
-        workspace._backend_command(["lake", "build"], {"QATLAS_USE_SYSTEMD_SCOPE": "0"}, building=True, require_limits=True)
+        workspace._backend_command(["lake", "build"], {"QATLIB_USE_SYSTEMD_SCOPE": "0"}, building=True, require_limits=True)
 
 
 def test_windows_job_configuration_sets_real_hard_limit_flags():

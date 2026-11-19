@@ -34,13 +34,13 @@ class RunnerConfigTests(unittest.TestCase):
         self.assertNotEqual(first["environment"], second["environment"])
         for item, jobs in [(first, 2), (second, 6)]:
             environment = Path(item["environment"]).read_text()
-            self.assertIn("QATLAS_RUNNER_CONFIG=" + item["config"], environment)
+            self.assertIn("QATLIB_RUNNER_CONFIG=" + item["config"], environment)
             self.assertNotIn("LEAN_NUM_THREADS=", environment)
             self.assertEqual(tomllib.loads(Path(item["config"]).read_text())["resources"]["jobs"], jobs)
             self.assertEqual(stat.S_IMODE(Path(item["config"]).stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(Path(item["environment"]).stat().st_mode), 0o600)
             config = resources.resolve_config(self.root, env={"HOME": str(self.root / "home"),
-                                                              "QATLAS_RUNNER_CONFIG": item["config"]})
+                                                              "QATLIB_RUNNER_CONFIG": item["config"]})
             self.assertEqual(config.values["jobs"], jobs)
             self.assertTrue(config.sources["jobs"].startswith("runner:"))
         self.assertIn("CPUQuota=400%", Path(first["systemd"]).read_text())

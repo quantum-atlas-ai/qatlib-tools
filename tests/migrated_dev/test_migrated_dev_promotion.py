@@ -21,7 +21,7 @@ class ExactPromotionLockTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.consumer = self.root / 'consumer'
-        (self.consumer / 'ExampleLibrary').mkdir(parents=True)
+        (self.consumer / 'ConsumerLib').mkdir(parents=True)
         self.public = self.root / 'public'
         self.module = self.public / 'Qatlib/Concepts/Alpha/Main.lean'
         write(self.module, 'namespace Qatlib.Concepts.Alpha\ndef result := 1\nend Qatlib.Concepts.Alpha\n')
@@ -130,13 +130,13 @@ class ParameterizedPromotionTests(unittest.TestCase):
     def test_candidate_selection_keeps_private_theorems_but_public_inventory_does_not(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)
-            write(repo / 'ExampleLibrary/Foundations/Helper/Defs.lean', 'def helper := 1\n')
-            write(repo / 'ExampleLibrary/Concepts/Alpha/Private.lean',
-                  'module\nnamespace ExampleLibrary.Concepts.Alpha\n'
-                  'theorem hidden : True := True.intro\nend ExampleLibrary.Concepts.Alpha\n')
-            write(repo / 'ExampleLibrary/Research/Research/Main.lean', 'run_cmd pure ()\n')
-            self.assertEqual(promotion.theorem_candidates(repo, source_root='ExampleLibrary'), ('ExampleLibrary.Concepts.Alpha.Private',))
-            self.assertEqual(promotion.inventory(repo, 'ExampleLibrary',
+            write(repo / 'ConsumerLib/Foundations/Helper/Defs.lean', 'def helper := 1\n')
+            write(repo / 'ConsumerLib/Concepts/Alpha/Private.lean',
+                  'module\nnamespace ConsumerLib.Concepts.Alpha\n'
+                  'theorem hidden : True := True.intro\nend ConsumerLib.Concepts.Alpha\n')
+            write(repo / 'ConsumerLib/Research/Research/Main.lean', 'run_cmd pure ()\n')
+            self.assertEqual(promotion.theorem_candidates(repo, source_root='ConsumerLib'), ('ConsumerLib.Concepts.Alpha.Private',))
+            self.assertEqual(promotion.inventory(repo, 'ConsumerLib',
                 allowed_layers=promotion.PUBLIC_LAYERS).declarations, {})
 
     def test_generic_root_filters_research_layer_and_checks_named_and_private_duplicates(self):

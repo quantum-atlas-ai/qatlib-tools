@@ -7,14 +7,13 @@ def test_user_paths_and_legacy_layers(tmp_path):
     env = {"HOME": str(tmp_path / "home"), "QATLIB_HOME": str(tmp_path / "tools"),
            "XDG_CONFIG_HOME": str(tmp_path / "config")}
     home, root = tmp_path / "home", tmp_path / "tools"
-    assert locations.config_paths(env) == (tmp_path / "config/qatlib/env.toml",
-                                          home / ".qatlib/env.toml", root / "env.toml")
+    assert locations.config_paths(env) == (home / ".qatlib/env.toml", root / "env.toml")
     old_key = home / ".qatlib/secrets"
     old_key.parent.mkdir(parents=True)
     old_key.touch()
     assert locations.secrets_path(env) == old_key
     assert locations.secrets_path(env, read=False) == root / "secrets"
-    assert locations.secrets_path({**env, "QATLAS_R2_KEY_FILE": str(tmp_path / "explicit")}) == tmp_path / "explicit"
+    assert locations.secrets_path({**env, "QATLIB_R2_KEY_FILE": str(tmp_path / "explicit")}) == tmp_path / "explicit"
 
 
 def test_existing_pool_lock_is_reused(tmp_path):

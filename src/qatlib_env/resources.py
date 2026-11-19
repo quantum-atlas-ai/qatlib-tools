@@ -199,13 +199,13 @@ def probe_resources(*, proc_root: Path = Path("/proc"),
 
 
 ENV_KEYS = {
-    "jobs": ("QATLAS_JOBS",),
-    "lean_threads": ("QATLAS_LEAN_THREADS", "LEAN_NUM_THREADS"),
-    "memory_budget": ("QATLAS_MEMORY_BUDGET",),
-    "heavy_jobs": ("QATLAS_HEAVY_JOBS",),
-    "module_timeout": ("QATLAS_MODULE_TIMEOUT",),
-    "stage_timeout": ("QATLAS_STAGE_TIMEOUT",),
-    "heavy_patterns": ("QATLAS_HEAVY_PATTERNS",),
+    "jobs": ("QATLIB_JOBS",),
+    "lean_threads": ("QATLIB_LEAN_THREADS", "LEAN_NUM_THREADS"),
+    "memory_budget": ("QATLIB_MEMORY_BUDGET",),
+    "heavy_jobs": ("QATLIB_HEAVY_JOBS",),
+    "module_timeout": ("QATLIB_MODULE_TIMEOUT",),
+    "stage_timeout": ("QATLIB_STAGE_TIMEOUT",),
+    "heavy_patterns": ("QATLIB_HEAVY_PATTERNS",),
 }
 
 
@@ -237,10 +237,10 @@ class ResolvedConfig:
             value = self.values[name]
             result[variables[0]] = ",".join(value) if isinstance(value, list) else str(value)
         if self.configuration is not None:
-            result["QATLAS_POOL_BUDGET_MIB"] = str(self.configuration.local_pool_mib)
-            result["QATLAS_POOL_CPU"] = str(self.configuration.local_pool_cpu)
-            result["QATLAS_MAX_COLD_MODULES"] = str(self.configuration.budget.max_cold_modules)
-            result["QATLAS_MAX_REVERSE_MODULES"] = str(self.configuration.budget.max_reverse_modules)
+            result["QATLIB_POOL_BUDGET_MIB"] = str(self.configuration.local_pool_mib)
+            result["QATLIB_POOL_CPU"] = str(self.configuration.local_pool_cpu)
+            result["QATLIB_MAX_COLD_MODULES"] = str(self.configuration.budget.max_cold_modules)
+            result["QATLIB_MAX_REVERSE_MODULES"] = str(self.configuration.budget.max_reverse_modules)
         return result
 
 

@@ -1,4 +1,4 @@
-"""Validate the marked AGENTS contract and compare it to its approved digest."""
+"""Validate the DESIGN.md contract and compare it to its approved digest."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -6,7 +6,7 @@ import re
 
 START = "<!-- human-contract:start -->"
 END = "<!-- human-contract:end -->"
-PATHS = ("AGENTS.md",)
+PATH = "DESIGN.md"
 MANIFEST = "docs/design/human-contracts.sha256"
 MARKER = re.compile(r"<!--\s*human-contract:[^>]*-->")
 
@@ -28,22 +28,18 @@ def pending(root: Path) -> dict[str, str]:
     """Validate the manifest and return the digests awaiting approval."""
     if any(line.strip() in (START, END)
            for line in (root / "README.md").read_text(encoding="utf-8").splitlines()):
-        raise ValueError("README.md: contract markers belong only in AGENTS.md")
-    approved = {}
+        raise ValueError(f"README.md: contract markers belong only in {PATH}")
+    approved = None
     for line in (root / MANIFEST).read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
-        match = re.fullmatch(r"([a-f0-9]{64})  (AGENTS\.md)", line)
-        if not match or match[2] in approved:
+        match = re.fullmatch(rf"([a-f0-9]{{64}})  {re.escape(PATH)}", line)
+        if not match or approved is not None:
             raise ValueError(f"{MANIFEST}: invalid or duplicate approval entry")
-        approved[match[2]] = match[1]
-    candidates = {}
-    for path in PATHS:
-        protected = block((root / path).read_text(encoding="utf-8"), path)
-        digest = hashlib.sha256(protected.encode("utf-8")).hexdigest()
-        if approved.get(path) != digest:
-            candidates[path] = digest
-    return candidates
+        approved = match[1]
+    protected = block((root / PATH).read_text(encoding="utf-8"), PATH)
+    digest = hashlib.sha256(protected.encode("utf-8")).hexdigest()
+    return {} if approved == digest else {PATH: digest}
 
 
 def main(argv=None) -> int:

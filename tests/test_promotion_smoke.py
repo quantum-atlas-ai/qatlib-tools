@@ -86,8 +86,8 @@ def test_supervised_stderr_only_failure_is_available_to_smoke(tmp_path):
 
 def test_promotion_preserves_global_resource_and_timeout_overrides(tmp_path, capsys):
     from qatlib_env.workspace import main
-    values = {'QATLAS_JOBS': '1', 'QATLAS_MEMORY_BUDGET': '2147483648',
-              'QATLAS_STAGE_TIMEOUT': '2', 'QATLAS_MODULE_TIMEOUT': '1'}
+    values = {'QATLIB_JOBS': '1', 'QATLIB_MEMORY_BUDGET': '2147483648',
+              'QATLIB_STAGE_TIMEOUT': '2', 'QATLIB_MODULE_TIMEOUT': '1'}
     with patch.object(smoke.workspace, 'environment', return_value=values) as environment, \
             patch.object(smoke, 'run', return_value={'errors': []}) as run:
         assert main(['--project', str(tmp_path), '--jobs', '1', '--memory-budget', '2GiB',
@@ -100,7 +100,7 @@ def test_promotion_preserves_global_resource_and_timeout_overrides(tmp_path, cap
 
 def test_smoke_keeps_the_callers_resolved_budget(tmp_path):
     path = probe(tmp_path)
-    values = {'QATLAS_STAGE_TIMEOUT': '2', 'QATLAS_JOBS': '1'}
+    values = {'QATLIB_STAGE_TIMEOUT': '2', 'QATLIB_JOBS': '1'}
     with patch.object(smoke.workspace, 'environment', return_value=values) as environment, \
             patch.object(smoke.workspace, 'run', return_value='') as run:
         assert not smoke.run(tmp_path, [path], env=values)['errors']

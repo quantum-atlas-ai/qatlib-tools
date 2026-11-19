@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 import urllib.error
 import urllib.request
 
+from qatlib_env.envvars import env_value
+
 R2_ENDPOINT = ""
 REGION = "auto"
 SERVICE = "s3"
@@ -34,9 +36,9 @@ ARTIFACT_NAME = re.compile(r"[0-9a-fA-F]{16}\.ltar\Z")
 
 
 def cache_endpoint(env: dict[str, str] | None = None) -> str:
-    value = (os.environ if env is None else env).get("QATLAS_R2_ENDPOINT", "").strip()
+    value = env_value(os.environ if env is None else env, "QATLIB_R2_ENDPOINT", "").strip()
     if not value:
-        raise ValueError("QATLAS_R2_ENDPOINT must be configured outside the shared package")
+        raise ValueError("QATLIB_R2_ENDPOINT must be configured outside the shared package")
     return value.rstrip("/")
 
 
@@ -375,13 +377,13 @@ def _verify_artifact_hashes(repo: Path, paths: dict[str, Path], env: dict[str, s
         helper.write_text('''import Lake
 open Lake System
 #eval show IO Unit from do
-  let some listFile ← IO.getEnv "QATLAS_ARTIFACT_AUDIT_LIST" | throw (IO.userError "missing artifact list")
+  let some listFile ← IO.getEnv "QATLIB_ARTIFACT_AUDIT_LIST" | throw (IO.userError "missing artifact list")
   for path in (← IO.FS.readFile listFile).splitOn "\\n" do
     unless path.isEmpty do
       let hash ← computeBinFileHash (FilePath.mk path)
       IO.println hash.hex
 ''')
-        actual = _run(repo, {**env, "QATLAS_ARTIFACT_AUDIT_LIST": str(listing)},
+        actual = _run(repo, {**env, "QATLIB_ARTIFACT_AUDIT_LIST": str(listing)},
                       ["lake", "--no-build", "lean", str(helper)], capture=True).splitlines()
         if actual != [name.split(".", 1)[0].lower() for name in names]:
             raise ArtifactHashMismatch("Lake artifact content hash does not match its manifest descriptor")

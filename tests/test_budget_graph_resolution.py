@@ -44,7 +44,7 @@ def project(tmp_path, monkeypatch):
     for path in (output, trace):
         os.utime(path, ns=(stamp, stamp))
     env = {"HOME": str(tmp_path / "home"), "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
-           "QATLAS_REAL_SYSROOT": str(toolchain)}
+           "QATLIB_REAL_SYSROOT": str(toolchain)}
     packages = []
 
     def fake_git(path, *args):

@@ -14,6 +14,8 @@ import time
 
 import psutil
 
+from qatlib_env.envvars import env_value
+
 
 class ProcessCancelled(subprocess.SubprocessError):
     def __init__(self, signum: int, command):
@@ -269,8 +271,9 @@ def run(command, *, cwd=None, env=None, timeout=None, module_timeout=None,
     # The outer supervisor owns timeout exceptions. Its guardian must keep
     # reaping, rather than race that deadline and turn it into an exit code.
     # Keep the environment intact for workload-level nested invocations.
-    if _guard_parent and budget_env.get("QATLAS_STAGE_DEADLINE"):
-        remaining = float(budget_env["QATLAS_STAGE_DEADLINE"]) - time.monotonic()
+    deadline = env_value(budget_env, "QATLIB_STAGE_DEADLINE", None)
+    if _guard_parent and deadline:
+        remaining = float(deadline) - time.monotonic()
         if not math.isfinite(remaining):
             raise ValueError("invalid stage deadline")
         if remaining <= 0:

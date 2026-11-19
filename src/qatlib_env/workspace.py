@@ -22,6 +22,7 @@ from urllib.parse import unquote, urlparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qatlib_env import resources, supervisor, trash
+from qatlib_env.envvars import env_value
 
 try:
     import fcntl
@@ -44,16 +45,17 @@ def command_runtime_environment(project, env, argv):
     if _is_lake(argv):
         effective = command_environment(project, effective, argv)
     executable = Path(argv[0]).stem if argv else ""
-    if effective.get("QATLAS_LEAN_THREADS") and (_is_lake(argv) or executable.startswith(("python", "pypy")) or executable in {"bash", "sh", "elan"}):
+    threads = env_value(effective, "QATLIB_LEAN_THREADS", None)
+    if threads and (_is_lake(argv) or executable.startswith(("python", "pypy")) or executable in {"bash", "sh", "elan"}):
         if sys.platform == "win32":
             # The runtime overlay wraps the toolchain in POSIX symlink shims.
             # Native Lake uses LEAN_NUM_THREADS; it has no per-compiler -M or
             # heavy-slot wrapper. Do not silently accept a slot contract that
             # this path cannot enforce. Aggregate caps belong to the runner.
-            if effective.get("QATLAS_HEAVY_PATTERNS", "BalancedGram").strip(", \t"):
+            if env_value(effective, "QATLIB_HEAVY_PATTERNS", "BalancedGram").strip(", \t"):
                 raise ValueError("Windows runtime cannot enforce heavy_patterns/heavy_jobs without the POSIX compiler overlay; "
-                                 "set heavy_patterns=[] (QATLAS_HEAVY_PATTERNS='') to select aggregate Job Object limits")
-            effective["LEAN_NUM_THREADS"] = effective["QATLAS_LEAN_THREADS"]
+                                 "set heavy_patterns=[] (QATLIB_HEAVY_PATTERNS='') to select aggregate Job Object limits")
+            effective["LEAN_NUM_THREADS"] = threads
         else:
             from qatlib_env.compiler import environment as compiler_environment
             effective = compiler_environment(project, effective)
@@ -67,15 +69,15 @@ def _pool_scope(effective, *, building):
         yield
         return
     from qatlib_env.pool import Pool, PoolCapacityError
-    raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
+    raw_memory = int(float(env_value(effective, "QATLIB_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
-    cpu = max(1, int(effective.get("QATLAS_JOBS", "1"))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", effective.get("LEAN_NUM_THREADS", "1"))))
-    pool_budget = int(effective.get("QATLAS_POOL_BUDGET_MIB", "24576"))
-    pool_cpu = int(effective.get("QATLAS_POOL_CPU", "4"))
+    cpu = max(1, int(env_value(effective, "QATLIB_JOBS", "1"))) * max(1, int(env_value(effective, "QATLIB_LEAN_THREADS", effective.get("LEAN_NUM_THREADS", "1"))))
+    pool_budget = int(env_value(effective, "QATLIB_POOL_BUDGET_MIB", "24576"))
+    pool_cpu = int(env_value(effective, "QATLIB_POOL_CPU", "4"))
     if memory_mib > pool_budget or cpu > pool_cpu:
         raise ValueError(f"本机池硬上限拒绝准入: request={memory_mib}MiB/{cpu}cpu pool={pool_budget}MiB/{pool_cpu}cpu")
     pool = Pool(budget_mib=pool_budget, budget_cpu=pool_cpu)
-    deadline = time.monotonic() + float(effective.get("QATLAS_POOL_WAIT_TIMEOUT", "300"))
+    deadline = time.monotonic() + float(env_value(effective, "QATLIB_POOL_WAIT_TIMEOUT", "300"))
     lease = None
     while lease is None:
         try:
@@ -105,13 +107,13 @@ def _pool_scope(effective, *, building):
 def _backend_command(argv, effective, *, building, require_limits=False):
     if not building:
         return list(argv)
-    if effective.get("QATLAS_USE_SYSTEMD_SCOPE", "1") != "1":
+    if env_value(effective, "QATLIB_USE_SYSTEMD_SCOPE", "1") != "1":
         if require_limits:
             raise ValueError("heavy local execution requires an enabled hard resource controller")
         return list(argv)
-    raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
+    raw_memory = int(float(env_value(effective, "QATLIB_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
-    cpu = max(1, int(effective.get("QATLAS_JOBS", "1"))) * max(1, int(effective.get("QATLAS_LEAN_THREADS", effective.get("LEAN_NUM_THREADS", "1"))))
+    cpu = max(1, int(env_value(effective, "QATLIB_JOBS", "1"))) * max(1, int(env_value(effective, "QATLIB_LEAN_THREADS", effective.get("LEAN_NUM_THREADS", "1"))))
     if sys.platform.startswith("linux"):
         from qatlib_env.backends.linux import enclosing_cgroup_limits, linux_command, systemd_available
         if not systemd_available():
@@ -140,15 +142,15 @@ def _windows_job_scope(effective, *, building):
     if not building or sys.platform != "win32":
         yield None, None
         return
-    if effective.get("QATLAS_USE_JOB_OBJECT", "1") != "1":
-        raise ValueError("Windows build/bootstrap requires a Windows Job Object; QATLAS_USE_JOB_OBJECT cannot disable it")
+    if env_value(effective, "QATLIB_USE_JOB_OBJECT", "1") != "1":
+        raise ValueError("Windows build/bootstrap requires a Windows Job Object; QATLIB_USE_JOB_OBJECT cannot disable it")
     from qatlib_env.backends.windows import JobObject
     job = JobObject(f"qatlib-lean-build-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     try:
-        raw_memory = int(float(effective.get("QATLAS_MEMORY_BUDGET", 4 * GIB)))
+        raw_memory = int(float(env_value(effective, "QATLIB_MEMORY_BUDGET", 4 * GIB)))
         memory_bytes = raw_memory if raw_memory > 65536 else raw_memory * 1024 * 1024
-        cpu = int(effective["QATLAS_JOBS"]) * int(effective["QATLAS_LEAN_THREADS"])
-        cpu_percent = min(float(effective.get("QATLAS_CPU_PERCENT", "100")), 100 * cpu / (os.cpu_count() or 1))
+        cpu = int(env_value(effective, "QATLIB_JOBS")) * int(env_value(effective, "QATLIB_LEAN_THREADS"))
+        cpu_percent = min(float(env_value(effective, "QATLIB_CPU_PERCENT", "100")), 100 * cpu / (os.cpu_count() or 1))
         job.configure(memory_bytes=max(2048 * 1024 * 1024, memory_bytes), cpu_percent=cpu_percent)
 
         def attach(child):
@@ -175,13 +177,13 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
         # Normalize budgets even for programmatic callers without environment().
         base = resources.resolve_config(project, env=base).environment(base)
     effective = command_runtime_environment(project, base, argv)
-    if plan and plan["reasons"] and any(float(effective.get(key, default)) <= 0 for key, default in
-        (("QATLAS_STAGE_TIMEOUT", "10800"), ("QATLAS_MODULE_TIMEOUT", "1800"))):
+    if plan and plan["reasons"] and any(float(env_value(effective, key, default)) <= 0 for key, default in
+        (("QATLIB_STAGE_TIMEOUT", "10800"), ("QATLIB_MODULE_TIMEOUT", "1800"))):
         raise ValueError("heavy local execution requires positive stage and module timeouts")
     if building and Path(argv[0]).stem.casefold() == "lean":
         from qatlib_env.compiler import compiler_command
-        argv = compiler_command(argv, jobs=int(effective["QATLAS_LEAN_THREADS"]),
-            memory_mib=max(2048, int(effective["QATLAS_MEMORY_BUDGET"]) // 1024**2 // int(effective["QATLAS_JOBS"])))
+        argv = compiler_command(argv, jobs=int(effective["QATLIB_LEAN_THREADS"]),
+            memory_mib=max(2048, int(effective["QATLIB_MEMORY_BUDGET"]) // 1024**2 // int(effective["QATLIB_JOBS"])))
     build_started_ns = time.time_ns() if building else None
     try:
         with _pool_scope(effective, building=building), \
@@ -192,8 +194,8 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
                 command, cwd=cwd, env=effective, check=True, text=True,
                 stdout=subprocess.PIPE if capture else None,
                 stderr=subprocess.STDOUT if capture and capture_stderr else None,
-                timeout=float(effective.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
-                module_timeout=float(effective.get("QATLAS_MODULE_TIMEOUT", "1800")) or None,
+                timeout=float(env_value(effective, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
+                module_timeout=float(env_value(effective, "QATLIB_MODULE_TIMEOUT", "1800")) or None,
                 process_callback=process_callback,
                 cleanup_callback=cleanup_callback,
             ).stdout
@@ -279,7 +281,7 @@ def agents_local_path(project):
 
 
 def candidate_sources(project, source, env):
-    roots = [source, env.get("QATLAS_SOURCE_ROOT"), env.get("QATLAS_PKG_MIRROR"),
+    roots = [source, env_value(env, "QATLIB_SOURCE_ROOT", None), env_value(env, "QATLIB_PKG_MIRROR", None),
              primary_checkout(project), *sorted(project.parent.iterdir())]
     return list(dict.fromkeys(Path(p).expanduser().absolute() for p in roots
                               if p and Path(p).is_dir() and Path(p).expanduser().absolute() != project.absolute()))
@@ -370,7 +372,7 @@ def ensure_pkg_mirror(project: Path, env: dict[str, str]) -> None:
     directly, which keeps a transient network outage from failing CI.
     """
     env = network_environment(project, env)
-    raw_mirror = env.get("QATLAS_PKG_MIRROR", "").strip()
+    raw_mirror = env_value(env, "QATLIB_PKG_MIRROR", "").strip()
     if not raw_mirror:
         return
     project, mirror = Path(project).resolve(), Path(raw_mirror).expanduser().resolve()
@@ -508,7 +510,7 @@ def prewarm_toolchains(mirror: Path, env: dict[str, str]) -> None:
                 continue
             if value:
                 toolchains.add(value)
-    toolchains.add(env.get("QATLAS_DEFAULT_TOOLCHAIN", "leanprover/lean4:v4.35.0"))
+    toolchains.add(env_value(env, "QATLIB_DEFAULT_TOOLCHAIN", "leanprover/lean4:v4.35.0"))
     child_env = {**env, "ELAN_HOME": str(elan_home), "PATH": str(elan.parent) + os.pathsep + env.get("PATH", "")}
     for toolchain in sorted(toolchains):
         try:
@@ -540,7 +542,7 @@ def _maintain_gc(cache: Path, project: Path, env: dict[str, str]):
             if cache.stat().st_dev != project.stat().st_dev:
                 return
             _gc_unlocked(cache, workspace=project, apply=True,
-                         age=float(env.get("QATLAS_GC_AGE", 14 * 86400)), scope="*")
+                         age=float(env_value(env, "QATLIB_GC_AGE", 14 * 86400)), scope="*")
         finally:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -720,20 +722,23 @@ def lake_update_command(argv):
 def network_environment(project, env):
     """Apply child-local Git URL routing without mutating caller config."""
     effective = dict(env)
-    prefix = effective.get("QATLAS_GITHUB_PREFIX", "").strip()
+    prefix = env_value(effective, "QATLIB_GITHUB_PREFIX", "").strip()
     if prefix:
         if not re.fullmatch(r"https://[^\s?#@]+/", prefix):
-            raise ValueError("QATLAS_GITHUB_PREFIX must be an HTTPS prefix ending in /")
+            raise ValueError("QATLIB_GITHUB_PREFIX must be an HTTPS prefix ending in /")
         key = "url." + prefix + "https://github.com/.insteadOf"
         count = int(effective.get("GIT_CONFIG_COUNT", "0"))
         if not any(effective.get(f"GIT_CONFIG_KEY_{i}") == key for i in range(count)):
             effective.update(GIT_CONFIG_COUNT=str(count + 1))
             effective[f"GIT_CONFIG_KEY_{count}"] = key
             effective[f"GIT_CONFIG_VALUE_{count}"] = "https://github.com/"
-    if "QATLAS_PKG_MIRROR" not in effective:
+    configured_mirror = env_value(effective, "QATLIB_PKG_MIRROR", None)
+    if configured_mirror is not None:
+        effective["QATLIB_PKG_MIRROR"] = configured_mirror
+    else:
         mirror = Path(effective.get("HOME", str(Path.home()))) / "pkg-mirror"
         if mirror.is_dir():
-            effective["QATLAS_PKG_MIRROR"] = str(mirror)
+            effective["QATLIB_PKG_MIRROR"] = str(mirror)
     return effective
 
 
@@ -770,8 +775,8 @@ def environment(project, source=None, base_env=None, cli=None):
     env.update(LAKE_CACHE_DIR=str(cache), LAKE_ARTIFACT_CACHE="true")
     config = resources.resolve_config(project, cli, env)
     env = config.environment(env)
-    if config.values["stage_timeout"] and "QATLAS_STAGE_DEADLINE" not in env:
-        env["QATLAS_STAGE_DEADLINE"] = str(time.monotonic() + config.values["stage_timeout"])
+    if config.values["stage_timeout"] and env_value(env, "QATLIB_STAGE_DEADLINE", None) is None:
+        env["QATLIB_STAGE_DEADLINE"] = str(time.monotonic() + config.values["stage_timeout"])
     for warning in config.warnings:
         print("RESOURCE_WARNING: " + warning, file=sys.stderr)
     env.setdefault("MATHLIB_NO_CACHE_ON_UPDATE", "1")
@@ -1174,10 +1179,10 @@ def main(argv=None):
         from qatlib_env.r2_cache import main as upload
         return upload(["--repo", str(project), *args.args])
     if args.command == "maintain-mirror":
-        mirror = args.mirror or (Path(os.environ["QATLAS_PKG_MIRROR"])
-                                 if os.environ.get("QATLAS_PKG_MIRROR") else None)
+        configured_mirror = env_value(os.environ, "QATLIB_PKG_MIRROR", None)
+        mirror = args.mirror or (Path(configured_mirror) if configured_mirror else None)
         if mirror is None:
-            raise ValueError("maintain-mirror needs --mirror or QATLAS_PKG_MIRROR")
+            raise ValueError("maintain-mirror needs --mirror or QATLIB_PKG_MIRROR")
         maintain_mirror(mirror, dict(os.environ), gc_cache=args.gc_cache, project=project)
         return 0
     if args.command in {"run", "check"}:

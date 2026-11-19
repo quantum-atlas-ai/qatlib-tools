@@ -51,25 +51,25 @@ class CITests(unittest.TestCase):
 
     def test_dev_dependency_dir_follows_manifest_over_stale_directory(self):
         (self.root / "lake-manifest.json").write_text(json.dumps({
-            "packages": [{"name": "ExampleLibrary"}]
+            "packages": [{"name": "ConsumerLib"}]
         }))
-        (self.root / ".lake/packages/example_library").mkdir(parents=True)
+        (self.root / ".lake/packages/consumer_lib").mkdir(parents=True)
         self.assertEqual(ci.dev_dependency_dir(self.root),
-                         self.root / ".lake/packages/ExampleLibrary")
+                         self.root / ".lake/packages/ConsumerLib")
         (self.root / "lake-manifest.json").write_text(json.dumps({
-            "packages": [{"name": "example_library"}]
+            "packages": [{"name": "consumer_lib"}]
         }))
         self.assertEqual(ci.dev_dependency_dir(self.root),
-                         self.root / ".lake/packages/example_library")
+                         self.root / ".lake/packages/consumer_lib")
 
     def test_dev_dependency_dir_falls_back_to_existing_directory_without_manifest_entry(self):
         (self.root / "lake-manifest.json").write_text(json.dumps({"packages": []}))
-        stale = self.root / ".lake/packages/example_library"
+        stale = self.root / ".lake/packages/consumer_lib"
         stale.mkdir(parents=True)
         self.assertEqual(ci.dev_dependency_dir(self.root), stale)
 
     def test_input_tree_includes_root_aggregate_for_both_packages(self):
-        for package in ["ExampleLibrary", "example_library", "SecondaryProject", "secondary_package"]:
+        for package in ["ConsumerLib", "consumer_lib", "SecondaryProject", "secondary_package"]:
             library, _, _ = ci.profile(package)
             with patch.object(ci.subprocess, "check_output", return_value=b"tree\n") as command:
                 self.assertEqual(ci.input_tree(self.root, library), hashlib.sha256(b"tree\n").hexdigest())
@@ -137,7 +137,7 @@ class CITests(unittest.TestCase):
         archive = cache / "artifacts/0123456789abcdef.ltar"
         archive.parent.mkdir(parents=True)
         archive.write_bytes(b"archive")
-        mapping = cache / "outputs/ExampleLibrary/hash.json"
+        mapping = cache / "outputs/ConsumerLib/hash.json"
         mapping.parent.mkdir(parents=True)
         mapping.write_text(json.dumps({"data": archive.name}))
         trace = build / "lib/lean/Module.trace"
@@ -188,15 +188,15 @@ class CITests(unittest.TestCase):
     def test_publish_requires_main_allowed_event_and_write_key_on_both_providers(self):
         for provider in ["GITHUB_", "GITEA_"]:
             env = credential_env({provider + "REF": "refs/heads/main", provider + "EVENT_NAME": "push", "LAKE_DEV_CACHE_KEY": "key"})
-            self.assertTrue(ci.may_publish(env, "ExampleLibrary"))
-            self.assertTrue(ci.may_publish({**env, provider + "EVENT_NAME": "workflow_dispatch"}, "ExampleLibrary"))
-            self.assertFalse(ci.may_publish({**env, provider + "EVENT_NAME": "pull_request"}, "ExampleLibrary"))
-            self.assertFalse(ci.may_publish({**env, provider + "REF": "refs/heads/topic"}, "ExampleLibrary"))
-            self.assertFalse(ci.may_publish({**env, "LAKE_DEV_CACHE_KEY": " "}, "ExampleLibrary"))
+            self.assertTrue(ci.may_publish(env, "ConsumerLib"))
+            self.assertTrue(ci.may_publish({**env, provider + "EVENT_NAME": "workflow_dispatch"}, "ConsumerLib"))
+            self.assertFalse(ci.may_publish({**env, provider + "EVENT_NAME": "pull_request"}, "ConsumerLib"))
+            self.assertFalse(ci.may_publish({**env, provider + "REF": "refs/heads/topic"}, "ConsumerLib"))
+            self.assertFalse(ci.may_publish({**env, "LAKE_DEV_CACHE_KEY": " "}, "ConsumerLib"))
             self.assertTrue(ci.may_publish({**env, "LAKE_CACHE_KEY": " ",
-                                            "LAKE_DEV_CACHE_KEY": "dev-key"}, "example_library"))
+                                            "LAKE_DEV_CACHE_KEY": "dev-key"}, "consumer_lib"))
             self.assertTrue(ci.may_publish({**env, "LAKE_CACHE_KEY": " ",
-                                            "LAKE_DEV_CACHE_KEY": "dev-key"}, "ExampleLibrary"))
+                                            "LAKE_DEV_CACHE_KEY": "dev-key"}, "ConsumerLib"))
             self.assertTrue(ci.may_publish({**env, "LAKE_CACHE_KEY": " ",
                                             "LAKE_SECONDARY_CACHE_KEY": "secondary-key"},
                                            "secondary_package"))
@@ -207,7 +207,7 @@ class CITests(unittest.TestCase):
     def test_all_runner_temporary_paths_stay_on_runner_volume(self):
         runner = self.root / "runner"
         env = ci.runner_environment(self.root, {"RUNNER_TEMP": str(runner), "TMPDIR": "/unwanted"})
-        for key in ["TMPDIR", "TMP", "TEMP", "XDG_DATA_HOME", "QATLAS_TEST_ROOT"]:
+        for key in ["TMPDIR", "TMP", "TEMP", "XDG_DATA_HOME", "QATLIB_TEST_ROOT"]:
             self.assertTrue(Path(env[key]).is_relative_to(runner))
             self.assertTrue(Path(env[key]).is_dir())
 
@@ -236,7 +236,7 @@ class CITests(unittest.TestCase):
             ["git", "-C", str(local), "rev-parse", "--is-shallow-repository"], text=True,
         ).strip(), "true")
         with patch.object(ci.workspace, "usable_git_mirror", return_value=False) as object_mirror:
-            self.assertEqual(ci.public_repo(self.root, {"QATLAS_PKG_MIRROR": str(self.root / "mirror")}),
+            self.assertEqual(ci.public_repo(self.root, {"QATLIB_PKG_MIRROR": str(self.root / "mirror")}),
                              local)
         object_mirror.assert_not_called()
 
@@ -246,7 +246,7 @@ class CITests(unittest.TestCase):
         checkout = self.clone_public_fixture(origin, mirror / ".lake/packages/Qatlib", "--no-checkout")
         self.assertEqual(ci.workspace.git_head(checkout), locked)
         with self.assertRaisesRegex(ValueError, "materialized Lean sources"):
-            ci.public_repo(self.root, {"QATLAS_PKG_MIRROR": str(mirror)})
+            ci.public_repo(self.root, {"QATLIB_PKG_MIRROR": str(mirror)})
         self.assertFalse((checkout / "Qatlib").exists())
 
     def test_public_repo_rejects_sources_at_stale_head(self):
@@ -264,7 +264,7 @@ class CITests(unittest.TestCase):
         self.clone_public_fixture(origin, self.root / ".lake/packages/Qatlib", "--no-checkout")
         mirror = self.root / "mirror"
         checkout = self.clone_public_fixture(origin, mirror / ".lake/packages/Qatlib")
-        self.assertEqual(ci.public_repo(self.root, {"QATLAS_PKG_MIRROR": str(mirror)}), checkout)
+        self.assertEqual(ci.public_repo(self.root, {"QATLIB_PKG_MIRROR": str(mirror)}), checkout)
 
     def test_public_repo_fails_when_locked_sources_are_unavailable(self):
         _origin, locked = self.public_source_fixture()
@@ -292,7 +292,7 @@ class CITests(unittest.TestCase):
 
         for has_qatlib_env in (False, True):
             commands.clear()
-            dependency = project / ".lake/packages/example_library/python/qatlib_env"
+            dependency = project / ".lake/packages/consumer_lib/python/qatlib_env"
             if has_qatlib_env:
                 dependency.mkdir(parents=True)
             with patch.object(ci.workspace, "environment", return_value=environment), \

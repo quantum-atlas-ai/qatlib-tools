@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import re
 
+from qatlib_env.envvars import legacy_name
 from qatlib_env.resources import memory_bytes
 
 
@@ -46,8 +47,9 @@ def render(base: Path, systemd: Path, lane: str, instance: str, *, values=None,
     common = root / "runners/.env"
     environment = common.read_text() if common.is_file() else ""
     environment = "\n".join(line for line in environment.splitlines()
-                            if not line.startswith(("LEAN_NUM_THREADS=", "QATLAS_RUNNER_CONFIG=")))
-    environment += f"\nQATLAS_RUNNER_CONFIG={config}\n"
+                            if not line.startswith(("LEAN_NUM_THREADS=", "QATLIB_RUNNER_CONFIG=",
+                                                    legacy_name("QATLIB_RUNNER_CONFIG") + "=")))
+    environment += f"\nQATLIB_RUNNER_CONFIG={config}\n"
     path = directory / ".env"
     path.write_text(environment)
     path.chmod(0o600)

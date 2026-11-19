@@ -26,10 +26,10 @@ class MathlibPrepareTests(unittest.TestCase):
             self.skipTest("the locked Lean toolchain must already be installed; tests never download it")
         self.receipt = self.root / "cache-invocations.txt"
         self.env = {key: value for key, value in os.environ.items()
-                    if not key.startswith("LAKE_") and key != "QATLAS_STAGE_DEADLINE"}
+                    if not key.startswith("LAKE_") and key != "QATLIB_STAGE_DEADLINE"}
         self.env.update(ELAN_TOOLCHAIN=toolchain, LAKE_CACHE_DIR=str(self.root / "native-cache"),
                         LAKE_CACHE_KEY="ignored_fixture_generic_access:ignored_fixture_generic_secret",
-                        LAKE_ARTIFACT_CACHE="true", LEAN_NUM_THREADS="2", QATLAS_LEAN_THREADS="2",
+                        LAKE_ARTIFACT_CACHE="true", LEAN_NUM_THREADS="2", QATLIB_LEAN_THREADS="2",
                         MATHLIB_NO_CACHE_ON_UPDATE="1", GIT_TERMINAL_PROMPT="0",
                         MATHLIB_FIXTURE_RECEIPT=str(self.receipt))
         self.source = self.root / "mathlib-source"
@@ -62,7 +62,7 @@ def main (args : List String) : IO Unit := do
         self.project = self.root / "consumer"
         self.project.mkdir()
         (self.project / "lean-toolchain").write_text(toolchain + "\n")
-        (self.project / "lakefile.toml").write_text(f'''name="ExampleLibrary"
+        (self.project / "lakefile.toml").write_text(f'''name="ConsumerLib"
 [[require]]
 name="mathlib"
 git={json.dumps(self.source.as_uri())}
@@ -115,7 +115,7 @@ name="Root"
         (self.mathlib / "Mathlib/Additional.lean").write_text("def additionalFixture := 1\n")
         (self.mathlib / "Mathlib/Other.lean").write_text("def otherFixture := 2\n")
         with self.assertRaisesRegex(prepare.CacheError, "cold modules exceed configured limit"):
-            prepare.enforce_cold_limit(self.project, {"QATLAS_MAX_COLD_MODULES": "1"})
+            prepare.enforce_cold_limit(self.project, {"QATLIB_MAX_COLD_MODULES": "1"})
 
 
 if __name__ == "__main__":

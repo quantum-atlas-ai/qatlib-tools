@@ -37,8 +37,8 @@ with open(os.environ["EVENTS"], "a") as stream:
 ''')
         real.chmod(0o700)
         events = self.root / "events"
-        env = {**os.environ, "QATLAS_REAL_LEAN": str(real), "QATLAS_LEAN_THREADS": "3",
-               "QATLAS_HEAVY_JOBS": "1", "QATLAS_HEAVY_PATTERNS": "Heavy", "EVENTS": str(events)}
+        env = {**os.environ, "QATLIB_REAL_LEAN": str(real), "QATLIB_LEAN_THREADS": "3",
+               "QATLIB_HEAVY_JOBS": "1", "QATLIB_HEAVY_PATTERNS": "Heavy", "EVENTS": str(events)}
         env = compiler.environment(self.repo, env)
         overlay = Path(env["LEAN_SYSROOT"])
         self.assertEqual(compiler.environment(self.repo, env), env)
@@ -66,12 +66,12 @@ with open(os.environ["EVENTS"], "a") as stream:
             self.skipTest("trace stability fixture is pinned to Lake 4.35.0")
         (self.repo / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n")
         env = {**os.environ, "LAKE_ARTIFACT_CACHE": "false", "LAKE_CACHE_DIR": str(self.root / "cache"),
-               "LEAN_NUM_THREADS": "2", "QATLAS_HEAVY_PATTERNS": "", "QATLAS_HEAVY_JOBS": "1"}
-        for key in ("LEAN_SYSROOT", "LAKE_OVERRIDE_LEAN", "QATLAS_REAL_LEAN", "QATLAS_REAL_SYSROOT"):
+               "LEAN_NUM_THREADS": "2", "QATLIB_HEAVY_PATTERNS": "", "QATLIB_HEAVY_JOBS": "1"}
+        for key in ("LEAN_SYSROOT", "LAKE_OVERRIDE_LEAN", "QATLIB_REAL_LEAN", "QATLIB_REAL_SYSROOT"):
             env.pop(key, None)
         hashes = []
         for index, threads in enumerate((None, "1", "3")):
-            actual = env if threads is None else compiler.environment(self.repo, {**env, "QATLAS_LEAN_THREADS": threads})
+            actual = env if threads is None else compiler.environment(self.repo, {**env, "QATLIB_LEAN_THREADS": threads})
             result = supervisor.run(["lake", "--no-cache", "build", "RuntimeProbe"], cwd=self.repo, env=actual,
                                     text=True, capture_output=True, timeout=90)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

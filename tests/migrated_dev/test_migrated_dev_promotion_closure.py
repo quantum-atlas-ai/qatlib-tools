@@ -15,7 +15,7 @@ class PromotionClosureTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.source = Path(self.temp.name) / 'source'
         self.public = Path(self.temp.name) / 'public'
-        (self.source / 'ExampleLibrary').mkdir(parents=True)
+        (self.source / 'ConsumerLib').mkdir(parents=True)
         (self.public / 'Qatlib').mkdir(parents=True)
 
     def write(self, module, text='', *, public=False):
@@ -25,7 +25,7 @@ class PromotionClosureTests(unittest.TestCase):
         return path
 
     def closure(self, modules, **kwargs):
-        kwargs.setdefault('source_root', 'ExampleLibrary')
+        kwargs.setdefault('source_root', 'ConsumerLib')
         kwargs.setdefault('public_root', 'Qatlib')
         kwargs.setdefault('non_promotable_roots', ('Research',))
         kwargs.setdefault('test_roots', ('Tests',))
@@ -36,24 +36,24 @@ class PromotionClosureTests(unittest.TestCase):
         self.assertTrue(any(message in error for error in result.errors), result.errors)
 
     def test_whole_file_closure_keeps_definition_only_helpers_and_real_header_imports(self):
-        definitions = 'ExampleLibrary.Foundations.Shared.Defs'
-        lemma = 'ExampleLibrary.Concepts.Topic.Lemma'
-        first = 'ExampleLibrary.Papers.Paper.Result'
-        second = 'ExampleLibrary.Papers.Other.Result'
+        definitions = 'ConsumerLib.Foundations.Shared.Defs'
+        lemma = 'ConsumerLib.Concepts.Topic.Lemma'
+        first = 'ConsumerLib.Papers.Paper.Result'
+        second = 'ConsumerLib.Papers.Other.Result'
         public = 'Qatlib.Foundations.Published.Defs'
         self.write(definitions, 'import Init\ndef helper : Nat := 1\n')
         self.write(lemma, f'module\npublic meta import {definitions}\ndef value := helper\n')
         self.write(public, 'import Mathlib.Data.Nat.Basic\ndef published : Nat := 1\n', public=True)
-        self.write(first, f'''/- import ExampleLibrary.Research.Fake.Result -/
+        self.write(first, f'''/- import ConsumerLib.Research.Fake.Result -/
 module
 public import {lemma}
 meta import all {public}
 import Lean
 import Std
-def prose := "import ExampleLibrary.Tests.Fake"
+def prose := "import ConsumerLib.Tests.Fake"
 ''')
         self.write(second, f'import {definitions}\ndef other := helper\n')
-        self.write('ExampleLibrary.Concepts.Unused.Bad', 'import Research.Private\n')
+        self.write('ConsumerLib.Concepts.Unused.Bad', 'import Research.Private\n')
         result = self.closure([first, second, first])
         self.assertEqual(result.errors, ())
         self.assertEqual(set(result.modules), {definitions, lemma, first, second})
@@ -76,11 +76,11 @@ def prose := "import ExampleLibrary.Tests.Fake"
         self.assertEqual(result.modules, (helper, question))
 
     def test_invalid_or_missing_explicit_candidates_cannot_produce_partial_plans(self):
-        valid = 'ExampleLibrary.Concepts.Topic.Valid'
+        valid = 'ConsumerLib.Concepts.Topic.Valid'
         self.write(valid)
-        for invalid in ('../escape', 'ExampleLibrary/Concepts/Topic', 'ExampleLibrary..Topic',
-                        'ExampleLibrary', 'ExampleLibrary.Concepts', 'ExampleLibrary.Tests.Topic',
-                        'Qatlib.Concepts.Other', 'ExampleLibrary.Concepts.Missing', None):
+        for invalid in ('../escape', 'ConsumerLib/Concepts/Topic', 'ConsumerLib..Topic',
+                        'ConsumerLib', 'ConsumerLib.Concepts', 'ConsumerLib.Tests.Topic',
+                        'Qatlib.Concepts.Other', 'ConsumerLib.Concepts.Missing', None):
             with self.subTest(candidate=invalid):
                 result = self.closure([valid, invalid])
                 self.assertTrue(result.errors)
@@ -89,8 +89,8 @@ def prose := "import ExampleLibrary.Tests.Fake"
         self.assert_failed(self.closure(valid), 'not a single string')
 
     def test_missing_local_and_public_providers_report_the_import_source_line(self):
-        module = 'ExampleLibrary.Concepts.Topic.Result'
-        for missing in ('ExampleLibrary.Foundations.Missing.Defs', 'Qatlib.Foundations.Missing.Defs'):
+        module = 'ConsumerLib.Concepts.Topic.Result'
+        for missing in ('ConsumerLib.Foundations.Missing.Defs', 'Qatlib.Foundations.Missing.Defs'):
             with self.subTest(missing=missing):
                 path = self.write(module, f'/- License. -/\nmodule\npublic meta import\n  {missing}\n')
                 result = self.closure([module])
@@ -98,8 +98,8 @@ def prose := "import ExampleLibrary.Tests.Fake"
                 self.assertTrue(any(f'{path}:4:' in error for error in result.errors), result.errors)
 
     def test_inventory_exclusions_cannot_be_used_as_import_providers(self):
-        module = 'ExampleLibrary.Concepts.Topic.Result'
-        missing = 'ExampleLibrary.Concepts.Topic.Excluded'
+        module = 'ConsumerLib.Concepts.Topic.Result'
+        missing = 'ConsumerLib.Concepts.Topic.Excluded'
         self.write(module, f'import {missing}\n')
         excluded = self.write(missing, 'def excluded := 1\n')
         from qatlib_search.promotion import source_files
@@ -110,18 +110,18 @@ def prose := "import ExampleLibrary.Tests.Fake"
 
     def test_reverse_local_and_public_layer_dependencies_are_rejected(self):
         for first, dependency, is_public in (
-                ('ExampleLibrary.Foundations.Topic.Result', 'ExampleLibrary.Concepts.Other.Defs', False),
-                ('ExampleLibrary.Concepts.Topic.Result', 'Qatlib.Papers.Paper.Defs', True)):
+                ('ConsumerLib.Foundations.Topic.Result', 'ConsumerLib.Concepts.Other.Defs', False),
+                ('ConsumerLib.Concepts.Topic.Result', 'Qatlib.Papers.Paper.Defs', True)):
             with self.subTest(dependency=dependency):
                 self.write(first, f'import {dependency}\n')
                 self.write(dependency, public=is_public)
                 self.assert_failed(self.closure([first]), 'reverse layer dependency')
 
     def test_unknown_projects_disallowed_layers_and_aggregate_imports_fail_closed(self):
-        module = 'ExampleLibrary.Papers.Topic.Result'
-        for dependency in ('ExampleLibrary', 'Qatlib', 'ExampleLibrary.Concepts', 'Mathlib',
-                           'ExampleLibrary.Research.Task.Result', 'ExampleLibrary.Research.Private',
-                           'ExampleLibrary.Tests.Suite', 'AltConsumerTests.Suite', 'Research.Private'):
+        module = 'ConsumerLib.Papers.Topic.Result'
+        for dependency in ('ConsumerLib', 'Qatlib', 'ConsumerLib.Concepts', 'Mathlib',
+                           'ConsumerLib.Research.Task.Result', 'ConsumerLib.Research.Private',
+                           'ConsumerLib.Tests.Suite', 'AltConsumerTests.Suite', 'Research.Private'):
             with self.subTest(dependency=dependency):
                 self.write(module, f'import {dependency}\n')
                 self.assert_failed(self.closure([module]), 'forbidden')
@@ -130,7 +130,7 @@ def prose := "import ExampleLibrary.Tests.Fake"
         self.assertEqual(self.closure([module], external_roots=('UserLibrary',)).errors, ())
 
     def test_all_reachable_public_providers_are_checked(self):
-        candidate = 'ExampleLibrary.Concepts.Topic.Result'
+        candidate = 'ConsumerLib.Concepts.Topic.Result'
         provider = 'Qatlib.Foundations.Shared.Defs'
         path = self.write(provider, 'import Qatlib.Papers.Missing.Defs\n', public=True)
         self.write(candidate, f'import {provider}\n')
@@ -140,9 +140,9 @@ def prose := "import ExampleLibrary.Tests.Fake"
         self.assertTrue(any('reverse layer dependency' in error for error in result.errors))
 
     def test_source_public_and_cross_project_cycles_have_actionable_errors(self):
-        candidate = 'ExampleLibrary.Concepts.Topic.Result'
+        candidate = 'ConsumerLib.Concepts.Topic.Result'
         provider = 'Qatlib.Concepts.Shared.Defs'
-        helper = 'ExampleLibrary.Concepts.Topic.Helper'
+        helper = 'ConsumerLib.Concepts.Topic.Helper'
         self.write(candidate, f'import {helper}\n')
         self.write(helper, f'import {candidate}\n')
         self.assert_failed(self.closure([candidate]), 'import cycle:')
@@ -159,7 +159,7 @@ def prose := "import ExampleLibrary.Tests.Fake"
         self.assertTrue(any('import cycle:' in error for error in result.errors))
 
     def test_malformed_headers_and_inventory_errors_are_clean_failures(self):
-        candidate = 'ExampleLibrary.Concepts.Topic.Result'
+        candidate = 'ConsumerLib.Concepts.Topic.Result'
         for text in ('import ../escape\n', 'import\n', '/- unterminated'):
             with self.subTest(text=text):
                 path = self.write(candidate, text)
@@ -170,7 +170,7 @@ def prose := "import ExampleLibrary.Tests.Fake"
             self.assert_failed(self.closure([candidate]), 'Git inventory unavailable')
 
     def test_read_only_analysis_preserves_source_and_public_bytes(self):
-        candidate = 'ExampleLibrary.Concepts.Topic.Result'
+        candidate = 'ConsumerLib.Concepts.Topic.Result'
         self.write(candidate, 'import Init\nimport Lean\nimport Std\ndef value := 1\n')
         before = {path: path.read_bytes() for path in Path(self.temp.name).rglob('*') if path.is_file()}
         result = self.closure([candidate])
@@ -180,9 +180,9 @@ def prose := "import ExampleLibrary.Tests.Fake"
                                  if path.is_file()})
 
     def test_invalid_configuration_is_rejected_before_source_resolution(self):
-        candidate = 'ExampleLibrary.Concepts.Topic.Result'
+        candidate = 'ConsumerLib.Concepts.Topic.Result'
         self.write(candidate)
-        for options in ({'source_root': '../outside'}, {'public_root': 'ExampleLibrary'},
+        for options in ({'source_root': '../outside'}, {'public_root': 'ConsumerLib'},
                         {'allowed_layers': ('Concepts', 'Concepts')},
                         {'allowed_layers': 'Concepts'}, {'external_roots': 'Lean'}):
             with self.subTest(options=options):
@@ -191,23 +191,23 @@ def prose := "import ExampleLibrary.Tests.Fake"
                 self.assertEqual(result.modules, ())
 
     def test_reviewed_source_layers_do_not_open_research_layers_in_public(self):
-        candidate = 'ExampleLibrary.Research.Task.Result'
+        candidate = 'ConsumerLib.Research.Task.Result'
         provider = 'Qatlib.Research.Task.Defs'
         self.write(candidate, f'import {provider}\n')
         self.write(provider, public=True)
         result = self.closure([candidate],
                               allowed_layers=('Foundations', 'Concepts', 'Papers', 'Research'))
         self.assert_failed(result, 'forbidden layer')
-        paper = 'ExampleLibrary.Papers.Paper.Result'
+        paper = 'ConsumerLib.Papers.Paper.Result'
         foundation = 'Qatlib.Foundations.Shared.Defs'
         self.write(paper, f'import {foundation}\n')
         self.write(foundation, public=True)
         self.assertEqual(self.closure([paper], allowed_layers=('Papers',)).errors, ())
 
     def test_unsafe_inventory_module_names_do_not_become_providers(self):
-        candidate = 'ExampleLibrary.Concepts.Topic.Result'
+        candidate = 'ConsumerLib.Concepts.Topic.Result'
         self.write(candidate)
-        self.write('ExampleLibrary.Concepts.bad-name')
+        self.write('ConsumerLib.Concepts.bad-name')
         self.assert_failed(self.closure([candidate]), 'unsupported source module name')
 
 

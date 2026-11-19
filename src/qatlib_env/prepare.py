@@ -16,6 +16,7 @@ import tomllib
 from urllib.parse import quote
 
 from qatlib_env import workspace, supervisor
+from qatlib_env.envvars import env_value
 
 PREPARE_VERSION = 3
 
@@ -66,8 +67,8 @@ def _cache_run(command, project, env):
     with workspace._pool_scope(effective, building=windows), \
             workspace._windows_job_scope(effective, building=windows) as (attach, cleanup):
         result = supervisor.run(command, cwd=project, env=effective, capture_output=True, text=True,
-                                timeout=float(effective.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
-                                module_timeout=float(effective.get("QATLAS_MODULE_TIMEOUT", "1800")) or None,
+                                timeout=float(env_value(effective, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
+                                module_timeout=float(env_value(effective, "QATLIB_MODULE_TIMEOUT", "1800")) or None,
                                 process_callback=attach, cleanup_callback=cleanup)
     if result.returncode:
         # Preserve useful diagnostics without echoing authentication/config text.
@@ -172,7 +173,7 @@ def _fetch_artifacts(downloads: dict[str, Path], endpoint: str, scope: str,
     config.chmod(0o600)
     result = supervisor.run(["curl", "--parallel", "--parallel-max", "8", "--config", str(config)],
                             cwd=project, env=env, capture_output=True, text=True,
-                            timeout=float(env.get("QATLAS_STAGE_TIMEOUT", "10800")) or None)
+                            timeout=float(env_value(env, "QATLIB_STAGE_TIMEOUT", "10800")) or None)
     statuses = {}
     for line in result.stdout.splitlines():
         parts = line.split()
@@ -495,7 +496,7 @@ def enforce_cold_limit(project: Path, env: dict) -> int:
     from .budget import _permission
     count = cold_modules(project)
     maximum = load_config(project, env).budget.max_cold_modules
-    warning = int(env.get("QATLAS_COLD_WARN_MODULES", "100"))
+    warning = int(env_value(env, "QATLIB_COLD_WARN_MODULES", "100"))
     if maximum < 0 or warning < 0:
         raise ValueError("cold module thresholds must be nonnegative")
     if count > maximum and not _permission.get():

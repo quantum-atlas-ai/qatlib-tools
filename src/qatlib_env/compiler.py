@@ -17,6 +17,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qatlib_env import supervisor
+from qatlib_env.envvars import env_value
 
 
 def compiler_command(command: list[str] | tuple[str, ...], *, jobs: int = 2,
@@ -57,8 +58,9 @@ def environment(project: Path, base_env: dict[str, str]) -> dict[str, str]:
     result = dict(base_env)
     if os.name != "posix":
         raise ValueError("runtime Lean thread/admission overlay currently requires POSIX")
-    if result.get("QATLAS_REAL_LEAN"):
-        real = Path(result["QATLAS_REAL_LEAN"])
+    configured_lean = env_value(result, "QATLIB_REAL_LEAN", None)
+    if configured_lean:
+        real = Path(configured_lean)
         sysroot = real.parent.parent
     else:
         probe = supervisor.run(["lean", "--print-prefix"], cwd=project, env=result,
@@ -88,11 +90,12 @@ def environment(project: Path, base_env: dict[str, str]) -> dict[str, str]:
             stream.write(content)
         temporary.chmod(0o700)
         temporary.replace(wrapper)
-    result.update(LAKE_OVERRIDE_LEAN="true", LEAN_SYSROOT=str(overlay), QATLAS_REAL_LEAN=str(real))
+    result.update(LAKE_OVERRIDE_LEAN="true", LEAN_SYSROOT=str(overlay), QATLIB_REAL_LEAN=str(real))
     # Preserve the real prefix in actual compiler calls. Lake still resolves its
     # compiler via the overlay, whose --githash is the real compiler's githash.
-    result["QATLAS_REAL_SYSROOT"] = str(sysroot)
-    result.setdefault("QATLAS_HEAVY_LOCK_DIR", str(Path(result.get("LAKE_CACHE_DIR", overlay)) / "qatlas-heavy-slots"))
+    result["QATLIB_REAL_SYSROOT"] = str(sysroot)
+    default_lock_dir = str(Path(result.get("LAKE_CACHE_DIR", overlay)) / "qatlas-heavy-slots")
+    result["QATLIB_HEAVY_LOCK_DIR"] = env_value(result, "QATLIB_HEAVY_LOCK_DIR", default_lock_dir)
     return result
 
 
@@ -132,25 +135,25 @@ def compiler_command(command: list[str] | tuple[str, ...], *, jobs: int = 2,
 
 def main() -> int:
     args = sys.argv[1:]
-    real = os.environ["QATLAS_REAL_LEAN"]
+    real = env_value(os.environ, "QATLIB_REAL_LEAN")
     sources = [value for value in args if value.endswith(".lean")]
     if sources:
-        patterns = [item.strip() for item in os.environ.get("QATLAS_HEAVY_PATTERNS", "BalancedGram").split(",") if item.strip()]
+        patterns = [item.strip() for item in env_value(os.environ, "QATLIB_HEAVY_PATTERNS", "BalancedGram").split(",") if item.strip()]
         if any(fnmatch.fnmatch(source, pattern) or pattern in source for source in sources for pattern in patterns):
-            slots = int(os.environ.get("QATLAS_HEAVY_JOBS", "1"))
+            slots = int(env_value(os.environ, "QATLIB_HEAVY_JOBS", "1"))
             if slots < 1:
-                raise ValueError("QATLAS_HEAVY_JOBS must be positive")
-            _acquire_slot(Path(os.environ["QATLAS_HEAVY_LOCK_DIR"]), slots)
-        threads = int(os.environ.get("QATLAS_LEAN_THREADS", "2"))
+                raise ValueError("QATLIB_HEAVY_JOBS must be positive")
+            _acquire_slot(Path(env_value(os.environ, "QATLIB_HEAVY_LOCK_DIR")), slots)
+        threads = int(env_value(os.environ, "QATLIB_LEAN_THREADS", "2"))
         if threads < 1:
-            raise ValueError("QATLAS_LEAN_THREADS must be positive")
+            raise ValueError("QATLIB_LEAN_THREADS must be positive")
         from qatlib_env.config import memory_bytes
-        total = memory_bytes(os.environ.get("QATLAS_MEMORY_BUDGET", str(4 * 1024**3)))
-        processes = max(1, int(os.environ.get("QATLAS_JOBS", "1")))
+        total = memory_bytes(env_value(os.environ, "QATLIB_MEMORY_BUDGET", str(4 * 1024**3)))
+        processes = max(1, int(env_value(os.environ, "QATLIB_JOBS", "1")))
         memory_mib = max(2048, total // (1024**2) // processes)
         args = [f"-j{threads}", f"-M{memory_mib}", *args]
     actual = dict(os.environ)
-    actual["LEAN_SYSROOT"] = actual["QATLAS_REAL_SYSROOT"]
+    actual["LEAN_SYSROOT"] = env_value(actual, "QATLIB_REAL_SYSROOT")
     os.execve(real, [real, *args], actual)
     return 1  # unreachable
 

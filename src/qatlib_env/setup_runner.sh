@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision isolated Linux runner lanes from QATLAS_LANES; register each runner instance separately.
+# Provision isolated Linux runner lanes from QATLIB_LANES; register each runner instance separately.
 set -euo pipefail
 
 usage() {
@@ -13,8 +13,8 @@ Usage:
       [--module-timeout SECONDS] [--stage-timeout SECONDS]
       [--cpu-quota PERCENT] [--memory-high SIZE] [--memory-max SIZE]
 
-init uses QATLAS_HOST_MEMORY_HIGH (90%), QATLAS_HOST_MEMORY_MAX (95%) and
-QATLAS_HOST_CPU_QUOTA (infinity) for the shared qatlas-ci.slice.
+init uses QATLIB_HOST_MEMORY_HIGH (90%), QATLIB_HOST_MEMORY_MAX (95%) and
+QATLIB_HOST_CPU_QUOTA (infinity) for the shared qatlas-ci.slice.
 EOF
 }
 
@@ -27,8 +27,20 @@ if [ "$command" != known-hosts ] && [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-base=${QATLAS_CI_ROOT:-/data/qatlas-ci}
-systemd_dir=${QATLAS_SYSTEMD_DIR:-/etc/systemd/system}
+# Copy explicitly set legacy inputs only when the canonical name is unset.
+for setting in CI_ROOT SYSTEMD_DIR GITHUB_PROXY GITHUB_RUNNER_VERSION ACT_RUNNER_VERSION \
+    CPU_WEIGHT CPU_QUOTA NICE IO_CLASS IO_PRIORITY RUNNER_MEM_HIGH RUNNER_MEM_MAX TASKS_MAX \
+    LANES HOST_CPU_QUOTA HOST_MEMORY_HIGH HOST_MEMORY_MAX GITHUB_MIRROR DEFAULT_TOOLCHAIN NODE_VERSION
+do
+  current="QATLIB_${setting}"
+  previous="QATLAS_${setting}"
+  if [[ ! -v $current && -v $previous ]]; then
+    printf -v "$current" '%s' "${!previous}"
+  fi
+done
+
+base=${QATLIB_CI_ROOT:-/data/qatlas-ci}
+systemd_dir=${QATLIB_SYSTEMD_DIR:-/etc/systemd/system}
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 valid_lane() { case "$1" in pub|dev|secondary) return 0;; *) return 1;; esac; }
@@ -105,7 +117,7 @@ ensure_host_prerequisites() {
 register_github() {
   local lane=$1 instance=$2 url=$3 token=$4 labels=$5
   local account="qatlas-ci-$lane" root="$base/$lane"
-  local github_proxy=${QATLAS_GITHUB_PROXY:-}
+  local github_proxy=${QATLIB_GITHUB_PROXY:-}
   if [ -z "$github_proxy" ] && [ -f "$root/.gitconfig" ]; then
     github_proxy=$(runuser -u "$account" -- env HOME="$root" git config --global --get http.https://github.com.proxy 2>/dev/null || true)
   fi
@@ -126,7 +138,7 @@ register_github() {
       exit 1
     fi
   fi
-  local version=${QATLAS_GITHUB_RUNNER_VERSION:-2.329.0}
+  local version=${QATLIB_GITHUB_RUNNER_VERSION:-2.329.0}
   local runner_dir="$root/runners/$instance" archive="$root/tmp/actions-runner-linux-x64-${version}.tar.gz"
   install -d -m 0700 -o "$account" -g "$account" "$runner_dir"
   if [ ! -x "$runner_dir/config.sh" ]; then
@@ -149,7 +161,7 @@ register_gitea() {
     echo 'Gitea requires --token. Get it from the Gitea Actions/Runners settings or gt, then pass --token <TOKEN>.' >&2
     exit 1
   fi
-  local version=${QATLAS_ACT_RUNNER_VERSION:-0.2.11}
+  local version=${QATLIB_ACT_RUNNER_VERSION:-0.2.11}
   local runner_dir="$root/runners/$instance" binary="$root/runners/$instance/act_runner"
   install -d -m 0700 -o "$account" -g "$account" "$runner_dir"
   if [ ! -x "$binary" ]; then
@@ -227,21 +239,21 @@ if [ "$command" = "register" ]; then
 fi
 ensure_host_prerequisites
 
-base=${QATLAS_CI_ROOT:-/data/qatlas-ci}
+base=${QATLIB_CI_ROOT:-/data/qatlas-ci}
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Soft defaults keep several lanes responsive on one host; every budget is tunable.
-cpu_weight=${QATLAS_CPU_WEIGHT:-200}
-cpu_quota=${QATLAS_CPU_QUOTA:-infinity}
-nice_level=${QATLAS_NICE:-10}
-io_class=${QATLAS_IO_CLASS:-best-effort}
-io_priority=${QATLAS_IO_PRIORITY:-7}
-mem_high=${QATLAS_RUNNER_MEM_HIGH:-infinity}
-mem_max=${QATLAS_RUNNER_MEM_MAX:-infinity}
-tasks_max=${QATLAS_TASKS_MAX:-512}
+cpu_weight=${QATLIB_CPU_WEIGHT:-200}
+cpu_quota=${QATLIB_CPU_QUOTA:-infinity}
+nice_level=${QATLIB_NICE:-10}
+io_class=${QATLIB_IO_CLASS:-best-effort}
+io_priority=${QATLIB_IO_PRIORITY:-7}
+mem_high=${QATLIB_RUNNER_MEM_HIGH:-infinity}
+mem_max=${QATLIB_RUNNER_MEM_MAX:-infinity}
+tasks_max=${QATLIB_TASKS_MAX:-512}
 install -d -m 0755 "$base" "$systemd_dir"
 
 lane_list() {
-  local raw=${QATLAS_LANES:-"pub dev secondary"} lane
+  local raw=${QATLIB_LANES:-"pub dev secondary"} lane
   raw=${raw//,/ }
   for lane in $raw; do
     case "$lane" in pub|dev|secondary) printf '%s\n' "$lane";; *) echo "Invalid lane: $lane" >&2; exit 1;; esac
@@ -256,9 +268,9 @@ Description=Shared QAtlas CI host resource budget
 [Slice]
 CPUAccounting=true
 MemoryAccounting=true
-CPUQuota=${QATLAS_HOST_CPU_QUOTA:-infinity}
-MemoryHigh=${QATLAS_HOST_MEMORY_HIGH:-90%}
-MemoryMax=${QATLAS_HOST_MEMORY_MAX:-95%}
+CPUQuota=${QATLIB_HOST_CPU_QUOTA:-infinity}
+MemoryHigh=${QATLIB_HOST_MEMORY_HIGH:-90%}
+MemoryMax=${QATLIB_HOST_MEMORY_MAX:-95%}
 EOF
 while read -r lane; do
   account="qatlas-ci-$lane"
@@ -278,12 +290,12 @@ while read -r lane; do
   # Complete pkg-mirror clones still accept Lake's --filter=tree:0 fetches;
   # the materialized package trees themselves must never be shallow or partial.
   runuser -u "$account" -- env HOME="$root" git config --global uploadpack.allowFilter true
-  if [ -n "${QATLAS_GITHUB_PROXY:-}" ]; then
-    runuser -u "$account" -- env HOME="$root" git config --global http.https://github.com.proxy "$QATLAS_GITHUB_PROXY"
-    runuser -u "$account" -- env HOME="$root" git config --global http.https://raw.githubusercontent.com.proxy "$QATLAS_GITHUB_PROXY"
+  if [ -n "${QATLIB_GITHUB_PROXY:-}" ]; then
+    runuser -u "$account" -- env HOME="$root" git config --global http.https://github.com.proxy "$QATLIB_GITHUB_PROXY"
+    runuser -u "$account" -- env HOME="$root" git config --global http.https://raw.githubusercontent.com.proxy "$QATLIB_GITHUB_PROXY"
     if command -v nc >/dev/null 2>&1 && { [ "$lane" = pub ] || [ "$lane" = dev ]; }; then
       install -d -m 0700 -o "$account" -g "$account" "$root/.ssh"
-      proxy=${QATLAS_GITHUB_PROXY#http://}; proxy=${proxy#https://}; proxy=${proxy%/}
+      proxy=${QATLIB_GITHUB_PROXY#http://}; proxy=${proxy#https://}; proxy=${proxy%/}
       cat > "$root/.ssh/config" <<EOF
 Host github.com
   HostName ssh.github.com
@@ -295,8 +307,8 @@ EOF
       chmod 0600 "$root/.ssh/config"
     fi
   fi
-  if [ -n "${QATLAS_GITHUB_MIRROR:-}" ]; then
-    runuser -u "$account" -- env HOME="$root" git config --global "url.${QATLAS_GITHUB_MIRROR}.insteadOf" "https://github.com/"
+  if [ -n "${QATLIB_GITHUB_MIRROR:-}" ]; then
+    runuser -u "$account" -- env HOME="$root" git config --global "url.${QATLIB_GITHUB_MIRROR}.insteadOf" "https://github.com/"
   fi
   # Copy the single distribution first: the runner account may not be able to
   # traverse the maintainer's home. Maintenance uses the installed package CLI.
@@ -316,7 +328,7 @@ EOF
     --no-deps --no-build-isolation "$package_source"
   if [ ! -x "$root/elan/bin/elan" ]; then
     installer="$root/tmp/elan-init.sh"
-    github_proxy=${QATLAS_GITHUB_PROXY:-}
+    github_proxy=${QATLIB_GITHUB_PROXY:-}
     if [ -z "$github_proxy" ] && [ -f "$root/.gitconfig" ]; then
       github_proxy=$(runuser -u "$account" -- env HOME="$root" git config --global --get http.https://raw.githubusercontent.com.proxy 2>/dev/null || true)
     fi
@@ -330,10 +342,10 @@ EOF
     chown "$account:$account" "$installer"
     runuser -u "$account" -- env ELAN_HOME="$root/elan" sh "$installer" -y --default-toolchain none --no-modify-path
   fi
-  default_toolchain=${QATLAS_DEFAULT_TOOLCHAIN:-leanprover/lean4:v4.35.0}
+  default_toolchain=${QATLIB_DEFAULT_TOOLCHAIN:-leanprover/lean4:v4.35.0}
   runuser -u "$account" -- env ELAN_HOME="$root/elan" "$root/elan/bin/elan" toolchain install "$default_toolchain"
   if ! PATH="$root/node/bin:/usr/local/bin:/usr/bin:/bin" command -v node >/dev/null 2>&1; then
-    node_version=${QATLAS_NODE_VERSION:-22.14.0}
+    node_version=${QATLIB_NODE_VERSION:-22.14.0}
     node_arch=$(uname -m)
     case "$node_arch" in x86_64) node_arch=x64;; aarch64|arm64) node_arch=arm64;; esac
     node_archive="$root/tmp/node-v${node_version}-linux-${node_arch}.tar.xz"
@@ -350,7 +362,7 @@ ELAN_HOME=$root/elan
 LAKE_CACHE_DIR=$root/lake-cache
 MATHLIB_CACHE_DIR=$root/xdg-cache/mathlib
 XDG_CACHE_HOME=$root/xdg-cache
-QATLAS_PKG_MIRROR=$root/pkg-mirror
+QATLIB_PKG_MIRROR=$root/pkg-mirror
 TMPDIR=$root/tmp
 TMP=$root/tmp
 TEMP=$root/tmp
@@ -431,7 +443,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
   systemctl enable --now "qatlas-${lane}-maint.timer"
-  runuser -u "$account" -- env HOME="$root" ELAN_HOME="$root/elan" QATLAS_DEFAULT_TOOLCHAIN="${QATLAS_DEFAULT_TOOLCHAIN:-leanprover/lean4:v4.35.0}" \
+  runuser -u "$account" -- env HOME="$root" ELAN_HOME="$root/elan" QATLIB_DEFAULT_TOOLCHAIN="${QATLIB_DEFAULT_TOOLCHAIN:-leanprover/lean4:v4.35.0}" \
     "$root/venv/bin/python3" -B -m qatlib_env.workspace maintain-mirror --mirror "$root/pkg-mirror" ||
     echo "Warning: initial toolchain prewarm failed for lane $lane" >&2
 done < <(lane_list)

@@ -37,7 +37,7 @@ class CacheTests(unittest.TestCase):
         (project / "Root").mkdir()
         (project / "Root/Done.lean").write_text("def answer := 42\n")
         (project / "Root/Incomplete.lean").write_text("def later := 43\n")
-        (project / "lakefile.toml").write_text('name="ExampleLibrary"\n[[lean_lib]]\nname="Root"\n')
+        (project / "lakefile.toml").write_text('name="ConsumerLib"\n[[lean_lib]]\nname="Root"\n')
         (project / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n")
         (project / "lake-manifest.json").write_text('{"packages":[]}\n')
         return project
@@ -45,16 +45,16 @@ class CacheTests(unittest.TestCase):
     def test_keys_precedence_and_private_save(self):
         explicit = self.keyfile("explicit")
         envfile = self.keyfile("environment", "other_access_12345:other_secret_6789012345")
-        env = credential_env({"QATLAS_R2_KEY_FILE": str(envfile)})
-        self.assertTrue(r2_cache.resolve_write_key("ExampleLibrary", env=env).startswith("other_"))
-        self.assertTrue(r2_cache.resolve_write_key("ExampleLibrary", env=env, key_file=explicit).startswith("file_"))
+        env = credential_env({"QATLIB_R2_KEY_FILE": str(envfile)})
+        self.assertTrue(r2_cache.resolve_write_key("ConsumerLib", env=env).startswith("other_"))
+        self.assertTrue(r2_cache.resolve_write_key("ConsumerLib", env=env, key_file=explicit).startswith("file_"))
         env["LAKE_CACHE_KEY"] = "generic_access_12345:generic_secret_6789012345"
-        self.assertTrue(r2_cache.resolve_write_key("ExampleLibrary", env=env, key_file=explicit).startswith("file_"))
+        self.assertTrue(r2_cache.resolve_write_key("ConsumerLib", env=env, key_file=explicit).startswith("file_"))
         env["LAKE_DEV_CACHE_KEY"] = "dev_access_12345:dev_secret_6789012345"
-        self.assertTrue(r2_cache.resolve_write_key("ExampleLibrary", env=env, key_file=explicit).startswith("dev_"))
+        self.assertTrue(r2_cache.resolve_write_key("ConsumerLib", env=env, key_file=explicit).startswith("dev_"))
         self.assertEqual(stat.S_IMODE(explicit.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(explicit.parent.stat().st_mode), 0o700)
-        self.assertEqual(r2_cache.resolve_write_key("ExampleLibrary", env={"HOME": str(self.root)}), "")
+        self.assertEqual(r2_cache.resolve_write_key("ConsumerLib", env={"HOME": str(self.root)}), "")
 
     @unittest.skipIf(os.name == "nt", "POSIX credential modes")
     def test_insecure_directory_file_and_symlink_fail_without_secret_in_error(self):
@@ -63,7 +63,7 @@ class CacheTests(unittest.TestCase):
         for target, mode in ((path.parent, 0o755), (path, 0o644)):
             target.chmod(mode)
             with self.assertRaises(PermissionError) as raised:
-                r2_cache.resolve_write_key("ExampleLibrary", env={}, key_file=path)
+                r2_cache.resolve_write_key("ConsumerLib", env={}, key_file=path)
             self.assertNotIn(secret, str(raised.exception))
             target.chmod(0o700 if target == path.parent else 0o600)
         alias = path.parent / "alias"
@@ -74,7 +74,7 @@ class CacheTests(unittest.TestCase):
     def test_invalid_environment_key_error_does_not_echo_credential(self):
         secret = "invalid_secret_value_that_must_not_appear"
         with self.assertRaises(ValueError) as raised:
-            r2_cache.resolve_write_key("ExampleLibrary", env=credential_env({"LAKE_DEV_CACHE_KEY": secret}))
+            r2_cache.resolve_write_key("ConsumerLib", env=credential_env({"LAKE_DEV_CACHE_KEY": secret}))
         self.assertNotIn(secret, str(raised.exception))
 
     def test_failed_build_checkpoint_restores_fresh_checkout_and_is_idempotent(self):
@@ -168,7 +168,7 @@ raise SystemExit(1)
     def test_native_mapping_promotion_refuses_symlinked_namespace_and_files(self):
         from qatlib_env import prepare
         staged = self.root / "staged"
-        namespace = staged / "outputs/ExampleLibrary"
+        namespace = staged / "outputs/ConsumerLib"
         namespace.mkdir(parents=True)
         name = "1111111111111111.json"
         (namespace / name).write_text(json.dumps({"schemaVersion": "2026-02-25", "data": None, "service": "fixture"}))
@@ -176,17 +176,17 @@ raise SystemExit(1)
         (cache / "outputs").mkdir(parents=True)
         outside = self.root / "outside"
         outside.mkdir()
-        (cache / "outputs/ExampleLibrary").symlink_to(outside, target_is_directory=True)
+        (cache / "outputs/ConsumerLib").symlink_to(outside, target_is_directory=True)
         with self.assertRaisesRegex(prepare.CacheError, "namespace.*symlinked"):
             prepare._publish_native_mappings(staged, cache)
         self.assertFalse((outside / name).exists())
         # A second pool with a regular namespace still refuses a symlinked
         # module target instead of following it outside the cache.
         second = self.root / "second-cache"
-        (second / "outputs/ExampleLibrary").mkdir(parents=True)
+        (second / "outputs/ConsumerLib").mkdir(parents=True)
         external = outside / "untouched.json"
         external.write_text('{"untouched":true}')
-        (second / "outputs/ExampleLibrary" / name).symlink_to(external)
+        (second / "outputs/ConsumerLib" / name).symlink_to(external)
         with self.assertRaisesRegex(prepare.CacheError, "not a regular file"):
             prepare._publish_native_mappings(staged, second)
         self.assertEqual(external.read_text(), '{"untouched":true}')
@@ -208,12 +208,12 @@ class LakeCacheIntegrationTests(unittest.TestCase):
         self.project.mkdir()
         self.env = {**os.environ, "LAKE_CACHE_DIR": str(self.root / "cache"),
                     "LAKE_ARTIFACT_CACHE": "true", "LEAN_NUM_THREADS": "2",
-                    "QATLAS_JOBS": "1", "QATLAS_LEAN_THREADS": "1", "QATLAS_MEMORY_BUDGET": str(2*1024**3),
-                    "QATLAS_POOL_BUDGET_MIB": "4096", "QATLAS_POOL_CPU": "2",
+                    "QATLIB_JOBS": "1", "QATLIB_LEAN_THREADS": "1", "QATLIB_MEMORY_BUDGET": str(2*1024**3),
+                    "QATLIB_POOL_BUDGET_MIB": "4096", "QATLIB_POOL_CPU": "2",
                     "XDG_STATE_HOME": str(self.root / "state")}
         self.env.pop("LAKE_PKG_URL_MAP", None)
         self.env.pop("ELAN_TOOLCHAIN", None)
-        for variable in {*r2_cache.KEY_VARIABLES.values(), "LAKE_CACHE_KEY", "QATLAS_R2_KEY_FILE"}:
+        for variable in {*r2_cache.KEY_VARIABLES.values(), "LAKE_CACHE_KEY", "QATLIB_R2_KEY_FILE"}:
             self.env.pop(variable, None)
         toolchain = "leanprover/lean4:v4.35.0"
         # Do not download a toolchain during tests. A missing locked installation
@@ -223,35 +223,35 @@ class LakeCacheIntegrationTests(unittest.TestCase):
             self.skipTest("locked Lean toolchain is not installed locally")
         self.env["ELAN_TOOLCHAIN"] = toolchain
         (self.project / "lean-toolchain").write_text(toolchain + "\n")
-        (self.project / "lakefile.toml").write_text('''name="ExampleLibrary"
+        (self.project / "lakefile.toml").write_text('''name="ConsumerLib"
 enableArtifactCache=true
 platformIndependent=true
 testDriver="verify"
 [[lean_lib]]
-name="ExampleLibrary"
+name="ConsumerLib"
 [[lean_lib]]
-name="QatlasDevTests"
+name="ConsumerChecks"
 srcDir="verification"
 [[lean_exe]]
 name="verify"
 srcDir="scripts"
 ''')
-        (self.project / "ExampleLibrary").mkdir()
-        (self.project / "ExampleLibrary/Done.lean").write_text("def answer : Nat := 42\n")
-        (self.project / "ExampleLibrary.lean").write_text("import ExampleLibrary.Done\n")
+        (self.project / "ConsumerLib").mkdir()
+        (self.project / "ConsumerLib/Done.lean").write_text("def answer : Nat := 42\n")
+        (self.project / "ConsumerLib.lean").write_text("import ConsumerLib.Done\n")
         (self.project / "verification").mkdir()
-        (self.project / "verification/QatlasDevTests.lean").write_text("import ExampleLibrary.Done\nexample : answer = 42 := rfl\n")
+        (self.project / "verification/ConsumerChecks.lean").write_text("import ConsumerLib.Done\nexample : answer = 42 := rfl\n")
         (self.project / "scripts").mkdir()
         (self.project / "scripts/verify.lean").write_text("def main : IO Unit := pure ()\n")
         (self.project / "qatlib-env.toml").write_text('''[tool.qatlib-env]
-library = "ExampleLibrary"
-tests = "QatlasDevTests"
+library = "ConsumerLib"
+tests = "ConsumerChecks"
 repository = "fixture/project"
 cache_bucket = "fixture-cache"
 ''')
         self.command(["lake", "resolve-deps"])
         self.command(["git", "init", "-q"])
-        self.command(["git", "add", "lean-toolchain", "lakefile.toml", "lake-manifest.json", "qatlib-env.toml", "ExampleLibrary", "ExampleLibrary.lean", "verification", "scripts"])
+        self.command(["git", "add", "lean-toolchain", "lakefile.toml", "lake-manifest.json", "qatlib-env.toml", "ConsumerLib", "ConsumerLib.lean", "verification", "scripts"])
         # Fixture commits do not alter repository identity or hooks configuration.
         self.command(["git", "-c", "user.name=Cache fixture", "-c", "user.email=fixture@localhost", "commit", "-qm", "fixture"])
 
@@ -264,7 +264,7 @@ cache_bucket = "fixture-cache"
 
     def test_real_lake_upload_validation_and_failed_build_checkpoint(self):
         # Successful native build yields complete verifiable .ltar mappings.
-        self.command(["lake", "build", "ExampleLibrary", "QatlasDevTests", "-o", ".lake/outputs.jsonl"])
+        self.command(["lake", "build", "ConsumerLib", "ConsumerChecks", "-o", ".lake/outputs.jsonl"])
         plan = r2_cache.verified_upload_plan(self.project, self.env)
         self.assertTrue(plan["artifacts"])
         self.assertIn(b".ltar", plan["manifest"])
@@ -275,17 +275,17 @@ cache_bucket = "fixture-cache"
         with self.assertRaisesRegex(ValueError, "content hash"):
             r2_cache._verify_artifact_hashes(self.project, {descriptor: corrupt}, self.env)
         # A failing module leaves completed modules eligible for local recovery.
-        (self.project / "ExampleLibrary/Fail.lean").write_text("def fail : Nat := \"wrong\"\n")
-        result = self.command(["lake", "--fail-fast", "build", "+ExampleLibrary.Fail"], check=False)
+        (self.project / "ConsumerLib/Fail.lean").write_text("def fail : Nat := \"wrong\"\n")
+        result = self.command(["lake", "--fail-fast", "build", "+ConsumerLib.Fail"], check=False)
         self.assertNotEqual(result.returncode, 0)
         receipt = checkpoint.capture(self.project, self.env)
         self.assertGreaterEqual(receipt["modules"], 2)
         fresh = self.root / "fresh"
         self.command(["git", "clone", "--quiet", "--local", str(self.project), str(fresh)])
-        (fresh / "ExampleLibrary/Fail.lean").write_text("def fail : Nat := \"wrong\"\n")
+        (fresh / "ConsumerLib/Fail.lean").write_text("def fail : Nat := \"wrong\"\n")
         self.assertEqual(checkpoint.restore(fresh, self.env)["modules"], receipt["modules"])
-        self.assertTrue((fresh / ".lake/build/lib/lean/ExampleLibrary/Done.olean").is_file())
-        resumed = subprocess.run(["lake", "--no-build", "build", "+ExampleLibrary.Done"],
+        self.assertTrue((fresh / ".lake/build/lib/lean/ConsumerLib/Done.olean").is_file())
+        resumed = subprocess.run(["lake", "--no-build", "build", "+ConsumerLib.Done"],
                                  cwd=fresh, env=self.env, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, check=False)
         self.assertEqual(resumed.returncode, 0, resumed.stdout)
@@ -293,9 +293,9 @@ cache_bucket = "fixture-cache"
             r2_cache.verified_upload_plan(self.project, self.env)
 
     def test_clean_new_revision_with_stale_manifest_must_pass_full_freshness(self):
-        self.command(["lake", "build", "ExampleLibrary", "QatlasDevTests", "-o", ".lake/outputs.jsonl"])
-        (self.project / "ExampleLibrary/Done.lean").write_text("def answer : Nat := 43\n")
-        self.command(["git", "add", "ExampleLibrary/Done.lean"])
+        self.command(["lake", "build", "ConsumerLib", "ConsumerChecks", "-o", ".lake/outputs.jsonl"])
+        (self.project / "ConsumerLib/Done.lean").write_text("def answer : Nat := 43\n")
+        self.command(["git", "add", "ConsumerLib/Done.lean"])
         self.command(["git", "-c", "user.name=Cache fixture", "-c", "user.email=fixture@localhost",
                       "commit", "-qm", "New unbuilt source revision"])
         with self.assertRaises(subprocess.CalledProcessError):
@@ -313,22 +313,22 @@ cache_bucket = "fixture-cache"
         fresh = self.root / "unprepared"
         self.command(["git", "clone", "--quiet", "--local", str(self.project), str(fresh)])
         module_root = str(Path(__file__).resolve().parents[2] / "src")
-        process_env = {**self.env, "PYTHONPATH": module_root, "QATLAS_JOBS": "1"}
+        process_env = {**self.env, "PYTHONPATH": module_root, "QATLIB_JOBS": "1"}
         result = subprocess.run([sys.executable, "-B", "-m", "qatlib_env", "--project", str(fresh),
-                                 "run", "--", "lake", "--no-build", "lean", "ExampleLibrary.lean"],
+                                 "run", "--", "lake", "--no-build", "lean", "ConsumerLib.lean"],
                                 cwd=fresh, env=process_env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, check=False)
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertFalse((fresh / ".lake/qatlas-prepare.json").exists(), result.stdout)
-        self.assertFalse((fresh / ".lake/build/lib/lean/ExampleLibrary/Done.olean").exists(), result.stdout)
+        self.assertFalse((fresh / ".lake/build/lib/lean/ConsumerLib/Done.olean").exists(), result.stdout)
         # --no-prepare must keep the same skip guarantee for build commands.
         command = [sys.executable, "-B", "-m", "qatlib_env", "--project", str(fresh),
-                   "run", "--no-prepare", "--", "lake", "build", "+ExampleLibrary.Done"]
+                   "run", "--no-prepare", "--", "lake", "build", "+ConsumerLib.Done"]
         result = subprocess.run(command, cwd=fresh, env=process_env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertFalse((fresh / ".lake/qatlas-prepare.json").exists())
-        self.assertTrue((fresh / ".lake/build/lib/lean/ExampleLibrary/Done.olean").is_file())
+        self.assertTrue((fresh / ".lake/build/lib/lean/ConsumerLib/Done.olean").is_file())
 
     def test_remote_cache_miss_authentication_and_corruption_are_distinct(self):
         import http.server
@@ -410,7 +410,7 @@ revisionEndpoint="{endpoint}/revisions"
         import http.server
         import threading
         from qatlib_env import prepare
-        self.command(["lake", "build", "ExampleLibrary", "QatlasDevTests", "-o", ".lake/outputs.jsonl"])
+        self.command(["lake", "build", "ConsumerLib", "ConsumerChecks", "-o", ".lake/outputs.jsonl"])
         plan = r2_cache.verified_upload_plan(self.project, self.env)
         self.assertGreaterEqual(len(plan["artifacts"]), 3)
         (existing_name, existing), (remote_name, remote), (second_name, second) = list(plan["artifacts"].items())[:3]

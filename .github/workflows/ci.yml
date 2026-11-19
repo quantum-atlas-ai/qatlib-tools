@@ -14,32 +14,25 @@ env:
 
 jobs:
   test:
-    # Only repository-owned code may use the existing self-hosted runner.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          path: ci/${{ github.run_id }}-${{ github.run_attempt }}
-          clean: false
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: false
+          enable-cache: true
       - name: Check human-reviewed contracts
-        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         env:
           CONTRACT_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && '--draft' || '' }}
-        run: python3 scripts/check_human_contracts.py $CONTRACT_DRAFT
+        run: uv run --no-project python scripts/check_human_contracts.py $CONTRACT_DRAFT
       - name: Verify lockfile
-        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv lock --check
       - name: Build distributions
-        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv build
       - name: Run tests
-        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: uv run --with pytest --with hatchling --with jsonschema pytest -q -rs
       - name: Install wheel in a clean environment
-        working-directory: ci/${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           uv venv --python 3.12 .wheel-venv-ci
           uv pip install --python .wheel-venv-ci/bin/python dist/*.whl
@@ -52,4 +45,3 @@ jobs:
           .wheel-venv-ci/bin/qatlib-retrieve --help
           .wheel-venv-ci/bin/python -m qatlib_search --help
           .wheel-venv-ci/bin/python -m qatlib_env.ci --help
-

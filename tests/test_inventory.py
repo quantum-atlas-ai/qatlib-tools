@@ -88,7 +88,7 @@ def test_scan_cli_reports_directory_truncation(tmp_path, capsys):
     assert result["errors"] == [f"directory limit 1 reached at {tmp_path / 'nested'}; narrow roots"]
 
 
-def test_hello_history_preview_and_guarded_cleanup(tmp_path, monkeypatch, capsys):
+def test_scan_explicit_roots_and_guarded_cleanup(tmp_path, monkeypatch, capsys):
     import json
     import os
     import time
@@ -96,16 +96,16 @@ def test_hello_history_preview_and_guarded_cleanup(tmp_path, monkeypatch, capsys
     if not inventory.sys.platform.startswith("linux"):
         pytest.skip("isolated FreeDesktop receipt probe")
     project = tmp_path / "development/research-repo"
-    history = tmp_path / ".legacy-worktrees/tmp"
+    extra_root = tmp_path / "checkouts"
     project.parent.mkdir()
-    history.mkdir(parents=True)
+    extra_root.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(project)], check=True)
     (project / ".gitignore").write_text(".lake/\nnotes/\n")
     main_sha = snapshot(project)
     inventory._read_git(project, "remote", "add", "origin", str(project))
     trees = {}
     for name in ("merged", "cache", "open-pr", "changed", "unpushed", "ignored"):
-        trees[name] = history / name
+        trees[name] = extra_root / name
         inventory._read_git(project, "worktree", "add", "-b", name, str(trees[name]), main_sha)
     (trees["changed"] / "draft.lean").touch()
     (trees["ignored"] / "notes").mkdir()
@@ -114,7 +114,6 @@ def test_hello_history_preview_and_guarded_cleanup(tmp_path, monkeypatch, capsys
     snapshot(trees["unpushed"])
     for name in ("build", "packages", "preserve"):
         (trees["cache"] / ".lake" / name).mkdir(parents=True)
-    (history / "loose-drafts").mkdir()
     aged = time.time() - 48 * 3600
     for name in ("merged", "open-pr", "changed", "ignored", "unpushed"):
         tree = trees[name]
@@ -140,11 +139,10 @@ def test_hello_history_preview_and_guarded_cleanup(tmp_path, monkeypatch, capsys
                         lambda path: native(path, {"HOME": str(tmp_path), "XDG_DATA_HOME": str(xdg)}))
     protection = ["--protect", str(project), "--protect-ref", "open-pr"]
     assert inventory.cli_main(["scan", str(project), *protection]) == 0
-    assert str(history) not in json.loads(capsys.readouterr().out)["roots"]
-    assert inventory.cli_main(["scan", "--history", str(project), *protection]) == 0
+    assert json.loads(capsys.readouterr().out)["roots"] == [str(project)]
+    assert inventory.cli_main(["scan", str(extra_root), str(project), "--inspect-ignored", *protection]) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["roots"] == [str(history), str(project)]
-    assert data["history_unclassified"] == [str(history / "loose-drafts")]
+    assert data["roots"] == [str(extra_root), str(project)]
     facts = {row["branch"]: row for row in data["checkouts"]}
     assert facts["changed"]["untracked_count"] == 1
     assert facts["open-pr"]["protection"] == ["protected branch or HEAD"]

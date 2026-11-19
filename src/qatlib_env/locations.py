@@ -5,6 +5,8 @@ import hashlib
 import os
 from pathlib import Path
 
+from qatlib_env.envvars import env_value
+
 
 def user_home(env=os.environ):
     return Path(env.get("HOME") or Path.home()).expanduser()
@@ -16,13 +18,11 @@ def qatlib_home(env=os.environ):
 
 def config_paths(env=os.environ):
     home = user_home(env)
-    xdg = Path(env.get("XDG_CONFIG_HOME") or home / ".config").expanduser()
-    return tuple(dict.fromkeys((xdg / "qatlib/env.toml", home / ".qatlib/env.toml",
-                                qatlib_home(env) / "env.toml")))
+    return tuple(dict.fromkeys((home / ".qatlib/env.toml", qatlib_home(env) / "env.toml")))
 
 
 def secrets_path(env=os.environ, *, read=True):
-    explicit = env.get("QATLAS_R2_KEY_FILE", "").strip()
+    explicit = env_value(env, "QATLIB_R2_KEY_FILE", "").strip()
     if explicit:
         return Path(explicit).expanduser()
     current = qatlib_home(env) / "secrets"

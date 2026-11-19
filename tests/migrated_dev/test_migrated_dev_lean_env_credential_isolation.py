@@ -21,8 +21,8 @@ DEV = "dev_fixture_access_12345:dev_fixture_secret_67890"
 SECONDARY = "secondary_fixture_access_12345:secondary_fixture_secret_67890"
 PUBLIC = "public_fixture_access_12345:public_fixture_secret_67890"
 GENERIC = "generic_fixture_access_12345:generic_fixture_secret_67890"
-PRIVATE_PACKAGES = (("ExampleLibrary", "LAKE_DEV_CACHE_KEY", DEV),
-                    ("example_library", "LAKE_DEV_CACHE_KEY", DEV),
+PRIVATE_PACKAGES = (("ConsumerLib", "LAKE_DEV_CACHE_KEY", DEV),
+                    ("consumer_lib", "LAKE_DEV_CACHE_KEY", DEV),
                     ("SecondaryProject", "LAKE_SECONDARY_CACHE_KEY", SECONDARY),
                     ("secondary_package", "LAKE_SECONDARY_CACHE_KEY", SECONDARY))
 
@@ -65,7 +65,7 @@ class CredentialIsolationTests(unittest.TestCase):
         self.assertEqual(r2_cache.resolve_write_key("Qatlib", env=credential_env(), key_file=generic_only), GENERIC)
         for package, variable, expected in PRIVATE_PACKAGES:
             env = credential_env({"HOME": str(self.home), "LAKE_CACHE_KEY": GENERIC,
-                                  "QATLAS_R2_KEY_FILE": str(generic_only)})
+                                  "QATLIB_R2_KEY_FILE": str(generic_only)})
             self.assertEqual(r2_cache.resolve_write_key(package, env=env), "")
             self.assertEqual(r2_cache.resolve_write_key(package, env=env, key_file=dedicated), expected)
             alternate = "override_fixture_access:override_fixture_secret"
@@ -116,7 +116,7 @@ class CredentialIsolationTests(unittest.TestCase):
             self.assertTrue(ci.may_publish({**base, "LAKE_PUBLIC_CACHE_KEY": ""}, "Qatlib"))
 
     def test_workspace_clears_external_generic_before_real_child_execution(self):
-        for package in ("ExampleLibrary", "SecondaryProject", "Qatlib"):
+        for package in ("ConsumerLib", "SecondaryProject", "Qatlib"):
             project = self.root / package
             project.mkdir()
             (project / "lakefile.toml").write_text(f"name={json.dumps(package)}\n")
@@ -161,7 +161,7 @@ class CredentialIsolationTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         project = self.root / "request-fixture"
         project.mkdir()
-        (project / "lakefile.toml").write_text('name="ExampleLibrary"\n')
+        (project / "lakefile.toml").write_text('name="ConsumerLib"\n')
         (project / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n")
         (project / "lake-manifest.json").write_text('{"packages":[]}\n')
         (project / "lake-cache.toml").write_text(f'''[cache]

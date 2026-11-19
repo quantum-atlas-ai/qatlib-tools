@@ -34,7 +34,7 @@ class PushR2CacheTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(kf.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(kf.parent.stat().st_mode), 0o700)
         self.assertEqual(
-            MOD.resolve_write_key("example_library", env=credential_env(), key_file=kf, allow_prompt=False),
+            MOD.resolve_write_key("consumer_lib", env=credential_env(), key_file=kf, allow_prompt=False),
             "saved_ak_12345:saved_sk_6789012345",
         )
 
@@ -51,7 +51,7 @@ class PushR2CacheTests(unittest.TestCase):
         os.chmod(kf, 0o600)
 
         self.assertEqual(
-            MOD.resolve_write_key("example_library", env=credential_env(), key_file=kf, allow_prompt=False),
+            MOD.resolve_write_key("consumer_lib", env=credential_env(), key_file=kf, allow_prompt=False),
             "dev_ak_12345:dev_sk_6789012345",
         )
         self.assertEqual(
@@ -61,7 +61,7 @@ class PushR2CacheTests(unittest.TestCase):
         # Explicit env var wins over file
         self.assertEqual(
             MOD.resolve_write_key(
-                "example_library",
+                "consumer_lib",
                 env=credential_env({"LAKE_DEV_CACHE_KEY": "env_ak:env_sk_1234567890"}),
                 key_file=kf,
                 allow_prompt=False,
@@ -77,7 +77,7 @@ class PushR2CacheTests(unittest.TestCase):
         kf.write_text("LAKE_CACHE_KEY=ak:sk_1234567890123456\n", encoding="utf-8")
         os.chmod(kf, 0o644)
         with self.assertRaises(PermissionError):
-            MOD.resolve_write_key("example_library", env={}, key_file=kf, allow_prompt=False)
+            MOD.resolve_write_key("consumer_lib", env={}, key_file=kf, allow_prompt=False)
 
     def test_qatlib_profile_uses_ci_flag(self) -> None:
         d = self._tmp_dir()
@@ -103,15 +103,15 @@ class PushR2CacheTests(unittest.TestCase):
             self.assertEqual(prof["tc_dir"], "leanprover--lean4---v4.35.0")
             self.assertEqual(prof["build_args"], [expected_lib, expected_tests])
 
-    def test_example_library_pascalcase_profile(self) -> None:
+    def test_consumer_lib_pascalcase_profile(self) -> None:
         d = self._tmp_dir()
-        (d / "lakefile.toml").write_text('name = "ExampleLibrary"\n', encoding="utf-8")
+        (d / "lakefile.toml").write_text('name = "ConsumerLib"\n', encoding="utf-8")
         (d / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n", encoding="utf-8")
-        (d / "qatlib-env.toml").write_text('[tool.qatlib-env]\ncache_bucket="dev-cache"\nrepository="fixture/dev"\nlibrary="ExampleLibrary"\ntests="QatlasDevTests"\n', encoding="utf-8")
+        (d / "qatlib-env.toml").write_text('[tool.qatlib-env]\ncache_bucket="dev-cache"\nrepository="fixture/dev"\nlibrary="ConsumerLib"\ntests="ConsumerChecks"\n', encoding="utf-8")
         prof = MOD.detect_repo_profile(d)
-        self.assertEqual(prof["package"], "ExampleLibrary")
+        self.assertEqual(prof["package"], "ConsumerLib")
         self.assertEqual(prof["bucket"], "dev-cache")
-        self.assertEqual(prof["build_args"], ["ExampleLibrary", "QatlasDevTests"])
+        self.assertEqual(prof["build_args"], ["ConsumerLib", "ConsumerChecks"])
 
     def test_baseline_lookup_skips_header_only_manifests(self) -> None:
         repo = self._tmp_dir()
@@ -119,7 +119,7 @@ class PushR2CacheTests(unittest.TestCase):
         with patch.object(MOD, "_run", return_value="new\nold\n"), \
              patch.object(MOD, "s3_get_optional", side_effect=[b'"2026-03-17"\n',
                                                                   b'"2026-03-17"\n["hash", "0123456789abcdef.ltar"]\n']):
-            self.assertEqual(MOD.find_baseline_ltars(repo, profile, "ak", "sk", {"QATLAS_R2_ENDPOINT": "https://cache.example"}), {"0123456789abcdef.ltar"})
+            self.assertEqual(MOD.find_baseline_ltars(repo, profile, "ak", "sk", {"QATLIB_R2_ENDPOINT": "https://cache.example"}), {"0123456789abcdef.ltar"})
 
 
 if __name__ == "__main__":

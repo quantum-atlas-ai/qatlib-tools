@@ -10,6 +10,8 @@ import subprocess
 import tomllib
 from typing import Mapping
 
+from qatlib_env.envvars import env_value
+
 RESOURCE_KEYS = frozenset({"jobs", "lean_threads", "memory_budget", "heavy_jobs",
                            "heavy_patterns", "module_timeout", "stage_timeout"})
 BUDGET_DEFAULTS = {"max_cold_modules": 15, "max_reverse_modules": 15,
@@ -23,16 +25,16 @@ ENV_FIELDS = {
     "source_roots": ("QATLIB_SOURCE_ROOTS",), "cache_dir": ("QATLIB_CACHE_DIR",),
     "search_source_roots": ("QATLIB_SEARCH_SOURCE_ROOTS",),
     "search_module_roots": ("QATLIB_SEARCH_MODULE_ROOTS",),
-    "local_pool_mib": ("QATLAS_POOL_BUDGET_MIB",), "local_pool_cpu": ("QATLAS_POOL_CPU",),
+    "local_pool_mib": ("QATLIB_POOL_BUDGET_MIB",), "local_pool_cpu": ("QATLIB_POOL_CPU",),
     "repository": ("QATLIB_REPOSITORY",), "workflow": ("QATLIB_WORKFLOW",),
     "cloud_platform": ("QATLIB_CLOUD_PLATFORM",), "library": ("QATLIB_LIBRARY",),
     "tests": ("QATLIB_TEST_TARGET",),
-    "jobs": ("QATLAS_JOBS",), "lean_threads": ("QATLAS_LEAN_THREADS", "LEAN_NUM_THREADS"),
-    "memory_budget": ("QATLAS_MEMORY_BUDGET",), "heavy_jobs": ("QATLAS_HEAVY_JOBS",),
-    "heavy_patterns": ("QATLAS_HEAVY_PATTERNS",), "module_timeout": ("QATLAS_MODULE_TIMEOUT",),
-    "stage_timeout": ("QATLAS_STAGE_TIMEOUT",),
-    "max_cold_modules": ("QATLAS_MAX_COLD_MODULES",),
-    "max_reverse_modules": ("QATLAS_MAX_REVERSE_MODULES",),
+    "jobs": ("QATLIB_JOBS",), "lean_threads": ("QATLIB_LEAN_THREADS", "LEAN_NUM_THREADS"),
+    "memory_budget": ("QATLIB_MEMORY_BUDGET",), "heavy_jobs": ("QATLIB_HEAVY_JOBS",),
+    "heavy_patterns": ("QATLIB_HEAVY_PATTERNS",), "module_timeout": ("QATLIB_MODULE_TIMEOUT",),
+    "stage_timeout": ("QATLIB_STAGE_TIMEOUT",),
+    "max_cold_modules": ("QATLIB_MAX_COLD_MODULES",),
+    "max_reverse_modules": ("QATLIB_MAX_REVERSE_MODULES",),
 }
 
 
@@ -148,8 +150,9 @@ def layers(project: Path, env: Mapping[str, str]) -> list[tuple[str, dict]]:
     result = []
     from .project import inferred_profile
     result.append((f"lake:{project / 'lakefile.toml'}", inferred_profile(project)))
-    if env.get("QATLAS_RUNNER_CONFIG"):
-        path = Path(env["QATLAS_RUNNER_CONFIG"])
+    runner_config = env_value(env, "QATLIB_RUNNER_CONFIG", None)
+    if runner_config:
+        path = Path(runner_config)
         result.append((f"runner:{path}", read_layer(path, explicit=True)))
     # Read-only compatibility layer. No directory or file is ever created.
     from .locations import config_paths
@@ -207,6 +210,9 @@ class EnvConfig:
                 "budget": asdict(self.budget), "sources": self.sources}
 
 
+RENAMED_SETTINGS = RESOURCE_KEYS | {"local_pool_mib", "local_pool_cpu", "max_cold_modules", "max_reverse_modules"}
+
+
 def load_config(project: str | Path = ".", env: Mapping[str, str] | None = None,
                 cli: Mapping[str, object] | None = None) -> EnvConfig:
     environment = os.environ if env is None else env
@@ -216,8 +222,12 @@ def load_config(project: str | Path = ".", env: Mapping[str, str] | None = None,
         sources.update(dict.fromkeys(values, source))
     for key, variables in ENV_FIELDS.items():
         for variable in variables:
-            if variable in environment:
-                merged.update(_validate({key: environment[variable]}, f"environment:{variable}", strings=True))
+            if key in RENAMED_SETTINGS and variable.startswith("QATLIB_"):
+                value = env_value(environment, variable, None)
+            else:
+                value = environment.get(variable)
+            if value is not None:
+                merged.update(_validate({key: value}, f"environment:{variable}", strings=True))
                 sources[key] = f"environment:{variable}"
                 break
     for key, value in (cli or {}).items():

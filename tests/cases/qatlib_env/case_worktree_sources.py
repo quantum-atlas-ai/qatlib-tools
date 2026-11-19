@@ -17,7 +17,7 @@ from qatlib_env import workspace as lake
 
 class LocalSourceTest(unittest.TestCase):
     def setUp(self):
-        directory = Path(os.environ.get("QATLAS_TEST_ROOT", tempfile.gettempdir()))
+        directory = Path(os.environ.get("QATLIB_TEST_ROOT", tempfile.gettempdir()))
         directory.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=directory)
         self.addCleanup(self.temporary.cleanup)
@@ -45,7 +45,7 @@ class LocalSourceTest(unittest.TestCase):
         self.env["GIT_NO_LAZY_FETCH"] = "1"
         self.url = bare.as_uri()
         (self.project / "lean-toolchain").write_text("leanprover/lean4:v4.35.0")
-        (self.project / "lakefile.toml").write_text('name = "example_library"\n')
+        (self.project / "lakefile.toml").write_text('name = "consumer_lib"\n')
         (self.project / "lake-manifest.json").write_text(
             json.dumps({"packages": [{"name": "Pkg", "rev": self.revision, "url": self.url}]})
         )
@@ -132,7 +132,7 @@ class LocalSourceTest(unittest.TestCase):
 
     def test_ensure_pkg_mirror_clones_complete_repo_and_maps_it(self):
         mirror = self.root / "pkg-mirror"
-        env = {**self.env, "QATLAS_PKG_MIRROR": str(mirror)}
+        env = {**self.env, "QATLIB_PKG_MIRROR": str(mirror)}
         lake.ensure_pkg_mirror(self.child, env)
         target = mirror / ".lake/packages/Pkg"
         self.assertTrue(lake.usable_git_mirror(target, self.revision, self.child, env))
@@ -141,7 +141,7 @@ class LocalSourceTest(unittest.TestCase):
 
     def test_ensure_pkg_mirror_fetches_new_revision_under_lock(self):
         mirror = self.root / "pkg-mirror"
-        env = {**self.env, "QATLAS_PKG_MIRROR": str(mirror)}
+        env = {**self.env, "QATLIB_PKG_MIRROR": str(mirror)}
         lake.ensure_pkg_mirror(self.child, env)
         upstream = self.root / "upstream"
         (upstream / "Pkg.lean").write_text("def marker : Nat := 8\n")
@@ -158,7 +158,7 @@ class LocalSourceTest(unittest.TestCase):
 
     def test_unreachable_pkg_mirror_warns_and_is_omitted(self):
         mirror = self.root / "pkg-mirror"
-        env = {**self.env, "QATLAS_PKG_MIRROR": str(mirror)}
+        env = {**self.env, "QATLIB_PKG_MIRROR": str(mirror)}
         manifest = json.loads((self.child / "lake-manifest.json").read_text())
         manifest["packages"][0]["url"] = (self.root / "missing.git").as_uri()
         manifest["packages"][0]["rev"] = "b" * 40

@@ -48,7 +48,7 @@ class SourceCheckoutTests(unittest.TestCase):
         self.bare = self.mirror / ".lake/packages/Qatlib"
         self.bare.parent.mkdir(parents=True)
         self.git(self.root, "clone", "--quiet", "--bare", str(self.origin), str(self.bare))
-        self.env["QATLAS_PKG_MIRROR"] = str(self.mirror)
+        self.env["QATLIB_PKG_MIRROR"] = str(self.mirror)
 
     def git(self, directory, *args):
         result = subprocess.run(["git", *args], cwd=directory, env=self.env,

@@ -18,6 +18,7 @@ import uuid
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qatlib_env import workspace, supervisor
+from qatlib_env.envvars import env_value
 
 
 def edited_build_needed(event, run_id, request, endpoint, *, workflow="build.yml"):
@@ -66,7 +67,7 @@ def runner_environment(project, base=None):
     env = dict(os.environ if base is None else base)
     temporary = Path(env["RUNNER_TEMP"]).resolve()
     for key, subdir in {"TMPDIR": "tmp", "TMP": "tmp", "TEMP": "tmp",
-                        "XDG_DATA_HOME": "xdg-data", "QATLAS_TEST_ROOT": "tests"}.items():
+                        "XDG_DATA_HOME": "xdg-data", "QATLIB_TEST_ROOT": "tests"}.items():
         path = temporary / subdir
         path.mkdir(parents=True, exist_ok=True)
         env[key] = str(path)
@@ -213,8 +214,9 @@ def public_repo(project, env):
         return None
     locked, name = entry["rev"], entry["name"].strip("«»")
     roots = [project]
-    if env.get("QATLAS_PKG_MIRROR"):
-        roots.append(Path(env["QATLAS_PKG_MIRROR"]))
+    mirror = env_value(env, "QATLIB_PKG_MIRROR", None)
+    if mirror:
+        roots.append(Path(mirror))
     candidates = []
     for root in roots:
         candidate = root / workspace.manifest(project).get("packagesDir", ".lake/packages") / name
@@ -251,7 +253,8 @@ def bibliography(project, env):
     if entry is None:
         return None
     locked, name = entry["rev"], entry["name"].strip("«»")
-    roots = [Path(env["QATLAS_PKG_MIRROR"])] if env.get("QATLAS_PKG_MIRROR") else []
+    mirror = env_value(env, "QATLIB_PKG_MIRROR", None)
+    roots = [Path(mirror)] if mirror else []
     for root in [project, *roots]:
         candidate = root / workspace.manifest(project).get("packagesDir", ".lake/packages") / name
         bib = candidate / "docs/references.bib"
@@ -669,8 +672,8 @@ def compile_targets(project, env, targets, kind, candidate):
     command = ["lake", "--no-build", "build", *targets]
     if kind == "exact" and supervisor.run(
         command, cwd=project, env=workspace.command_runtime_environment(project, env, command),
-        timeout=float(env.get("QATLAS_STAGE_TIMEOUT", "10800")) or None,
-        module_timeout=float(env.get("QATLAS_MODULE_TIMEOUT", "1800")) or None
+        timeout=float(env_value(env, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
+        module_timeout=float(env_value(env, "QATLIB_MODULE_TIMEOUT", "1800")) or None
     ).returncode == 0:
         shutil.copyfile(candidate, output)
     else:

@@ -31,7 +31,7 @@ class CacheWorkflowTests(unittest.TestCase):
                          patch.object(lake, '_backend_command', side_effect=lambda argv, *a, **kw: list(argv))]:
             boundary.start()
             self.addCleanup(boundary.stop)
-        root = Path(os.environ.get("QATLAS_TEST_ROOT", tempfile.gettempdir()))
+        root = Path(os.environ.get("QATLIB_TEST_ROOT", tempfile.gettempdir()))
         root.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=root)
         self.addCleanup(self.temporary.cleanup)
@@ -40,7 +40,7 @@ class CacheWorkflowTests(unittest.TestCase):
         self.project.mkdir()
         (self.project / "lean-toolchain").write_text(TOOLCHAIN)
         (self.project / "lake-manifest.json").write_text('{"packages": []}')
-        (self.project / "lakefile.toml").write_text('name="example_library"\n')
+        (self.project / "lakefile.toml").write_text('name="consumer_lib"\n')
         self.cache = self.root / "cache"
         self.cache.mkdir()
         self.env = {**HOST_ENV, "HOME": str(self.root), "LAKE_CACHE_DIR": str(self.cache)}
@@ -52,7 +52,7 @@ class CacheWorkflowTests(unittest.TestCase):
         os.utime(path, (1, 1))
         return path
 
-    def output(self, key="b" * 16, scope="example_library"):
+    def output(self, key="b" * 16, scope="consumer_lib"):
         names = ["a" * 16 + ".olean", "c" * 16 + ".ilean", "d" * 16 + ".c"]
         for name in names:
             if not (self.cache / "artifacts" / name).exists():
@@ -157,7 +157,7 @@ class CacheWorkflowTests(unittest.TestCase):
 
     def test_archive_only_map_is_retained(self):
         artifact = self.artifact("f" * 16 + ".ltar")
-        lake.atomic_json(self.cache / "outputs/example_library/archive.json",
+        lake.atomic_json(self.cache / "outputs/consumer_lib/archive.json",
                          {"data": artifact.name})
         self.assertEqual(self.collect(apply=True)["maps"], 0)
         self.assertTrue(artifact.exists())

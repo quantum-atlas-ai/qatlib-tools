@@ -34,10 +34,10 @@ def test_stage_deadline_remains_owned_by_outer_supervisor():
             time.sleep(.35)
         return subreaper(enable)
 
-    env = {**os.environ, "QATLAS_STAGE_DEADLINE": str(time.monotonic() + .7)}
+    env = {**os.environ, "QATLIB_STAGE_DEADLINE": str(time.monotonic() + .7)}
     with patch.object(supervisor, "_subreaper", side_effect=delayed_setup), \
          pytest.raises(subprocess.TimeoutExpired):
-        supervisor.run([sys.executable, "-c", "import os,time; assert os.environ.get('QATLAS_STAGE_DEADLINE'); time.sleep(5)"],
+        supervisor.run([sys.executable, "-c", "import os,time; assert os.environ.get('QATLIB_STAGE_DEADLINE'); time.sleep(5)"],
                        env=env, grace=.05)
 
 
@@ -120,8 +120,8 @@ def test_exec_has_kernel_and_supervisor_deadlines():
     assert "MemoryMax=4096M" in command and "MemorySwapMax=0" in command
     assert "CPUQuota=100%" in command and "KillMode=control-group" in command
     assert run.call_args.kwargs["timeout"] == 12
-    assert pool.call_args.args[0]["QATLAS_MEMORY_BUDGET"] == str(4096 * 1024**2)
-    assert pool.call_args.args[0]["QATLAS_JOBS"] == "1"
+    assert pool.call_args.args[0]["QATLIB_MEMORY_BUDGET"] == str(4096 * 1024**2)
+    assert pool.call_args.args[0]["QATLIB_JOBS"] == "1"
 
 
 @pytest.mark.parametrize("derived", [".lake", ".venv", ".agent-tasks"])

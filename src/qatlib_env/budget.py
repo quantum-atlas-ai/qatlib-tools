@@ -21,6 +21,7 @@ import tomllib
 from typing import Mapping
 
 from .config import load_config
+from .envvars import env_value
 from . import resources
 from qatlib_search.lean_source import import_header, mask_comments
 
@@ -231,7 +232,7 @@ class SourceGraph:
         if not re.fullmatch(r"leanprover/lean4:v4\.\d+\.\d+(?:-[\w.-]+)?", tc):
             self.errors.add("<missing or unpinned lean-toolchain>")
             return
-        explicit = self.env.get("QATLAS_REAL_SYSROOT") or self.env.get("LEAN_SYSROOT")
+        explicit = env_value(self.env, "QATLIB_REAL_SYSROOT", None) or self.env.get("LEAN_SYSROOT")
         elan = Path(self.env.get("ELAN_HOME", str(Path.home() / ".elan")))
         prefix = Path(explicit) if explicit else elan / "toolchains" / tc.replace("/", "--").replace(":", "---")
         for source in [prefix / "src/lean", prefix / "src/lean/lake"]:
