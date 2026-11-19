@@ -1,12 +1,26 @@
-# qatlib-tools
+<div align="center">
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
+<img src="./.github/assets/qatlib-tools-wordmark.svg" alt="qatlib-tools" width="520" />
+
+**面向 Lean 4 形式化项目的工程维护手册与配套命令行工具**
+
+[![CI](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml)
+[![Docs](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml)
+[![Handbook](https://img.shields.io/badge/docs-在线手册-263f5f)](https://quantum-atlas-ai.github.io/qatlib-tools/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
-· [English](README.en.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 
-`qatlib-tools` 为 Lean 数学库及其下游研究仓库提供共用的工程手册与命令行工具；至于具体的数学接口设计、书目内容与合入标准，仍由各项目自行维护。
+简体中文 ｜ [English](./README.en.md)
 
-在日常协作中，开发者可以直接使用 `git`、GitHub 的 `gh`、Gitea 的 `tea` 或 `gt`，也可以直接调用代码托管平台 API；而多个仓库都需要处理的跨平台差异屏蔽、CI 检查结果汇总，以及执行写操作前的预期提交校验，则统一交由公共工具收敛处理。
+</div>
+
+---
+
+## <a id="overview"></a>简介
+
+**qatlib-tools** 汇总了围绕 [Qatlib](https://github.com/quantum-atlas-ai/qatlib) 与通用 [Lean 4](https://lean-lang.org/) 形式化项目沉淀下来的工程维护经验与轻量命令行工具，重点解决多工作树共享编译缓存、构建资源与子进程隔离、静态源码及 BibTeX 书目检索，以及跨 GitHub / Gitea 的拉取请求核验问题。完整专题可直接访问[在线工程手册](https://quantum-atlas-ai.github.io/qatlib-tools/)，安装后也可在终端通过 `qatlib-env docs` 离线查阅。
+
+工具层保持克制的职责边界：日常单步操作直接使用原生的 `git`、`gh`、`tea`、`gt` 或 `lake` 命令即可；本仓只把多项目反复用到的缓存准备、受管编译、词法检索与并发提交核验做成可组合的独立入口，不替代各项目自身的数学接口与审阅规范。
 
 ## 命令
 
@@ -156,7 +170,7 @@ GitHub 与 Gitea 的草稿表示和状态接口各不相同：GitHub 提供独�
 
 ## 共享成果进入公开库
 
-跨仓共享的形式化成果按三层链路推进：先在孵化仓内整理可复用结论，再送入预发仓核验整文件依赖闭环与真实消费者兼容性，最后由公开库发布稳定接口与预编译工件。预发验证通过后，下游仓库即可提前开启草稿 PR 演练接口切换；待公开库的正式版本与远端工件就绪后，再在同一张 PR 中更新依赖锁，并同步清理已被替代的旧源码及已收录进公开基线的增量书目。至于各仓库具体的目录规划、评审流程与收录标准，由各仓自身的晋升说明负责定义。详见[晋升步骤与临时别名检查](docs/promotion.md)。
+将可复用的形式化成果贡献给公开库时，先整理源码，确认涉及的 Lean 文件及其依赖齐全，再用实际使用这些接口的项目验证候选版本。依赖公开库的项目可以先开草稿 PR 演练切换。稳定接口与预编译工件发布后，在同一个 PR 中更新依赖锁，并清理已被替代的源码和已纳入公开库的书目条目。目录布局、评审流程和收录标准以各项目的说明为准。详见[晋升步骤与临时别名检查](docs/promotion.md)。
 
 <a id="field-notes"></a><a id="runner"></a>
 

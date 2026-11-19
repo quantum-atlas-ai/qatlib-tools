@@ -63,12 +63,16 @@ function rewriteLinks(content, { isEn = false, inDocsSubdir = false } = {}) {
   return out;
 }
 
-function copyMapped(relSrc, relDest, opts) {
+function copyMapped(relSrc, relDest, { guideTitle, ...opts }) {
   const fullSrc = path.join(repoRoot, relSrc);
   if (!fs.existsSync(fullSrc)) {
     throw new Error(`Missing documentation source file: ${fullSrc}`);
   }
-  const raw = fs.readFileSync(fullSrc, 'utf8');
+  let raw = fs.readFileSync(fullSrc, 'utf8');
+  if (guideTitle) {
+    raw = raw.replace(/^<div align="center">\r?\n[\s\S]*?\r?\n<\/div>\r?\n\r?\n---\r?\n/,
+      () => `# ${guideTitle}\n`);
+  }
   const transformed = rewriteLinks(raw, opts);
   const fullDest = path.join(srcDir, relDest);
   fs.mkdirSync(path.dirname(fullDest), { recursive: true });
@@ -82,7 +86,7 @@ fs.copyFileSync(path.join(siteDir, 'base-pages/index.md'), path.join(srcDir, 'in
 fs.copyFileSync(path.join(siteDir, 'base-pages/en/index.md'), path.join(srcDir, 'en/index.md'));
 
 // Chinese single-source documents
-copyMapped('README.md', 'guide.md', { isEn: false, inDocsSubdir: false });
+copyMapped('README.md', 'guide.md', { guideTitle: '快速上手与命令总览' });
 copyMapped('DESIGN.md', 'design.md', { isEn: false, inDocsSubdir: false });
 copyMapped('CONTRIBUTING.md', 'contributing.md', { isEn: false, inDocsSubdir: false });
 
@@ -91,7 +95,7 @@ for (const topic of ['build', 'runner', 'lean-docs', 'forge', 'promotion']) {
 }
 
 // English counterparts
-copyMapped('README.en.md', 'en/guide.md', { isEn: true, inDocsSubdir: false });
+copyMapped('README.en.md', 'en/guide.md', { isEn: true, guideTitle: 'Quickstart & CLI Overview' });
 copyMapped('DESIGN.en.md', 'en/design.md', { isEn: true, inDocsSubdir: false });
 copyMapped('CONTRIBUTING.en.md', 'en/contributing.md', { isEn: true, inDocsSubdir: false });
 

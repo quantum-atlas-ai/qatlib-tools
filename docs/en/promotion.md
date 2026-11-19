@@ -41,7 +41,7 @@ When running this check, explicitly pass every target Lean file exported in the 
 
 ## Rehearsing the Downstream Switch Ahead of Release
 
-Once the changes in the upstream receiving package land on a staging branch, downstream repositories can open a Draft PR ahead of time that references the candidate dependency on a draft branch—rehearsing import paths, qualified names, consumer probes, and duplicate checks early while documenting the candidate commit and staging validation results according to project rules. This surfaces and addresses consumer compatibility issues before the official public version is released. Downstream interface switches and source removals may be merged only after both the official public release and its corresponding precompiled artifacts are fully available; until then, the downstream main branch retains its existing implementations and dependency lock.
+Once the library stages its changes, projects that depend on it can try the candidate version in a draft PR. Check import paths, qualified names, compatibility probes, and duplicate declarations, and record the candidate commit and test results in the PR. Merge the interface switch and remove superseded source files once the release and its precompiled artifacts are available.
 
 ## Phase 2: Updating Dependency Locks to the Official Release and Retiring Old Copies
 

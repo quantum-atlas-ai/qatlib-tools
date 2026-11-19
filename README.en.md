@@ -1,12 +1,26 @@
-# qatlib-tools
+<div align="center">
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
+<img src="./.github/assets/qatlib-tools-wordmark.svg" alt="qatlib-tools" width="520" />
+
+**An engineering handbook and command-line tools for Lean 4 formalization projects**
+
+[![CI](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml)
+[![Docs](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml)
+[![Handbook](https://img.shields.io/badge/docs-Handbook-263f5f)](https://quantum-atlas-ai.github.io/qatlib-tools/en/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
-· [简体中文](README.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 
-`qatlib-tools` provides a shared engineering handbook and command-line tools for Lean mathematical libraries and their downstream research repositories; specific mathematical interface design, bibliographic content, and merge criteria remain maintained by each project.
+[简体中文](./README.md) ｜ English
 
-In day-to-day collaboration, developers can use `git`, GitHub's `gh`, Gitea's `tea` or `gt`, or call code-hosting platform APIs directly. Cross-cutting concerns shared across repositories—abstracting away cross-platform differences, aggregating CI check results, and verifying expected commits before write operations—are consolidated into these shared tools.
+</div>
+
+---
+
+## <a id="overview"></a>Overview
+
+**qatlib-tools** is an engineering handbook and a set of lightweight command-line tools for [Qatlib](https://github.com/quantum-atlas-ai/qatlib) and other [Lean 4](https://lean-lang.org/) formalization projects. Use it to share build caches across worktrees, run builds with resource limits and isolated subprocesses, search source code and BibTeX entries through a static lexical index, and verify pull requests on GitHub and Gitea. Read the [online engineering handbook](https://quantum-atlas-ai.github.io/qatlib-tools/en/) or run `qatlib-env docs` after installation to read the Chinese handbook offline.
+
+For routine operations, use `git`, `gh`, `tea` or `gt`, and `lake` directly. The tools here provide separate commands you can combine to prepare caches, manage builds, run lexical searches, and check that a pull request's head still matches the commit you reviewed. Each project maintains its own mathematical interfaces and review standards.
 
 ## Commands
 
@@ -155,7 +169,7 @@ New pushes can still arrive on a remote branch between the completion of human r
 
 ## Promoting Shared Results to the Public Library
 
-Formalized results shared across repositories advance through a three-tier pipeline: reusable results are first organized in an incubation repository, then staged in a staging repository to verify whole-file dependency closure and compatibility with real consumers, and finally published by the public library with stable interfaces and precompiled artifacts. Once staging validation passes, downstream repositories can open draft PRs ahead of time to rehearse the interface transition; once the public library's official release and remote artifacts are ready, that same PR updates the dependency lock while removing superseded local source files and incremental bibliography entries now absorbed into the public baseline. Repository-specific directory layouts, review workflows, and acceptance criteria are defined by each repository's own promotion guidelines. See [Promotion Steps and Temporary Alias Checks](docs/en/promotion.md) for details.
+To contribute reusable formalizations to a public library, gather the Lean files and their dependencies, then test a candidate version in projects that use those interfaces. Projects that depend on the library can rehearse the switch in a draft PR. Once the library publishes the stable interfaces and precompiled artifacts, update the dependency lock in that same PR and remove superseded local source files and bibliography entries now included in the library. Follow each project's guidelines for directory layout, review, and acceptance. See [Promotion Steps and Temporary Alias Checks](docs/en/promotion.md) for details.
 
 <a id="field-notes"></a><a id="runner"></a>
 
