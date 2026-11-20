@@ -116,6 +116,47 @@ qatlib-env run -- lake build MyLib.Facts
 
 在启用 `module` 机制的 Lean v4.35 源码中，模块内的声明默认为私有：需要置于 `public section` 内或显式添加 `public` 修饰，下游模块才能引用其名称；若还需向更下游转发被导入模块的公开接口，则应使用 `public import`。如果下游除了引用名称之外，还需要在证明或计算中展开普通定义体，则须进一步核对声明是否标有 `@[expose]`，并编写确实依赖定义展开的用例加以验证。需要注意，未启用 `module` 的普通文件仍能读取模块内部的私有信息，若仅用此类文件测试，往往无法提前暴露真正的 `module` 消费者拿不到声明名称或无法展开定义体的问题。
 
+### 4. 单周期重命名兼容
+
+在薄中转开发仓规范化声明名称（如清退早期内部编号）或迁移模块路径时，若当场硬删旧名，会直接打断同周期尚未合入的其他在途开发分支。为此，开发仓允许为重命名声明或旧测试路径保留仅存活一个发版周期的受控过渡兼容，并统一使用独立行注释 `-- promotion: dev-only` 显式标记。通过该标记可串联起开发仓打标缓冲、导出剥离与 `check-export` 拦截、发版升锁同步清退的闭环。
+
+#### 开发仓登记与临时兼容标记
+
+重命名合入当天起，仓内新增与修改的源码、测试及结构化元数据一律采用新语义主名与新路径。所有临时兼容项须随同改动登记入迁移清单，写明旧名、新名、所在文件路径及所属晋升批次：
+
+- **声明级过渡别名**：保留在旧名原本可见的命名空间位置，紧贴上方标注 `-- promotion: dev-only`，再用带引入日期的 `@[deprecated]` `alias` 指向语义主声明。
+
+  ```lean
+  -- promotion: dev-only
+  @[deprecated semanticName (since := "2026-11-17")]
+  alias original844 := semanticName
+  ```
+
+- **旧测试路径薄转发垫片**：测试文件迁移至新语义路径后，旧路径仅可暂留一个只含单行 `import` 的薄转发垫片，实质断言统一在新路径维护。
+
+  ```lean
+  -- promotion: dev-only
+  import QatlasDevTests.SemanticRegression
+  ```
+
+依赖旧接口的在途分支重基后即可根据弃用提示切至新名称。在将弃用警告视为错误的严格构建下，应优先完成切换。
+
+#### 导出剥离与 `check-export` 门禁拦截
+
+向预发仓和公开仓晋升时，导出脚本须依据当批迁移清单定向清洗完整 `.lean` 源文件依赖闭包，剥离带 `-- promotion: dev-only` 标记的临时别名块，跳过旧路径薄转发垫片，并将消费者引用统一切至新接口。清洗完成后，在接收仓根目录将全部目标 `.lean` 文件显式传给 `qatlib-env promotion check-export`：
+
+```bash
+qatlib-env promotion check-export Qatlib/Path/Feature.lean verification/QatlibTests/SemanticRegression.lean
+```
+
+`check-export` 按 Lean 语法扫描真实行注释，忽略嵌套块注释和原始字符串中的文档示例，保留无此标记的合法公开 `@[deprecated]` 声明。一旦发现残留标记，立即报告精确的 `path:line` 并返回非零退出码；缺失文件、非 `.lean` 路径或越界路径同样直接拦截。导出验收仍须对照迁移清单反查旧路径与旧全限定名，并运行普通窄导入的 `promotion smoke`、`Lint`、`Build` 与测试。
+
+#### 公开发版后的升锁清退
+
+待包含新语义主名的公开版本正式发布且对应预编译缓存可用后，开发仓在同一升锁回切变更中清退全部临时别名与旧测试路径垫片，将消费者、聚合入口与元数据改指公开仓新接口。最后反查旧全名、旧路径及 `-- promotion: dev-only` 标记均已清零，依次运行 `promotion verify-lock`、`promotion check-retired`、跨库 `conflicts` 检查与完整消费构建。
+
+---
+
 在日常开发与依赖拉取中，三类预编译工件按不同机制存放与复用：
 
 1. **Lake 本地共享工件**：直接调用 Lean v4.35 的 Lake 且未显式设置缓存选项时，Lake 默认只读共享缓存，但命中模块后仍会将工件恢复到当前包的构建目录中。多工作树并发开发时，建议设置 `enableArtifactCache = true` 与 `restoreAllArtifacts = false`：一旦命中共享目录中的原生工件，Lake 会依据输入跟踪信息定位内容哈希，直接原地读取 `LAKE_CACHE_DIR` 下的 `.olean`，而无需文件系统支持 reflink 或建立跨工作树硬链接；同时，各工作树仍保有各自独立的 `.lake` 目录，供编辑器使用的 `.ilean` 索引文件也照常在本地落盘。
