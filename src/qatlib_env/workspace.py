@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlparse
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qatlib_env import resources, supervisor, trash
+from qatlib_env import diagnostics, resources, supervisor, trash
 from qatlib_env.envvars import env_value
 
 try:
@@ -63,11 +63,12 @@ def command_runtime_environment(project, env, argv):
 
 
 @contextmanager
-def _pool_scope(effective, *, building):
+def _pool_scope(effective, *, building, on_lease_lost=None):
     """Admit builds to the machine pool and renew the lease while running."""
     if not building:
         yield
         return
+    from qatlib_env.locations import pool_paths
     from qatlib_env.pool import Pool, PoolCapacityError
     raw_memory = int(float(env_value(effective, "QATLIB_MEMORY_BUDGET", 4 * GIB)))
     memory_mib = max(2048, raw_memory // (1024 * 1024) if raw_memory > 65536 else raw_memory)
@@ -76,7 +77,7 @@ def _pool_scope(effective, *, building):
     pool_cpu = int(env_value(effective, "QATLIB_POOL_CPU", "4"))
     if memory_mib > pool_budget or cpu > pool_cpu:
         raise ValueError(f"本机池硬上限拒绝准入: request={memory_mib}MiB/{cpu}cpu pool={pool_budget}MiB/{pool_cpu}cpu")
-    pool = Pool(budget_mib=pool_budget, budget_cpu=pool_cpu)
+    pool = Pool(budget_mib=pool_budget, budget_cpu=pool_cpu, state_dir=pool_paths(effective)[2])
     deadline = time.monotonic() + float(env_value(effective, "QATLIB_POOL_WAIT_TIMEOUT", "300"))
     lease = None
     while lease is None:
@@ -93,7 +94,9 @@ def _pool_scope(effective, *, building):
         while not stop.wait(max(1.0, pool.ttl / 3)):
             try:
                 pool.heartbeat(lease)
-            except RuntimeError:
+            except (OSError, RuntimeError, ValueError):
+                if on_lease_lost is not None and not stop.is_set():
+                    on_lease_lost()
                 return
     heartbeat = threading.Thread(target=renew, name="qatlib-pool-heartbeat", daemon=True)
     heartbeat.start()
@@ -169,14 +172,19 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
     project = Path(cwd)
     from qatlib_env import budget
     building, targets, full_gate = budget.command_request(argv, project)
-    plan = budget.admit(project, targets, env=env, full_gate=full_gate) if building else None
+    plan = None
+    if building:
+        with diagnostics.measure("cache_check_ms"):
+            plan = budget.admit(project, targets, env=env, full_gate=full_gate,
+                                cache_only=budget.cache_only_lean(argv, project))
     if plan is not None:
         print("LOCAL_ADMISSION " + json.dumps(plan, ensure_ascii=False, sort_keys=True), file=sys.stderr)
     base = dict(os.environ if env is None else env)
     if building:
         # Normalize budgets even for programmatic callers without environment().
         base = resources.resolve_config(project, env=base).environment(base)
-    effective = command_runtime_environment(project, base, argv)
+    with diagnostics.measure("lake_config_ms"):
+        effective = command_runtime_environment(project, base, argv)
     if plan and plan["reasons"] and any(float(env_value(effective, key, default)) <= 0 for key, default in
         (("QATLIB_STAGE_TIMEOUT", "10800"), ("QATLIB_MODULE_TIMEOUT", "1800"))):
         raise ValueError("heavy local execution requires positive stage and module timeouts")
@@ -190,15 +198,16 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
                 _windows_job_scope(effective, building=building) as (process_callback, cleanup_callback):
             # Recheck outer cgroup headroom after any pool admission wait.
             command = _backend_command(argv, effective, building=building, require_limits=bool(plan and plan["reasons"]))
-            return supervisor.run(
-                command, cwd=cwd, env=effective, check=True, text=True,
-                stdout=subprocess.PIPE if capture else None,
-                stderr=subprocess.STDOUT if capture and capture_stderr else None,
-                timeout=float(env_value(effective, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
-                module_timeout=float(env_value(effective, "QATLIB_MODULE_TIMEOUT", "1800")) or None,
-                process_callback=process_callback,
-                cleanup_callback=cleanup_callback,
-            ).stdout
+            with diagnostics.measure("build_ms") if building else nullcontext():
+                return supervisor.run(
+                    command, cwd=cwd, env=effective, check=True, text=True,
+                    stdout=subprocess.PIPE if capture else diagnostics.command_stdout(),
+                    stderr=subprocess.STDOUT if capture and capture_stderr else None,
+                    timeout=float(env_value(effective, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
+                    module_timeout=float(env_value(effective, "QATLIB_MODULE_TIMEOUT", "1800")) or None,
+                    process_callback=process_callback,
+                    cleanup_callback=cleanup_callback,
+                ).stdout
     finally:
         if building and (project / "lean-toolchain").is_file():
             from qatlib_env import checkpoint
@@ -211,11 +220,12 @@ def run(argv, *, cwd, env=None, capture=False, capture_stderr=False):
 
 
 def package_name(project):
-    return tomllib.loads((project / "lakefile.toml").read_text())["name"]
+    with (project / "lakefile.toml").open("rb") as config_file:
+        return tomllib.load(config_file)["name"]
 
 
 def manifest(project):
-    data = json.loads((project / "lake-manifest.json").read_text())
+    data = json.loads((project / "lake-manifest.json").read_text(encoding="utf-8"))
     if data.get("packagesDir", ".lake/packages") != ".lake/packages":
         raise ValueError("dependencies must use private .lake/packages")
     for pkg in data["packages"]:
@@ -228,7 +238,7 @@ def package_dir(project, names):
     """Resolve a dependency directory from the lockfile before stale paths."""
     lockfile = project / "lake-manifest.json"
     if lockfile.is_file():
-        data = json.loads(lockfile.read_text())
+        data = json.loads(lockfile.read_text(encoding="utf-8"))
         for package in data.get("packages", []):
             name = package.get("name", "").strip("«»")
             if name in names:
@@ -629,7 +639,13 @@ def cache_lock(cache_dir: Path):
     """Serialize cache downloads and GC while leaving Lake builds concurrent."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    with (cache_dir / ".fetch.lock").open("a+") as handle:
+    lock_path = cache_dir / ".fetch.lock"
+    if sys.platform == "win32":
+        from qatlib_env.backends.windows_paths import locked_file
+        with locked_file(lock_path):
+            yield
+        return
+    with lock_path.open("a+") as handle:
         if fcntl is not None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
@@ -755,7 +771,7 @@ def command_environment(project, env, argv, source=None):
     return effective
 
 
-def environment(project, source=None, base_env=None, cli=None):
+def environment(project, source=None, base_env=None, cli=None, *, create_cache=True):
     from qatlib_env.r2_cache import package_environment
     package = package_name(project) if (project / "lakefile.toml").is_file() else ""
     env = network_environment(project, package_environment(package, os.environ if base_env is None else base_env))
@@ -771,7 +787,8 @@ def environment(project, source=None, base_env=None, cli=None):
             if redirected_directory(path):
                 raise ValueError(f"shared/symlinked working state is forbidden: {path}")
     cache = cache_directory(project, env)
-    cache.mkdir(parents=True, exist_ok=True)
+    if create_cache:
+        cache.mkdir(parents=True, exist_ok=True)
     env.update(LAKE_CACHE_DIR=str(cache), LAKE_ARTIFACT_CACHE="true")
     config = resources.resolve_config(project, cli, env)
     env = config.environment(env)
@@ -808,6 +825,13 @@ def resolve_dependencies(project, env, source=None):
     ensure_pkg_mirror(project, env)
     # resolve-deps materializes the existing lock before executables are built.
     command = ["lake", "resolve-deps"]
+    if sys.platform == "win32":
+        # Avoid CRLF conversion in new checkouts while treating existing CRLF
+        # worktrees as clean. Explicit upstream attributes still apply.
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+        env.update({"GIT_CONFIG_COUNT": str(count + 1),
+                    f"GIT_CONFIG_KEY_{count}": "core.autocrlf",
+                    f"GIT_CONFIG_VALUE_{count}": "input"})
     run(command, cwd=project, env=command_environment(project, env, command, source))
 
 
@@ -1026,8 +1050,16 @@ def main(argv=None):
     conflicts.add_argument("--upstream-root")
     conflicts.add_argument("--expected-rev", help="explicit source revision for an isolated rehearsal")
     commands.add_parser("workspace", help="read-only multi-root scan and explicit system Trash previews")
+
+    def diagnostics_options(target):
+        target.add_argument("--project", type=Path, default=argparse.SUPPRESS)
+        target.add_argument("--json", action="store_true", help="include worktree state and phase timings")
+
     for name in ("env", "shell", "bootstrap", "prepare"):
-        options(commands.add_parser(name))
+        target = commands.add_parser(name)
+        options(target)
+        if name != "shell":
+            diagnostics_options(target)
     config = commands.add_parser("config", help="explain resource configuration without preparing a workspace",
                                  description="Report host/cgroup capacity, effective settings and user storage paths as JSON. QATLIB_HOME defaults to ~/.qatlib. This does not prepare dependencies or acquire a lease.")
     config.add_argument("action", choices=("explain",))
@@ -1047,6 +1079,7 @@ def main(argv=None):
     manual_mode.add_argument("--list", action="store_true", help="list available topic names")
     execute = commands.add_parser("run")
     options(execute)
+    diagnostics_options(execute)
     execute.add_argument("args", nargs=argparse.REMAINDER)
     clean = commands.add_parser("clean-setup")
     clean.add_argument("--apply", action="store_true")
@@ -1185,6 +1218,11 @@ def main(argv=None):
             raise ValueError("maintain-mirror needs --mirror or QATLIB_PKG_MIRROR")
         maintain_mirror(mirror, dict(os.environ), gc_cache=args.gc_cache, project=project)
         return 0
+    with diagnostics.collect(project, enabled=getattr(args, "json", False)) as report:
+        return _run_workspace_command(args, project, cli, report)
+
+
+def _run_workspace_command(args, project, cli, report):
     if args.command in {"run", "check"}:
         from qatlib_env import budget
         if args.command == "check":
@@ -1193,11 +1231,21 @@ def main(argv=None):
             requested = args.args[1:] if args.args[:1] == ["--"] else args.args
             active, targets, entire = budget.command_request(requested, project)
         if active:
-            budget.admit(project, targets, cli=cli, policy=args.policy,
-                         full_gate=args.full_gate or entire, allow_local_heavy=args.allow_local_heavy)
-    env = environment(project, args.source_root, cli=cli)
+            with diagnostics.measure("cache_check_ms"):
+                budget.admit(project, targets, cli=cli, policy=args.policy,
+                             full_gate=args.full_gate or entire, allow_local_heavy=args.allow_local_heavy,
+                             cache_only=args.command == "run" and budget.cache_only_lean(requested, project))
+    with diagnostics.measure("lake_config_ms"):
+        if report is not None and args.command == "env":
+            env = environment(project, args.source_root, cli=cli, create_cache=False)
+        else:
+            env = environment(project, args.source_root, cli=cli)
     if args.command == "env":
-        print(json.dumps({k: env[k] for k in ENV_KEYS}, indent=2))
+        result = {k: env[k] for k in ENV_KEYS}
+        if report is not None:
+            report["environment"] = result
+        else:
+            print(json.dumps(result, indent=2))
     elif args.command == "shell":
         for key in ENV_KEYS:
             print(f"export {key}={shlex.quote(env[key])}")
@@ -1207,7 +1255,10 @@ def main(argv=None):
         with permission(args.allow_local_heavy):
             result = ({"skipped": "explicit --no-prepare"} if args.no_prepare else
                       prepare(project, env, source=args.source_root, offline=args.offline))
-        print(json.dumps(result, indent=2))
+        if report is not None:
+            report["preparation"] = result
+        else:
+            print(json.dumps(result, indent=2))
     elif args.command == "cache":
         from qatlib_env import checkpoint
         from qatlib_env.prepare import identity, cold_modules

@@ -1,10 +1,10 @@
 import { defineConfig } from 'vitepress';
 
 export default defineConfig({
-  base: '/qatlib-tools/',
+  base: process.env.VITEPRESS_BASE || '/qatlib-tools/',
   srcDir: 'src',
   outDir: 'src/.vitepress/dist',
-  cleanUrls: true,
+  cleanUrls: process.env.VITEPRESS_CLEAN_URLS !== 'false',
   lastUpdated: false,
   markdown: {
     theme: 'github-dark',
@@ -43,28 +43,45 @@ export default defineConfig({
       themeConfig: {
         siteTitle: false,
         nav: [
-          { text: '快速上手', link: '/guide' },
-          { text: '维护机制手册', link: '/docs/build' },
-          { text: '设计原则', link: '/design' },
+          { text: '五分钟验证', link: '/docs/quickstart' },
+          { text: '在 Lean 仓库里工作', link: '/docs/worktrees' },
+          { text: '维护者指南', link: '/docs/github-ci' },
           { text: 'Qatlib 主站', link: 'https://quantum-atlas-ai.github.io/qatlib/' },
         ],
         sidebar: [
           {
-            text: '总览与入门',
+            text: '按顺序做完',
             items: [
-              { text: '快速上手与命令总览', link: '/guide' },
-              { text: '设计原则与维护边界', link: '/design' },
-              { text: '贡献与自测指南', link: '/contributing' },
+              { text: '手册首页', link: '/guide' },
+              { text: '五分钟验证', link: '/docs/quickstart' },
+              { text: '安装方式', link: '/docs/install' },
+              { text: '第二棵工作树', link: '/docs/worktrees' },
+              { text: '第一张草稿', link: '/docs/pull-requests' },
+              { text: '贡献与自测', link: '/contributing' },
             ],
           },
           {
-            text: '工程维护机制',
+            text: '维护者',
             items: [
-              { text: '编译环境、缓存与资源控制', link: '/docs/build' },
-              { text: '持续集成 Runner 与进程排障', link: '/docs/runner' },
-              { text: 'Lean 文档、书目与源码检索', link: '/docs/lean-docs' },
-              { text: 'GitHub 与 Gitea 拉取请求', link: '/docs/forge' },
-              { text: '共享成果进入公开库', link: '/docs/promotion' },
+              { text: 'GitHub 工作流与 Pages', link: '/docs/github-ci' },
+              { text: '审阅并行提交', link: '/docs/forge' },
+              { text: '自托管 Runner', link: '/docs/runner' },
+              { text: 'Runner 排障', link: '/docs/runner-troubleshooting' },
+            ],
+          },
+          {
+            text: '编译与验证',
+            items: [
+              { text: '编译、缓存与预算', link: '/docs/build' },
+              { text: '证明复核与公理审计', link: '/docs/verification' },
+            ],
+          },
+          {
+            text: '按需查阅',
+            items: [
+              { text: '文档、书目与检索', link: '/docs/lean-docs' },
+              { text: '进入公开库', link: '/docs/promotion' },
+              { text: '设计原则与维护边界', link: '/design' },
             ],
           },
         ],
@@ -95,28 +112,45 @@ export default defineConfig({
       themeConfig: {
         siteTitle: false,
         nav: [
-          { text: 'Quickstart', link: '/en/guide' },
-          { text: 'Engineering Guides', link: '/en/docs/build' },
-          { text: 'Design Principles', link: '/en/design' },
+          { text: 'Five-minute check', link: '/en/docs/quickstart' },
+          { text: 'Work in a Lean repo', link: '/en/docs/worktrees' },
+          { text: 'Maintainer guide', link: '/en/docs/github-ci' },
           { text: 'Qatlib Portal', link: 'https://quantum-atlas-ai.github.io/qatlib/' },
         ],
         sidebar: [
           {
-            text: 'Overview',
+            text: 'Do these in order',
             items: [
-              { text: 'Quickstart & CLI Overview', link: '/en/guide' },
-              { text: 'Design Principles & Boundaries', link: '/en/design' },
-              { text: 'Contributing & Self-Test', link: '/en/contributing' },
+              { text: 'Handbook', link: '/en/guide' },
+              { text: 'Five-minute check', link: '/en/docs/quickstart' },
+              { text: 'Install', link: '/en/docs/install' },
+              { text: 'A second worktree', link: '/en/docs/worktrees' },
+              { text: 'First draft', link: '/en/docs/pull-requests' },
+              { text: 'Contributing', link: '/en/contributing' },
             ],
           },
           {
-            text: 'Engineering Guides',
+            text: 'Maintainers',
             items: [
-              { text: 'Build Environment, Cache & Budget', link: '/en/docs/build' },
-              { text: 'CI Runners & Process Isolation', link: '/en/docs/runner' },
-              { text: 'Docstrings, Bibliography & Retrieval', link: '/en/docs/lean-docs' },
-              { text: 'Pull Requests on GitHub & Gitea', link: '/en/docs/forge' },
-              { text: 'Promoting Shared Results Upstream', link: '/en/docs/promotion' },
+              { text: 'GitHub workflows and Pages', link: '/en/docs/github-ci' },
+              { text: 'Review concurrent commits', link: '/en/docs/forge' },
+              { text: 'Self-hosted runners', link: '/en/docs/runner' },
+              { text: 'Runner troubleshooting', link: '/en/docs/runner-troubleshooting' },
+            ],
+          },
+          {
+            text: 'Build and verification',
+            items: [
+              { text: 'Build, cache, and budget', link: '/en/docs/build' },
+              { text: 'Proof verification and axiom auditing', link: '/en/docs/verification' },
+            ],
+          },
+          {
+            text: 'Look up when needed',
+            items: [
+              { text: 'Docs, bibliography, retrieval', link: '/en/docs/lean-docs' },
+              { text: 'Entering the public library', link: '/en/docs/promotion' },
+              { text: 'Design principles', link: '/en/design' },
             ],
           },
         ],

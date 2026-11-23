@@ -1,0 +1,2 @@
+# Keep text checkout bytes consistent across platforms.
+* text=auto eol=lf

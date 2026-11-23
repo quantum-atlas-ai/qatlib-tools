@@ -45,15 +45,29 @@ Once the library stages its changes, projects that depend on it can try the cand
 
 ## Phase 2: Updating Dependency Locks to the Official Release and Retiring Old Copies
 
-Before making the formal switch, confirm that the official upstream release, its full commit SHA, and the corresponding precompiled artifacts can all be retrieved normally. Then switch the downstream draft to the official dependency and review the targeted version update and lockfile diff:
+Before the formal switch, confirm that the official upstream release, its full commit SHA, and the corresponding precompiled artifacts can all be retrieved. Both sequences below happen in a **downstream checkout that depends on the public library**. Acceptance on the pre-release repository stays in the tree from the previous phase.
+
+### Upgrade a dependency that is already checked out
+
+The working directory is a downstream worktree where this direct Git dependency is already checked out.
 
 ```bash
 qatlib-env promotion bump-lock --package MyLib
 qatlib-env promotion verify-lock --package MyLib
-qatlib-env prepare
 ```
 
-Here, `bump-lock` updates an existing direct Git dependency and verifies the updated local checkout, while `prepare` prepares dependency sources and caches according to the lockfile. Because `verify-lock` reads the locked local dependency sources, in a clean environment where dependencies have not yet been checked out, run `prepare` first and then run `verify-lock` to verify the lock state. The entire workflow must ensure that the locked commit SHA, cache preparation, and build results strictly correspond to the same version.
+`bump-lock` updates the existing direct Git dependency and checks the updated local checkout. The following `verify-lock` reads that locked local source and confirms that the full Git SHA in the manifest matches the checkout. Read the `lake-manifest.json` diff and confirm the change is the package you expected.
+
+### Verify the lock in a separate clean worktree
+
+The working directory is a clean checkout whose dependencies are not prepared yet. `verify-lock` reads the locked local dependency sources, so prepare from the lock first, then verify.
+
+```bash
+qatlib-env prepare
+qatlib-env promotion verify-lock --package MyLib
+```
+
+`prepare` prepares dependency sources and the configured caches from the lock. After verification succeeds, the locked commit SHA, the cache preparation, and the later build refer to the same version.
 
 Within the same downstream PR, switch `import` and `open` statements, fully qualified names, tests, and project metadata over to the upstream public interfaces, while retiring local legacy sources, temporary aliases, and empty shell modules. After confirming that all local bibliography keys slated for deletion are already included in full upstream, check reverse references in unmodified files. Finally, run the following checks against the updated dependency lock:
 

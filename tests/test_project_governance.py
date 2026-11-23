@@ -60,6 +60,38 @@ def test_repository_identity_uses_canonical_origin_before_transport_rewrites(tmp
     assert repository_slug(tmp_path) == "example/shared"
 
 
+def test_repository_identity_follows_local_mirror_upstream(tmp_path):
+    mirror = tmp_path / "pkg-mirror" / ".lake" / "packages" / "Qatlib"
+    mirror.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(mirror)], check=True)
+    subprocess.run(["git", "-C", str(mirror), "remote", "add", "upstream",
+                    "https://github.com/quantum-atlas-ai/qatlib.git"], check=True)
+    project = tmp_path / "consumer"
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "remote", "add", "origin", str(mirror)], check=True)
+    assert repository_slug(project) == "quantum-atlas-ai/qatlib"
+
+
+def test_repository_identity_uses_lockfile_for_missing_local_mirror(tmp_path):
+    project = tmp_path / "consumer"
+    project.mkdir()
+    lake(project, name="Consumer")
+    (project / "lake-manifest.json").write_text(json.dumps({"packages": [
+        {"name": "Qatlib", "url": "https://github.com/quantum-atlas-ai/qatlib.git"}
+    ]}))
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    subprocess.run(["git", "-C", str(project), "remote", "add", "origin",
+                    "/var/lib/qatlas-ci/dev/pkg-mirror/.lake/packages/Qatlib"], check=True)
+    assert repository_slug(project) == "quantum-atlas-ai/qatlib"
+
+
+def test_repository_identity_keeps_unresolved_local_origin_empty(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin",
+                    "/var/lib/qatlas-ci/dev/pkg-mirror/.lake/packages/Unknown"], check=True)
+    assert repository_slug(tmp_path) == ""
+
+
 def test_ambiguous_default_and_escaping_srcdir_fail(tmp_path):
     lake(tmp_path)
     content = (tmp_path / "lakefile.toml").read_text()

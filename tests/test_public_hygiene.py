@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 
@@ -25,6 +26,18 @@ def denylist_pattern(literal: str) -> re.Pattern:
     return re.compile(escaped, re.I)
 
 
+def staged_content():
+    entries = subprocess.check_output(["git", "ls-files", "--stage", "-z"], cwd=ROOT)
+    for record in entries.split(b"\0")[:-1]:
+        metadata, _, raw_path = record.partition(b"\t")
+        mode, oid, stage = metadata.split()
+        path = os.fsdecode(raw_path)
+        if mode == b"160000" or stage != b"0":
+            raise ValueError("publication requires a complete tree without gitlinks or conflicts")
+        blob = subprocess.check_output(["git", "cat-file", "blob", oid.decode()], cwd=ROOT)
+        yield path, blob.decode("utf-8", errors="replace")
+
+
 class PublicHygieneTest(unittest.TestCase):
     def test_repository_has_no_private_literals(self):
         """Set QATLIB_HYGIENE_DENYLIST to additional literals, one per line."""
@@ -32,6 +45,11 @@ class PublicHygieneTest(unittest.TestCase):
         extra = os.environ.get("QATLIB_HYGIENE_DENYLIST", "")
         patterns.extend(("denylist literal", denylist_pattern(line.strip()))
                         for line in extra.splitlines() if line.strip())
+        if os.environ.get("QATLIB_HYGIENE_STAGED") == "1":
+            offenders = [f"{path} matches {rule}" for path, content in staged_content()
+                         for rule, pattern in patterns if pattern.search(path) or pattern.search(content)]
+            self.assertEqual([], offenders)
+            return
         offenders = []
         for directory, subdirectories, filenames in os.walk(ROOT):
             subdirectories[:] = [name for name in subdirectories

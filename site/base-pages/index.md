@@ -3,60 +3,58 @@ layout: home
 
 hero:
   name: "qatlib-tools"
-  text: "Lean 4 形式化项目工程维护手册与工具链"
-  tagline: "将大规模并行形式化研发中验证过的编译缓存、Runner 子进程隔离、静态词法检索、GitHub / Gitea 门禁对齐与跨仓无损晋升沉淀为通用知识与轻量工具。"
+  text: "Lean 4 形式化项目的工程手册与工具"
+  tagline: "先确认命令能跑，再在第二棵工作树里改一个模块，然后看当前提交的检查。缓存、Runner 和审阅规则留在后面的手册里。"
   actions:
     - theme: brand
-      text: 阅读工程维护手册 →
-      link: /docs/build
+      text: 五分钟验证工具 →
+      link: /docs/quickstart
     - theme: alt
-      text: 快速上手与 CLI
-      link: /guide
+      text: 在 Lean 仓库里工作
+      link: /docs/worktrees
     - theme: alt
-      text: 设计原则
-      link: /design
+      text: 维护者与 Runner
+      link: /docs/github-ci
 
 features:
-  - title: 编译环境与共享工件缓存
-    details: 厘清 lakefile.toml 的 enableArtifactCache 与 restoreAllArtifacts 九种开关表现、Lean 4.35 module 可见性边界、三类缓存机制分工以及 Windows 跨盘注意事项。
-    link: /docs/build
-    linkText: 阅读编译与缓存机制
-  - title: Runner 资源计费与进程回收
-    details: 解释 Linux cgroup v2 页缓存计费，以及如何通过父死信号、subreaper 和瞬态 systemd scope 回收取消任务留下的编译进程。
+  - title: 五分钟确认工具能用
+    details: 在本工具仓的检出里执行 uv tool install .，然后看 qatlib-env docs --list 和 qatlib-env config explain --json。这一步不下载 Lean 工具链。
+    link: /docs/quickstart
+    linkText: 从五分钟验证开始
+  - title: 第二棵工作树里的一次修改
+    details: 从已锁定工具版本的 Lean 仓库创建工作树，先 plan，再 prepare，然后构建一个模块，并用 --no-build 检查刚改的文件。清理只做预览。
+    link: /docs/worktrees
+    linkText: 按步骤做完一次修改
+  - title: 第一张草稿和当前提交的检查
+    details: 推送分支，开 Draft，写下命令、结果和未运行的项，再按 head SHA 阅读 Checks。本仓的 CI 对文档改动同样运行。
+    link: /docs/pull-requests
+    linkText: 交出第一张草稿
+  - title: 工作流、Pages 和凭据
+    details: CI 与文档站是两份工作流。拉取请求上的 CI 通过，并不表示 Pages 已经部署。注册令牌、GITHUB_TOKEN 和镜像密钥各有入口。
+    link: /docs/github-ci
+    linkText: 看清两份工作流
+  - title: 自托管 Runner
+    details: 服务账号按 lane 分配。同一 lane 的实例共用账号，各自拥有工作目录、注册名和资源 drop-in。页缓存和取消后的进程按症状另查。
     link: /docs/runner
-    linkText: 阅读 Runner 与进程隔离
-  - title: 文档注释、书目与静态检索
-    details: 对比 doc-gen4 整站符号路由与本地 LSP hover，介绍增量 BibTeX 书目校验，以及无需启动编译器的源码词法检索。
-    link: /docs/lean-docs
-    linkText: 阅读文档与检索机制
-  - title: GitHub 与 Gitea 并发门禁核验
-    details: >-
-      核对 GitHub 的 isDraft 状态和 Gitea 的草稿标题前缀，按提交哈希对齐作业结论，并在合入或删除分支前校验远端提交。
-    link: /docs/forge
-    linkText: 阅读双平台协作机制
-  - title: 跨仓成果晋升与无损切锁
-    details: 以完整源文件为最小闭包单元，配合普通 module 消费者探针、预发阶段草稿演练以及正式发版后的原子升锁与旧副本清退，避免上下游断供或重名冲突。
-    link: /docs/promotion
-    linkText: 阅读跨仓晋升机制
-  - title: 共享工具与离线手册
-    details: 日常单步操作使用 git、gh、tea 或 gt。五篇工程专题均随 Python 包离线分发，可通过 qatlib-env docs 阅读中文原文。
-    link: /design
-    linkText: 查看仓库设计原则
+    linkText: 按顺序完成部署验收
+  - title: 需要时再查阅
+    details: 缓存开关、检索与书目、跨仓晋升，以及设计契约，都从一项具体任务链回机制说明。
+    link: /docs/build
+    linkText: 打开编译与缓存参考
 ---
 
 <div class="vp-doc carbon-home-strip">
 
-## 三条入口与离线查阅
+## 先确认命令可用
 
-安装一次即可获得 `qatlib-env`、`qatlib-retrieve` 与 `qatlib-forge` 三个命令行工具，全部专题手册均内置于分发包中：
+在本工具仓的检出根目录执行。固定提交、wheel、Windows 和下游仓库锁定的版本见[安装方式](/docs/install)。
 
 ```bash
-# 使用 uv 独立安装命令行入口（亦支持 pipx 或标准库 venv + pip，详见快速上手）
-uv tool install 'git+https://github.com/quantum-atlas-ai/qatlib-tools.git'
-
-# 在终端离线列出并阅读本站同源的五篇工程维护专题
+uv tool install .
 qatlib-env docs --list
-qatlib-env docs build
+qatlib-env config explain --json
 ```
+
+`qatlib-env docs` 阅读中文原文。英文页面在本站的 English 入口。
 
 </div>

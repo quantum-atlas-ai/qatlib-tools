@@ -1,31 +1,90 @@
 # Pull Requests on GitHub and Gitea
 
-When multiple contributors and agents maintain a formalization repository in parallel, batches of draft PRs often remain open at the same time. A full build of a large library can easily take tens of minutes, whereas static checks for documentation-only or index changes sometimes finish in under a minute. Accurately distinguishing draft status, actual job runs, and change scope lets machines reserve valuable compile time for changes that genuinely affect the build; strictly verifying the remote commit at merge time is equally critical, or code pushed after review approval could enter the main branch unverified.
-
-<a id="tools"></a>
-
-## CLI Tools and Draft Status
-
-Use `git` to inspect and push local branches; for platform queries, PR creation, and status updates, use GitHub's `gh`, Gitea's `tea` or `gt`, or call the platform APIs directly. Note that `tea` and `gt` are two distinct Gitea clients, with `gt` being the newer official CLI—before using either, verify the commands your client supports and the instance it is currently connected to. [tea v0.16.0](https://gitea.com/gitea/tea/releases/tag/v0.16.0) · [Official gt Documentation](https://docs.gitea.com/cli/)
-
-The two platforms mark draft PRs differently. GitHub provides a dedicated `isDraft` state: create a draft with `gh pr create --draft` and mark it ready with `gh pr ready`. Gitea relies on instance-configured title prefixes (such as `WIP:` or `[WIP]`) to identify drafts, and the `draft` field returned by the API reflects this state accordingly. On Gitea, whether removing the draft prefix triggers a build depends on the workflow's trigger events and job conditions. If a repository triggers builds on title edits, check existing records by PR number, head, and workflow beforehand—if an applicable job is already queued, running, or completed, follow its status rather than triggering a duplicate build. [GitHub CLI Draft Operations](https://cli.github.com/manual/gh_pr_ready) · [Gitea Draft Prefix Configuration](https://docs.gitea.com/administration/config-cheat-sheet/#repository---pull-request-repositorypull-request)
+This page is for a reviewer. The question is which head the checks you already see actually measured, whether that evidence applies to the pull request in front of you, and whether it is safe to merge or delete the branch now. Opening a first draft is in [Pull requests](pull-requests.md). When each of this repository's two workflows runs is in [GitHub workflows](github-ci.md).
 
 <a id="ci"></a>
 
-## Check Results and Change Scope
+## Which head this check measured
 
-When querying CI results, account for how each platform splits its APIs and summarizes status: on GitHub, check-runs, commit statuses, and Actions jobs are served by separate endpoints, whereas on Gitea an outer status summary may remain `pending` even after individual jobs under the same SHA have been marked `skipped`. Always paginate queries by the full SHA, use the target URL in each status record to verify the owning repository, workflow run, and specific job, and re-check the PR head both before and after reading to avoid inspecting a stale commit. In addition, a successful exit code from a query command only indicates that results were retrieved; whether jobs passed must still be judged from the returned statuses. See `qatlib-forge pr checks --help` for filtering options and status semantics. [GitHub Checks API](https://docs.github.com/en/rest/checks/runs) · [GitHub Commit Statuses API](https://docs.github.com/en/rest/commits/statuses)
+Write down the head SHA shown on the page. Read it again before and after the query. If the two values differ, stop and query the new SHA.
 
-Whether a workflow schedules a build for a change depends on the repository's path-filtering rules. When documentation-only changes avoid build paths and do not trigger a build, they must still pass static checks required by repository policy. In platform records, if an entire workflow is filtered out, no run record is created; within a triggered workflow, individual jobs skipped by conditions are recorded as `skipped`. After the main branch advances, reusing an existing passing CI result directly requires first confirming that the succeeded jobs correspond to the current head, then verifying the ancestry relationship between the tested base and the current base along with the workflow rules at both ends; meanwhile, any changes added on the main branch in the interim must be limited to documentation that does not match build rules and must be disjoint from the current PR's changes.
+```bash
+qatlib-forge pr checks <number> --expected-head <40-character lowercase SHA>
+```
 
-For example, suppose a PR has already built cleanly on its current head, and the main branch subsequently modifies only another document that is not read by the build. When all of the conditions above are met, the advancement of the main branch itself does not require every in-flight PR to merge the main branch again and recompile individually. Conversely, whenever a PR pushes new commits, the main branch alters build inputs, or both sides modify the same file, you must re-verify against the current commit combination.
+An exit code of 0 means the results were retrieved. Whether a job passed is the returned state: `success`, `failure`, `skipped`, `cancelled`, `pending`, or `absent`. Skipped, still queued, missing, and infrastructure failures are not passes. Filters and state names are in `qatlib-forge pr checks --help`.
 
-`qatlib-forge pr paths` evaluates these reuse conditions from the local commit graph: specify the tested commits via `--tested-base` and `--tested-head`, and—because the tool does not query CI itself—pass `--ci-success` only after confirming that the applicable jobs have passed. Record the tested commits, job URLs, and changed paths as part of verification; whenever you encounter unexplained filtering rules, related changes on the main branch, or incomplete evidence, do not force reuse—re-verify directly. [GitHub Workflow Path Filtering](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)
+GitHub serves check-runs, commit statuses, and Actions jobs from separate endpoints. Follow the target URL on a status record to the repository, the workflow run, and the job, and paginate by the full SHA so the query does not stop on an older page. [GitHub Checks API](https://docs.github.com/en/rest/checks/runs) · [GitHub Commit Statuses API](https://docs.github.com/en/rest/commits/statuses)
+
+<a id="gitea"></a>
+
+## How Gitea states and drafts differ
+
+A Gitea draft follows the instance's title prefix, such as `WIP:` or `[WIP]`. The API `draft` field reflects that prefix. Whether removing the prefix starts a build depends on the workflow events and job conditions. If editing the title starts a build, look up existing records by number, head, and workflow first. An applicable job that is already queued, running, or finished should be followed in that state, not started again. [Gitea draft prefixes](https://docs.gitea.com/administration/config-cheat-sheet/#repository---pull-request-repositorypull-request)
+
+On one SHA, a job can already be `skipped` while the outer summary is still `pending`. Treating the outer summary as the result reads a skip as a job that has not run. Open the target URL and read the job before deciding.
+
+`tea` and `gt` are different Gitea clients. `gt` is the newer official CLI. Check which subcommands the client supports and which instance it is connected to. [tea v0.16.0](https://gitea.com/gitea/tea/releases/tag/v0.16.0) · [gt documentation](https://docs.gitea.com/cli/)
+
+<a id="tools"></a>
+
+## Local branches and creating a draft
+
+Inspect and push the local branch with `git`. Create and update the pull request with GitHub's `gh`, with one of the Gitea clients above, or with the platform API. A GitHub draft is the separate `isDraft` flag: `gh pr create --draft` opens it, and `gh pr ready` marks it ready. [gh pr ready](https://cli.github.com/manual/gh_pr_ready)
+
+<a id="reuse"></a>
+
+## Whether an existing conclusion applies to this pull request
+
+Whether a workflow schedules a build depends on that repository's path filters. A workflow filtered out entirely leaves no run. Inside a workflow that did start, a job skipped by a condition is recorded as `skipped`. A documentation change that misses the build paths still needs the static checks that repository requires. [Path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)
+
+After the base branch gains more commits, an older success applies only when all of these hold:
+
+1. The successful jobs correspond to the current head, not to an earlier push.
+2. The ancestry between the tested base and the current base, and the workflow rules at both ends, have been compared.
+3. Commits added on the base in that interval touch only documentation that misses the build rules, and they share no file with the pull request.
+
+For example, the current head already built, and the base later changed a different document the build does not read. When the three conditions hold, each in-flight pull request does not have to merge the base again and rebuild. A new push on the pull request, a base change to a build input, or an edit to the same file on both sides means verifying the current pair of commits.
+
+In a local repository that contains both commits:
+
+```bash
+qatlib-forge pr paths \
+  --project . \
+  --base <full SHA of the current base> \
+  --head <full SHA of the current head> \
+  --workflow .github/workflows/<workflow file> \
+  --tested-base <tested base SHA> \
+  --tested-head <tested head SHA> \
+  --ci-success
+```
+
+`--tested-base` and `--tested-head` are supplied together. The tool does not query CI, so add `--ci-success` only after you have confirmed that the applicable jobs succeeded. Record the tested commits, the job URLs, and the changed paths. If a filter cannot be explained, the base has a related change, or any piece of evidence is missing, run the current combination again.
 
 <a id="concurrent-writes"></a>
 
-## Concurrent Merges and Branch Cleanup
+## Whether it is safe to merge or delete the branch now
 
-After code review finishes, a remote branch may still receive new commits before it is merged. To prevent unverified changes from entering the main branch, pass the full reviewed head SHA to the platform at merge time so the server verifies a match when executing the merge. On GitHub, use `gh pr merge <PR-number> --match-head-commit <SHA>`; across both platforms, you can also use `qatlib-forge pr merge <PR-number> --expected-head <SHA>` uniformly. Before merging, verify the applicable CI status and your permissions to perform the operation.
+Between the end of review and the merge, the remote branch can still receive a commit. Send the full reviewed head to the server so the merge compares it.
 
-Before deleting a branch, verify the push target, default branch, and branch protection rules, then confirm the branch's current remote SHA. `qatlib-forge branch delete <branch> --expected-sha <SHA>` builds these checks in and performs the underlying deletion via `git push --force-with-lease=refs/heads/<branch>:<SHA> <remote> :refs/heads/<branch>`; if the remote ref does not match the expected SHA, Git rejects the deletion. If protection rules cannot be read in full or new commits have appeared on the remote, stop and verify the state before proceeding. [GitHub Pull Request Merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request) · [Git push](https://git-scm.com/docs/git-push)
+On GitHub:
+
+```bash
+gh pr merge <number> --match-head-commit <40-character SHA>
+```
+
+On either platform:
+
+```bash
+qatlib-forge pr merge <number> --expected-head <40-character lowercase SHA>
+```
+
+Read the applicable CI and your own permissions again before merging. [GitHub merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)
+
+Before deleting, check the push target, the default branch, and the protection rules, then confirm the remote SHA:
+
+```bash
+qatlib-forge branch delete <branch> --expected-sha <40-character lowercase SHA>
+```
+
+Underneath, that is `git push --force-with-lease=refs/heads/<branch>:<SHA> <remote> :refs/heads/<branch>`. Git refuses the delete when the remote ref is not the expected SHA. Stop and look again when the protection rules cannot be read in full, or when the remote already has a new commit. [git push](https://git-scm.com/docs/git-push)

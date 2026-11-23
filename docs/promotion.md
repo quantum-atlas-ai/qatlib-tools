@@ -45,15 +45,29 @@ qatlib-env promotion check-export MyLib/Facts.lean verification/Consumer.lean
 
 ## 第二阶段：按正式版本更新依赖锁并清退旧副本
 
-正式切换前，先确认上游正式版本、完整提交 SHA 及对应的预编译工件均已可正常获取，随后将下游草稿切换到正式依赖，核查定向更新的版本与锁文件差异：
+正式切换前，先确认上游正式版本、完整提交 SHA 及对应的预编译工件均已可正常获取。下面两段都发生在**依赖这个公开库的下游检出**里。预发仓的验收仍留在上一阶段的那一棵树。
+
+### 定向升级已经检出的依赖
+
+当前目录是下游项目里、这份直接 Git 依赖已经检出的工作树。
 
 ```bash
 qatlib-env promotion bump-lock --package MyLib
 qatlib-env promotion verify-lock --package MyLib
-qatlib-env prepare
 ```
 
-其中，`bump-lock` 负责更新既有的直接 Git 依赖并核对更新后的本地检出；`prepare` 则按锁文件准备依赖源码与缓存。由于 `verify-lock` 需要读取已锁定的本地依赖源码，若在尚未检出依赖的干净环境中运行，应先执行 `prepare` 再运行 `verify-lock` 核对锁状态。整个流程需确保锁定的提交 SHA、缓存准备与构建结果严格对应到同一版本。
+`bump-lock` 更新既有的直接 Git 依赖，并核对更新后的本地检出。紧接着的 `verify-lock` 读取这份已经锁定的本地源码，确认清单里的完整 Git SHA 与实际检出一致。查看 `lake-manifest.json` 的差异，确认改动落在预期的包上。
+
+### 在另一棵干净工作树里验锁
+
+当前目录是一份尚未准备依赖的干净检出。`verify-lock` 要读取已锁定的本地依赖源码，所以先按锁准备，再验锁。
+
+```bash
+qatlib-env prepare
+qatlib-env promotion verify-lock --package MyLib
+```
+
+`prepare` 按锁准备依赖源码及所配置的缓存。验锁通过后，锁定的提交 SHA、缓存准备与后续构建才对应同一个版本。
 
 在同一张下游 PR 中，一并将 `import`、`open`、完整限定名、测试及项目元数据切换到上游公开接口，同时清退本地旧源码、临时别名与只剩空壳的模块；确认拟删除的本地书目键均已由上游完整收录后，再检查未改动文件中的反向引用。最后，针对更新后的依赖锁运行以下检查：
 

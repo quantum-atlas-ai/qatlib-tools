@@ -9,8 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from qatlib_env import budget, ci, config, pool, r2_cache, resources, workspace
+from qatlib_env import budget, ci, config, diagnostics, pool, r2_cache, resources, workspace
 from qatlib_env.cloud import CloudLoop
+from qatlib_search.lean_tools import main as lean_tools
 
 
 def git(root, *args):
@@ -140,6 +141,49 @@ def test_missing_trace_stale_dependency_and_heavy_patterns(project):
     assert report["estimated_peak_mib"] == 8192
 
 
+def test_locked_dependency_olean_without_trace_is_warm(project):
+    dependency = project / ".lake/packages/Dependency"
+    dependency.mkdir(parents=True)
+    write(dependency, "lakefile.toml", 'name="Dependency"\n[[lean_lib]]\nname="Dependency"\n')
+    write(dependency, "Dependency/Basic.lean", "def provider := 1\n")
+    git(dependency, "init", "-q")
+    commit(dependency)
+    revision = git(dependency, "rev-parse", "HEAD")
+    write(project, "lake-manifest.json", json.dumps({"packages": [{"name": "Dependency", "rev": revision, "type": "git"}]}))
+    write(project, "Consumer/Leaf.lean", "import Dependency.Basic\ndef leaf := provider\n")
+    commit(project)
+    output = write(dependency, ".lake/build/lib/lean/Dependency/Basic.olean", "cached-without-trace")
+    os.utime(output, ns=(time.time_ns() + 1_000_000_000,) * 2)
+    outputs(project)
+    report = budget.estimate(project, ["Consumer.Leaf"])
+    assert report["cold_or_rebuild_modules"] == 0
+    assert report["warm_modules"] == 2
+
+
+def test_elan_native_revision_mapping_counts_as_warm_before_materialization(project, tmp_path):
+    dependency = project / ".lake/packages/Dependency"
+    dependency.mkdir(parents=True)
+    write(dependency, "lakefile.toml", 'name="Dependency"\n[[lean_lib]]\nname="Dependency"\n')
+    write(dependency, "Dependency/Basic.lean", "def provider := 1\n")
+    git(dependency, "init", "-q")
+    commit(dependency)
+    revision = git(dependency, "rev-parse", "HEAD")
+    write(project, "lake-manifest.json", json.dumps({"packages": [{"name": "Dependency", "rev": revision, "type": "git"}]}))
+    write(project, "Consumer/Leaf.lean", "import Dependency.Basic\ndef leaf := provider\n")
+    commit(project)
+    outputs(project)
+    cache = tmp_path / "elan-cache"
+    artifact = "0123456789abcdef.olean"
+    write(cache, "artifacts/" + artifact, "native-cache-olean")
+    write(cache, f"revisions/Dependency/{revision}.jsonl", json.dumps("2026-03-17") + "\n" +
+         json.dumps(["input-hash", artifact]) + "\n")
+    env = {**os.environ, "LAKE_CACHE_DIR": str(cache),
+           "LAKE_PKG_URL_MAP": json.dumps({"Dependency": str(dependency)})}
+    report = budget.estimate(project, ["Consumer.Leaf"], env=env)
+    assert report["cold_or_rebuild_modules"] == 0
+    assert report["warm_modules"] == 2
+
+
 @pytest.mark.parametrize("document", [
     'repository="mirror/library"\nlocal_pool_mib=8192\n[resources]\ndefault_jobs=1\ndefault_memory_mib=4096\nlean_threads=2\n[budget]\nmax_cold_modules=7\nmax_reverse_modules=8\nrequire_explicit_local_heavy=true\n',
     '[tool.qatlib-env]\nrepository="mirror/library"\nlocal_pool_mib=8192\ndefault_jobs=1\ndefault_memory_mib=4096\nlean_threads=2\n[tool.qatlib-env.budget]\nmax_cold_modules=7\nmax_reverse_modules=8\nrequire_explicit_local_heavy=true\n',
@@ -228,6 +272,191 @@ def test_no_prepare_and_policy_local_do_not_bypass_admission(project, command):
         assert workspace.cli_main(["--project", str(project), "run", "--no-prepare", "--policy", "local", "--", *command]) == 1
         run.assert_not_called()
         environment.assert_not_called()
+
+
+@pytest.fixture
+def fresh_worktree(project, tmp_path, monkeypatch):
+    tree = tmp_path / "worktree"
+    git(project, "worktree", "add", "-q", "--detach", str(tree))
+    monkeypatch.setattr(resources, "probe_resources", lambda: resources.HostResources(
+        64 * resources.GIB, 64 * resources.GIB, 4, 4, 64 * resources.GIB))
+    return tree
+
+
+def test_json_classifies_cold_and_warm_worktrees_without_preparing(fresh_worktree, tmp_path, monkeypatch, capsys):
+    tree = fresh_worktree
+    monkeypatch.delenv("QATLIB_REAL_SYSROOT")
+    monkeypatch.delenv("LEAN_SYSROOT", raising=False)
+    monkeypatch.delenv("QATLIB_REAL_LEAN", raising=False)
+    elan = tmp_path / "elan"
+    monkeypatch.setenv("ELAN_HOME", str(elan))
+    cache = tmp_path / "cache"
+    command = ["env", "--project", str(tree), "--json"]
+    assert lean_tools(command) == 0
+    cold = json.loads(capsys.readouterr().out)
+    assert cold["cache"]["classification"] == "cold_toolchain_missing"
+    assert cold["cache"]["linked_worktree"] is True
+    assert cold["phase_timings"]["build_ms"] is None
+    assert not cache.exists() and not (tree / ".lake").exists()
+
+    prefix = elan / "toolchains/leanprover--lean4---v4.35.0"
+    write(prefix, "bin/lean.exe" if os.name == "nt" else "bin/lean", "fixture")
+    write(prefix, "lib/lean/Init.olean", "fixture")
+    (cache / "artifacts").mkdir(parents=True)
+    (cache / "outputs").mkdir()
+    assert lean_tools(command) == 0
+    warm = json.loads(capsys.readouterr().out)
+    assert warm["cache"]["classification"] == "warm_toolchain_new_worktree"
+    assert warm["cache"]["shared_cache_layout_present"] is True
+    assert warm["cache"]["local_oleans_present"] is False
+
+    write(tree, ".lake/build/lib/lean/Consumer/Leaf.olean", "fixture")
+    assert lean_tools(command) == 0
+    warm = json.loads(capsys.readouterr().out)
+    assert warm["cache"]["classification"] == "warm_worktree"
+    assert warm["cache"]["local_oleans_present"] is True
+
+
+@pytest.mark.parametrize("native_status", [0, 3])
+def test_native_cache_only_admission_and_phase_json(fresh_worktree, monkeypatch, capfd, native_status):
+    tree = fresh_worktree
+    for index in range(25):
+        write(tree, f"Consumer/Group/M{index}.lean", "import Consumer.Base\ndef item := 2\n")
+    (tree / "Check.lean").write_text("import Consumer.Base\n#check base\n", encoding="utf-8")
+    # Simulate native Lake, preserving both CLI and programmatic admission calls.
+    calls = []
+
+    def native_run(command, **kwargs):
+        calls.append(command)
+        os.write(kwargs["stdout"], b"native Lake output\n")
+        if native_status:
+            raise subprocess.CalledProcessError(native_status, command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(workspace.supervisor, "run", native_run)
+    monkeypatch.setattr(workspace, "command_runtime_environment", lambda project, env, argv: env)
+    monkeypatch.setattr(workspace, "_backend_command", lambda argv, *args, **kwargs: argv)
+    monkeypatch.setattr(workspace, "_pool_scope", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(workspace, "_windows_job_scope", lambda *args, **kwargs: nullcontext((None, None)))
+    monkeypatch.setattr("qatlib_env.checkpoint.capture", lambda *args, **kwargs: {})
+
+    base_args = ["env", "run", "--project", str(tree), "--json", "--no-prepare", "--max-cold-modules", "0", "--"]
+    assert lean_tools([*base_args, "lake", "lean", "Check.lean"]) == 1
+    rejected = capfd.readouterr()
+    assert json.loads(rejected.out)["phase_timings"]["build_ms"] is None
+    assert "cold_limit" in rejected.err and not calls
+
+    command = ["lake", "--no-build", "lean", "Check.lean"]
+    assert lean_tools([*base_args, *command]) == bool(native_status)
+    result = capfd.readouterr()
+    report = json.loads(result.out)
+    assert report["status"] == ("error" if native_status else "ok")
+    assert set(report["phase_timings"]) == set(diagnostics.PHASES)
+    assert all(value >= 0 for value in report["phase_timings"].values())
+    assert calls == [command]
+    assert "native Lake output" in result.err and "cold_limit" not in result.err
+
+
+def test_cache_only_still_checks_locks_and_hard_resources(fresh_worktree):
+    with pytest.raises(budget.AdmissionError) as error:
+        budget.admit(fresh_worktree, ["Consumer/Leaf.lean"], cache_only=True, cli={"local_pool_mib": 1024})
+    assert error.value.plan["reasons"][0]["code"] == "pool_memory_exceeded"
+    write(fresh_worktree, "lake-manifest.json", json.dumps({"packages": [{
+        "name": "Dependency", "rev": "a" * 40, "type": "git"}]}))
+    with pytest.raises(budget.AdmissionError) as error:
+        budget.admit(fresh_worktree, ["Consumer/Leaf.lean"], cache_only=True)
+    assert "dependency_lock_mismatch" in {reason["code"] for reason in error.value.plan["reasons"]}
+
+
+def test_preparation_json_reports_work_done(fresh_worktree, capsys):
+    assert lean_tools(["env", "prepare", "--project", str(fresh_worktree), "--json", "--offline",
+                       "--max-cold-modules", "100"]) == 0
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    assert report["preparation"]["offline"]
+    assert report["phase_timings"]["cache_check_ms"] >= 0
+    assert report["phase_timings"]["build_ms"] is None
+    assert "dependency-resolution" in output.err and "cold-module-accounting" in output.err
+
+
+def test_phase_timings_are_exclusive_and_accumulate(fresh_worktree, monkeypatch, capsys):
+    monkeypatch.setattr(diagnostics, "classify", lambda project, env: {})
+    ticks = iter(ms * 1_000_000 for ms in (0, 1, 4, 8, 10, 12))
+    monkeypatch.setattr(diagnostics.time, "monotonic_ns", lambda: next(ticks))
+    with diagnostics.collect(fresh_worktree, enabled=True):
+        with diagnostics.measure("lake_config_ms"), diagnostics.measure("elan_resolve_ms"):
+            pass
+        with diagnostics.measure("lake_config_ms"):
+            pass
+    assert json.loads(capsys.readouterr().out)["phase_timings"] == {
+        "lake_config_ms": 7.0, "elan_resolve_ms": 3.0, "cache_check_ms": None, "build_ms": None}
+
+
+@pytest.mark.parametrize("argv", [
+    ["lake", "lean", "Consumer/Leaf.lean", "--no-build"],
+    ["lake", "--no-build", "--update", "lean", "Consumer/Leaf.lean"],
+    ["lake", "--no-build", "build", "Consumer.Leaf"],
+    ["elan", "run", "leanprover/lean4:v4.35.0", "lake", "--no-build", "lean", "Consumer/Leaf.lean"],
+])
+def test_cache_only_classification_does_not_admit_builds_or_overrides(project, argv):
+    assert not budget.cache_only_lean(argv, project)
+
+
+def test_cache_only_classification_accepts_lake_output_flags(project):
+    assert budget.cache_only_lean(["lake", "-q", "--no-build", "lean", "Consumer/Leaf.lean"], project)
+
+
+def test_real_lake_materializes_shared_artifact_in_new_worktree(tmp_path, monkeypatch, capfd):
+    if os.name != "posix":
+        pytest.skip("the test uses the POSIX managed compiler overlay")
+    toolchain = "leanprover/lean4:v4.35.0"
+    prefix = diagnostics.toolchain_prefix(toolchain, {"ELAN_HOME": os.environ.get(
+        "ELAN_HOME", str(Path.home() / ".elan"))})
+    lake = prefix / "bin/lake"
+    if not lake.is_file():
+        pytest.skip("the pinned Lean 4.35.0 toolchain is not installed")
+    project = tmp_path / "seed"
+    project.mkdir()
+    git(project, "init", "-q")
+    write(project, ".gitignore", ".lake/\n")
+    write(project, "lean-toolchain", toolchain + "\n")
+    write(project, "lakefile.toml", 'name="example"\nenableArtifactCache=true\nrestoreAllArtifacts=true\n'
+          '[[lean_lib]]\nname="Example"\n')
+    write(project, "lake-manifest.json", '{"version":"1.1.0","packagesDir":".lake/packages","packages":[],"name":"example","lakeDir":".lake"}')
+    write(project, "qatlib-env.toml", 'local_pool_mib=8192\nlocal_pool_cpu=2\n'
+          '[resources]\njobs=1\nlean_threads=1\nmemory_budget="4GiB"\n')
+    write(project, "Example/Seed.lean", "module\n@[expose] public def savedValue : Nat := 42\n")
+    write(project, "Check.lean", "module\npublic import Example.Seed\nexample : savedValue = 42 := rfl\n")
+    commit(project)
+    tree = tmp_path / "linked"
+    git(project, "worktree", "add", "-q", "--detach", str(tree))
+    for variables in config.ENV_FIELDS.values():
+        for variable in variables:
+            monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("QATLIB_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("QATLIB_REAL_LEAN", str(prefix / "bin/lean"))
+    monkeypatch.setenv("LAKE_CACHE_DIR", str(tmp_path / "shared"))
+    monkeypatch.setenv("LAKE_ARTIFACT_CACHE", "true")
+    monkeypatch.setattr(resources, "probe_resources", lambda: resources.HostResources(
+        16 * resources.GIB, 16 * resources.GIB, 4, 4, 16 * resources.GIB))
+
+    base = ["env", "run", "--project", str(tree), "--json", "--max-cold-modules", "0", "--"]
+    command = [*base, str(lake), "--no-build", "lean", "Check.lean"]
+    assert lean_tools(command) == 1
+    cold = capfd.readouterr()
+    assert "cold_limit" not in cold.err
+    assert json.loads(cold.out)["status"] == "error"
+    artifact = ".lake/build/lib/lean/Example/Seed.olean"
+    assert not (tree / artifact).exists()
+
+    subprocess.run([str(lake), "build", "Example.Seed"], cwd=project, check=True, timeout=45)
+    capfd.readouterr()
+    assert lean_tools(command) == 0
+    warm = json.loads(capfd.readouterr().out)
+    assert warm["cache"]["classification"] == "warm_toolchain_new_worktree"
+    assert (tree / artifact).read_bytes() == (project / artifact).read_bytes()
+    assert lean_tools(command) == 0
+    assert json.loads(capfd.readouterr().out)["cache"]["classification"] == "warm_worktree"
 
 
 def test_check_is_a_full_gate_and_rejects_before_preparation(project):

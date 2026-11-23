@@ -1,5 +1,9 @@
 # 编译环境、缓存与资源控制
 
+构建后的公理白名单、零 `sorry` 门禁、下游接口检查与内核重放见 [Lean 证明复核与公理审计](verification.md)。
+
+这一篇按名称查阅。要在第二棵工作树里走完计划、准备、构建、单文件检查和清理预览，从[在 Lean 仓库里工作](worktrees.md)开始。第一次下载 Lean 工具链或编译依赖的耗时，写在[五分钟验证](quickstart.md)的末尾；那一次不属于工具本身的安装检查。
+
 <a id="lakefile"></a>
 
 ## `lakefile.toml` 怎么读
@@ -100,6 +104,25 @@ globs = ["MyLib.*"]
 
 <a id="windows"></a>
 
+<a id="github-acceleration"></a>
+
+## GitHub 受限网络加速（免改全局配置）
+
+先用 `uv venv .venv` 创建隔离环境。若当前 Python 项目在 `./python` 中声明了带提交锁的 GitHub 依赖，可对本次安装临时改写 Git URL。Lean 项目则可在自身根目录通过 `QATLIB_GITHUB_PREFIX` 启动准备流程：
+
+```bash
+GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0='url.https://ghfast.top/https://github.com/.insteadOf' \
+  GIT_CONFIG_VALUE_0='https://github.com/' \
+  uv pip install --python .venv/bin/python ./python
+
+QATLIB_GITHUB_PREFIX='https://ghfast.top/' qatlib-env prepare
+```
+
+`QATLIB_GITHUB_PREFIX` 只接受以 `/` 结尾的 HTTPS 代理前缀，工具为 Git 子进程追加 `insteadOf`。同一条 Git 改写也可用于 Lake 的 Git 拉取。`LAKE_PKG_URL_MAP` 则用于按包名选择本地镜像等替代地址。保持依赖清单里的上游 URL 和完整提交 SHA，并在已配置其他 `GIT_CONFIG_*` 条目时追加新编号。
+
+只把公开依赖交给第三方代理。固定提交的对象 ID 绑定其树和文件内容，Git 在接收对象时校验哈希，调用者还须核对检出的提交与可信锁一致。代理仍可拒绝或延迟交付。分支名可由代理返回任意引用，Release 二进制也不在 Git 对象树内。执行下载的程序前，使用可信渠道发布的官方 SHA-256、签名或官方来源验证其身份。
+
 ## Windows 跨卷和长路径
 
 在典型的 Windows 部署场景中，开发者常将缓存目录设在系统盘（如 `C:\lake-cache`），而将实际的工作树置于数据盘（如 `D:\work\project`）。由于 Windows NTFS 文件系统的限制，硬链接（Hard Link）只能在同一个磁盘分区卷内创建；一旦尝试跨卷建立硬链接，底层便会触发类似于 POSIX 语义下的 `EXDEV` 错误（其具体的 Windows 错误码与错误信息因调用层而异）。不过，缓存与工作树跨盘部署本身完全属于合法且受支持的使用方式，关键在于理解不同构建阶段的处理机制：
@@ -113,6 +136,20 @@ globs = ["MyLib.*"]
 针对 Windows 平台下深层目录嵌套导致的超长路径问题，首要建议是尽量将工作区与缓存目录置于较短的磁盘根路径下。需要明确区分两套长路径机制的边界：Git for Windows 提供的 `core.longpaths=true` 配置仅能解除 Git 自身操作的路径长度限制；而若要让操作系统的 Win32 API 彻底放开传统 260 字符的 `MAX_PATH` 上限，除了必须在系统注册表中启用 `LongPathsEnabled` 之外，可执行程序自身还必须在其清单（manifest）中显式声明 `longPathAware`。因此对于 Lake、Python、外部归档解压工具以及系统回收站，均需分别确认其长路径兼容性。另外请注意，启用长路径支持并不能打破“NTFS 无法跨卷建立硬链接”的物理限制。
 
 [Lake 保存与恢复实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Common.lean) · [Windows 硬链接](https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions) · [Win32 路径上限](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation) · [Git for Windows](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)
+
+首次克隆含长路径的仓库时，可用 `git clone --config core.longpaths=true <URL>`，让该设置从首次检出起就生效，并由同仓的 linked worktree 继承。Python 工具的安装也有独立的跨盘路径。如果 uv 缓存位于 C: 而虚拟环境位于 D:，uv 会在硬链接不可用时复制文件。安装成功后仍会出现降级提示。这些复制品计入虚拟环境所在盘符的空间占用。
+
+排查缓存未命中时，先区分 Git 的检出字节和缓存的输入哈希。可用 `git ls-files --eol` 查看索引、工作树及属性。Git 的 `core.autocrlf=true` 可能把索引中的 LF 转为工作树的 CRLF。Lean 4.35 的 Lake 模块输入使用会规范化 CRLF 的 `Hash.ofText`，同期 Mathlib 的下载键也在 `hashFileContents` 中做同样转换。按所用版本核对这些计算路径，并单独检查平台、依赖锁和编译参数。根仓的 `.gitattributes` 只覆盖该仓的文件，每个 Lake Git 依赖按它自己的属性检出。
+
+在 Windows 原生 Lean 4.35.0 的单模块对照中，两份源码只改变行尾，Lake 生成相同的 `depHash`。LF 工作树先编译，CRLF 工作树随后报告 `Reused`，并从 C: 的默认 Lake 缓存复制 `.ilean` 至 D:。该对照验证的是原生 Lake 对文本输入和跨盘恢复的处理。
+
+工具通过 Lake 物化锁定的 Git 依赖时，在 Windows 上为该子进程设置 `core.autocrlf=input`。新检出保留上游存储的行尾，显式的上游属性仍然适用。既有 CRLF 检出仍以规范化后的内容判断是否有改动。
+
+多个工作树同时调用 `prepare` 时，Windows 通过缓存目录内的 `.fetch.lock` 串行化准备任务。工作树中普通的增量编译仍可并发进行。
+
+从较早的工作树整目录复制 `.lake` 时，复制工具可能保留早于新检出的文件时间。实测同锁 Mathlib 的 `Chebyshev.olean` 和 `.trace` 都存在，复制后的输出时间仍早于目标树的 `.lean` 源文件。此时 `qatlib-env plan` 的时间戳筛查会将该模块估为冷模块；原生 Lake 则按 `depHash` 核验输入和工件。每个工作树通过各自的准备流程恢复构件，再以该树的准入结果安排编译。
+
+[Lake 4.35 模块输入](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Module.lean) · [Lake 4.35 文本哈希](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Trace.lean) · [Mathlib 4.35 缓存哈希](https://github.com/leanprover-community/mathlib4/blob/56a005855ea17e0b0958f73ec801ae140b0a1679/Cache/Hashing.lean)
 
 在 Windows 环境下，受管构建以及伴随编译任务的缓存准备流程均依托原生 Lake 运行，并借助 Windows Job Object 统一对整组进程施加 CPU 与内存的刚性约束。由于 `qatlib-env` 的默认重型模块匹配规则列表非空，且 Windows 缺乏专用的 POSIX 编译器包装层（Wrapper），既无法为匹配到的高负载模块单独分配隔离执行槽位，也无法在单次编译器调用中精确注入 `-M` 内存上限参数，因此受管 Lake 在检测到非空的重模块规则时会主动抛错拦截。针对 Windows 环境，请务必在生效的配置文件中显式配置 `heavy_patterns = []`，并通过 `qatlib-env config explain --json` 验证该配置已正确生效。关于 Job Object 的进程树初始化与生命周期清理机制，请详见 [Runner 进程隔离](runner.md#windows-job-object)。
 

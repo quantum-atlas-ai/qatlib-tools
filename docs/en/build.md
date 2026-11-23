@@ -1,5 +1,9 @@
 # Build Environment, Caching, and Resource Control
 
+For post-build axiom allowlists, zero-`sorry` gates, downstream interface checks, and kernel replay, see [Lean proof verification and axiom auditing](verification.md).
+
+This page is the lookup reference. To walk through a plan, a prepare, a build, a single-file check, and a cleanup preview in a second worktree, start with [A second worktree](worktrees.md). How long the first Lean toolchain download or dependency compilation takes is at the end of the [five-minute check](quickstart.md). That wait is separate from installing the tools.
+
 <a id="lakefile"></a>
 
 ## How to Read `lakefile.toml`
@@ -99,6 +103,25 @@ When reclaiming disk space, proceed from lightweight derived artifacts to full w
 
 <a id="windows"></a>
 
+<a id="github-acceleration"></a>
+
+## Public GitHub acceleration without global configuration
+
+Create an isolated environment with `uv venv .venv`. If your Python project in `./python` declares a commit-pinned GitHub dependency, rewrite the URL for that installation. From the Lean project root, use `QATLIB_GITHUB_PREFIX` when preparing the workspace:
+
+```bash
+GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0='url.https://ghfast.top/https://github.com/.insteadOf' \
+  GIT_CONFIG_VALUE_0='https://github.com/' \
+  uv pip install --python .venv/bin/python ./python
+
+QATLIB_GITHUB_PREFIX='https://ghfast.top/' qatlib-env prepare
+```
+
+`QATLIB_GITHUB_PREFIX` takes an HTTPS proxy prefix ending in `/`. The tool appends an `insteadOf` entry for Git subprocesses. The same Git rewrite works for Git fetches issued by Lake. Use `LAKE_PKG_URL_MAP` for per-package alternatives such as local mirrors. Keep upstream URLs and full commit IDs in lockfiles. If you already have `GIT_CONFIG_*` entries, append the rewrite at the next index.
+
+Send only public dependencies through a third-party proxy. A pinned commit ID binds the tree and file contents. Git verifies object hashes on receipt, and the caller must verify that the checkout matches the trusted lock. The proxy can still withhold or delay delivery. A branch name can resolve to an arbitrary ref supplied by the proxy, and release binaries are outside the Git object tree. Before running a downloaded program, establish its provenance with an official SHA-256 or signature obtained from a trusted channel, or download it from the official source.
+
 ## Windows Cross-Volume Setups and Long Paths
 
 In typical Windows deployments, developers often place the cache directory on the system drive (for example, `C:\lake-cache`) while keeping active worktrees on a separate data drive (for example, `D:\work\project`). Because NTFS restricts hard links to a single volume, attempting to create a cross-volume hard link fails with an error analogous to POSIX `EXDEV` (the exact Windows error code and message vary by calling layer). Placing the cache and worktrees on different drives is nevertheless a valid, fully supported configuration—the key is understanding how each build stage behaves across volume boundaries:
@@ -112,6 +135,18 @@ In typical Windows deployments, developers often place the cache directory on th
 To avoid path-length issues caused by deeply nested directories on Windows, place workspaces and cache directories near drive roots under short base paths whenever possible. Keep the boundary between the two Windows long-path mechanisms distinct: setting `core.longpaths=true` in Git for Windows lifts path-length limits only for Git's own operations, whereas removing the legacy 260-character `MAX_PATH` limit across Win32 APIs requires both enabling `LongPathsEnabled` in the system registry and having each executable explicitly declare `longPathAware` in its application manifest. Long-path compatibility must therefore be verified separately across Lake, Python, external archive extraction utilities, and the system Recycle Bin. Note also that enabling long-path support does not lift NTFS's physical restriction against cross-volume hard links.
 
 [Lake save/restore implementation](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Common.lean) · [Windows hard links](https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions) · [Win32 path length limitation](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation) · [Git for Windows](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)
+
+For a repository with long paths, `git clone --config core.longpaths=true <URL>` applies the setting to the initial checkout and to linked worktrees that inherit the repository configuration. Python tool installation has its own cross-volume behavior. If the uv cache is on C: and a virtual environment is on D:, uv copies files when it cannot hard-link them. The fallback warning can appear after a successful install. The virtual environment's volume carries the cost of these copies.
+
+When investigating cache misses, use `git ls-files --eol` to inspect index bytes, worktree bytes, and attributes. Git's `core.autocrlf=true` may check out CRLF from an LF index. Lake 4.35 hashes module inputs with `Hash.ofText`, which normalizes CRLF, and the corresponding Mathlib download keys normalize it in `hashFileContents`. Check the hash paths for the versions you use, along with the platform, dependency lock, and compiler options. The root repository's `.gitattributes` governs its own files. Each Lake Git dependency checks out files under its own attributes.
+
+In a native Lean 4.35.0 test on Windows, two copies of the same module with different line endings produced the same `depHash`. Lake compiled the LF copy first, reported `Reused` for the CRLF copy, and copied the `.ilean` from its default cache on C: into the workspace on D:. This test covered native Lake text inputs and cross-volume restoration.
+
+On Windows, the tools set `core.autocrlf=input` for the Lake child process that materializes locked Git dependencies. New dependency checkouts retain the stored line endings unless upstream attributes explicitly specify a conversion. Git still normalizes existing CRLF checkouts when checking for modifications.
+
+When multiple worktrees run `prepare` against the same cache, Windows serializes preparation through the cache's `.fetch.lock` file. Incremental compilation in separate worktrees can still run concurrently.
+
+[Lake 4.35 module inputs](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Module.lean) · [Lake 4.35 text hash](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Trace.lean) · [Mathlib 4.35 cache hashing](https://github.com/leanprover-community/mathlib4/blob/56a005855ea17e0b0958f73ec801ae140b0a1679/Cache/Hashing.lean)
 
 On Windows, managed builds—as well as cache-preparation runs that invoke compilation—execute through native Lake while using a Windows Job Object to enforce hard CPU and memory limits across the entire process group. Because `qatlib-env` ships with a non-empty default list of heavy-module matching patterns and Windows lacks the dedicated POSIX compiler wrapper required to allocate isolated execution slots for matched heavy modules or inject per-invocation `-M` memory caps, managed Lake fails fast if it detects non-empty heavy-module rules on Windows. On Windows hosts, explicitly set `heavy_patterns = []` in an active configuration file and verify that the setting has taken effect via `qatlib-env config explain --json`. For details on Job Object process-tree initialization and lifecycle cleanup, see [Runner Process Isolation](runner.md#windows-job-object).
 

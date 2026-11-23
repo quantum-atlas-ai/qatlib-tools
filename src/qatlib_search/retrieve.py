@@ -506,6 +506,10 @@ def query(text: str, project=None, db=None, *, limit=10, cite=None, kind=None, r
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--version"]:
+        from importlib.metadata import version
+        print(f'qatlib-retrieve {version("qatlib-tools")}')
+        return 0
     # Only project/db/help are global. Everything after "--" is literal query
     # text, including words such as "index" that would otherwise select writes.
     position = 0

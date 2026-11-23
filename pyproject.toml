@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qatlib-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Controlled Lean environments, read-only retrieval, and shared lexical gates"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,12 +16,34 @@ dependencies = [
 ]
 
 [project.scripts]
+qatlib-lean-tools = "qatlib_search.lean_tools:main"
 qatlib-env = "qatlib_env.__main__:main"
 qatlib-forge = "qatlib_forge.__main__:main"
 qatlib-retrieve = "qatlib_search.retrieve:main"
 
 [project.optional-dependencies]
 validation = ["jsonschema>=4"]
+
+[dependency-groups]
+build = ["hatchling"]
+dev = [
+    {include-group = "build"},
+    "commitizen>=4.16.4,<5",
+    "jsonschema>=4",
+    "packaging",
+    "pytest",
+]
+
+[tool.commitizen]
+version_provider = "uv"
+tag_format = "v$version"
+annotated_tag = true
+update_changelog_on_bump = true
+changelog_start_rev = "8e08137ae145cbd7faf12f47058b9883ee9f63d7"
+pre_bump_hooks = [
+    "uv run --no-sync python scripts/check_human_contracts.py",
+    "uv run --locked python -m pytest -q",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/qatlib_env", "src/qatlib_forge", "src/qatlib_search"]

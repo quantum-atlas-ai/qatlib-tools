@@ -193,5 +193,41 @@ s3Auth="{PUBLIC}"
         self.assertTrue(all("Credential=public_fixture_access_12345/" in (value or "") for value in requests))
 
 
+    def test_prepare_uses_locked_upstream_for_a_cold_mirror_checkout(self):
+        project = self.root / "consumer"
+        dependency = project / ".lake/packages/Qatlib"
+        dependency.mkdir(parents=True)
+        (dependency / "lakefile.toml").write_text('name = "Qatlib"\n[[lean_lib]]\nname = "Qatlib"\n')
+        (dependency / "lake-cache.toml").write_text('''
+[cache]
+defaultService = "fixture"
+[[cache.service]]
+name = "fixture"
+revisionEndpoint = "https://cache.example.invalid/revisions"
+''')
+        git = ["git", "-C", str(dependency)]
+        subprocess.run([*git, "init", "-q"], check=True)
+        snapshot(dependency)
+        revision = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+        (project / "lake-manifest.json").write_text(json.dumps({"packages": [{
+            "name": "«Qatlib»", "type": "git", "rev": revision,
+            "url": "https://github.com/quantum-atlas-ai/qatlib.git",
+        }]}))
+        env = credential_env({"HOME": str(self.home), "ELAN_TOOLCHAIN": "leanprover/lean4:v4.35.0",
+                              "QATLIB_REPOSITORY": "owner/root-project",
+                              "QATLIB_PKG_MIRROR": str(self.root / "mirror")})
+        for origin in (str(self.root / "mirror/.lake/packages/Qatlib"),
+                       "https://ghfast.top/https://github.com/quantum-atlas-ai/qatlib.git",
+                       "https://github.com/other/mirror.git"):
+            with self.subTest(origin=origin), patch.object(prepare, "_fetch", return_value="404") as fetch:
+                subprocess.run([*git, "config", "remote.origin.url", origin], check=True)
+                self.assertEqual(prepare.restore_repository(project, dependency, env), "missing")
+                self.assertEqual(fetch.call_args_list[0].args[0],
+                                 "https://cache.example.invalid/revisions/quantum-atlas-ai/qatlib/"
+                                 f"tc/leanprover--lean4---v4.35.0/{revision}.jsonl")
+                self.assertEqual(subprocess.check_output(
+                    [*git, "config", "remote.origin.url"], text=True).strip(), origin)
+
+
 if __name__ == "__main__":
     unittest.main()

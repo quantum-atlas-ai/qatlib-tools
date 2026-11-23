@@ -78,6 +78,19 @@ class WorkspaceCommandsTests(unittest.TestCase):
             self.assertEqual(child['GIT_CONFIG_VALUE_0'], 'preserved')
         self.assertEqual(mirror.call_args.args[1]['GIT_CONFIG_COUNT'], '2')
 
+    def test_windows_locked_checkout_does_not_convert_dependency_line_endings(self):
+        env = {**self.env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.longpaths",
+               "GIT_CONFIG_VALUE_0": "true"}
+        with patch.object(ws.sys, "platform", "win32"), patch.object(ws, "ensure_pkg_mirror"), \
+             patch.object(ws, "run") as run:
+            ws.resolve_dependencies(self.project, env)
+        child = run.call_args.kwargs["env"]
+        self.assertEqual(child["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(child["GIT_CONFIG_KEY_0"], "core.longpaths")
+        self.assertEqual(child["GIT_CONFIG_KEY_1"], "core.autocrlf")
+        self.assertEqual(child["GIT_CONFIG_VALUE_1"], "input")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+
     def test_check_module_and_full_library_targets(self):
         with patch.object(ws, 'run') as run:
             ws.check(self.project, self.env, ['Consumer.Topic'])

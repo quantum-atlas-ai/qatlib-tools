@@ -85,7 +85,7 @@ class Corpus:
                         yield repo, relative, path.relative_to(source).with_suffix('').as_posix().replace('/', '.')
 
 
-def discover(project: str | Path | None = None) -> Corpus:
+def discover(project: str | Path | None = None, *, source_only: bool = False) -> Corpus:
     root = project_root(project)
     inputs: dict[str, str] = {}
     warnings: list[str] = []
@@ -109,7 +109,7 @@ def discover(project: str | Path | None = None) -> Corpus:
             raise ValueError(f'{config_path}: invalid Lake TOML') from error
         libs = config.get('lean_lib', [])
         defaults = config.get('defaultTargets', [])
-        selected = [lib for lib in libs if lib.get('name') in defaults]
+        selected = libs if source_only else [lib for lib in libs if lib.get('name') in defaults]
         if not selected and len(libs) == 1:
             selected = libs
         if not selected:
@@ -137,7 +137,7 @@ def discover(project: str | Path | None = None) -> Corpus:
             raise ValueError(f'{path}: checkout {revision} differs from locked revision {pin}')
         read(path / 'lean-toolchain', path)
         read(path / 'lake-manifest.json', path)
-        bib_text = read(path / 'docs/references.bib', path).decode('utf-8')
+        bib_text = '' if source_only else read(path / 'docs/references.bib', path).decode('utf-8')
         if bib_text:
             entries, errors = parse_bibliography_entries(
                 bib_text, str(path / 'docs/references.bib'), allow_empty=pin is None)
