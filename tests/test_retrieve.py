@@ -414,6 +414,40 @@ def test_locked_dependency_discovery_bibliography_and_pin(corpus):
         query(corpus, 'up')
 
 
+@pytest.mark.parametrize('stored_eol, checkout_eol', [(b'\n', b'\r\n'), (b'\r\n', b'\n')])
+def test_locked_dependency_text_identity_survives_checkout_eol(corpus, stored_eol, checkout_eol):
+    project, _, _ = corpus
+    upstream = project / '.lake/packages/Upstream'
+    files = {
+        upstream / 'lakefile.toml': b'name="Upstream"\n[[lean_lib]]\nname="Upstream"\n',
+        upstream / 'Upstream/Basic.lean': b'theorem retained : True := True.intro\n',
+        upstream / 'docs/references.bib': b'@article{Up2026, title={Text identity}}\n',
+    }
+    for path, data in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data.replace(b'\n', stored_eol))
+    subprocess.run(['git', 'init', '-q', str(upstream)], check=True)
+    subprocess.run(['git', '-C', str(upstream), 'config', 'core.autocrlf', 'false'], check=True)
+    revision = snapshot(upstream)
+    (project / 'lake-manifest.json').write_text(json.dumps({'packages': [
+        {'name': 'Upstream', 'type': 'git', 'rev': revision}]}))
+
+    original = build(corpus)
+    before = query(corpus, 'retained', repo='Upstream')['results'][0]
+    for path, data in files.items():
+        path.write_bytes(data.replace(b'\n', checkout_eol))
+    for result in (query(corpus, 'retained', repo='Upstream'),
+                   build(corpus, changed=True), build(corpus)):
+        assert result['content_identity'] == original['content_identity']
+    after = query(corpus, 'retained', repo='Upstream')['results'][0]
+    assert (after['source_hash'], after['line'], after['dirty']) == (before['source_hash'], before['line'], False)
+
+    config = upstream / 'lakefile.toml'
+    config.write_bytes(files[config] + b'# changed configuration\n')
+    with pytest.raises(ValueError, match='locked source differs from its Git blob'):
+        build(corpus, changed=True)
+
+
 def test_cli_parameter_positions_aliases_help_and_errors(corpus, capsys):
     project, _, db = corpus
     for argv in [['--project', str(project), '--help'], ['query', '--project', str(project), '--help'],

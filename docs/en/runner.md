@@ -1,48 +1,159 @@
-# CI Runner and Process Troubleshooting
+# Self-Hosted Runners
+
+This page attaches an Ubuntu or Debian host to a repository. Decide which code that machine may run before creating accounts or systemd units. In this tools repository, both `ci.yml` and `docs.yml` set `runs-on: ubuntu-latest`. Registering a runner under other labels does not move those two workflows onto this machine. A downstream workflow is scheduled here when its `runs-on` matches the labels you register.
+
+Page cache, processes left after cancellation, and the Windows Job Object are indexed by symptom in [Runner troubleshooting](runner-troubleshooting.md). Do not write `memory.reclaim` during deployment.
+
+The examples use lane `pub` and instance `builder-a`. A lane is `pub`, `dev`, or `secondary`. An instance name matches `[A-Za-z0-9][A-Za-z0-9._-]*`. The default root is `/data/qatlas-ci`, overridable with `QATLIB_CI_ROOT`. The default systemd directory is `/etc/systemd/system`, overridable with `QATLIB_SYSTEMD_DIR`. Replace `OWNER/REPO` with the target repository.
+
+## 1. Confirm the controllers and the trust boundary
+
+On Linux or WSL2:
+
+```bash
+stat -fc %T /sys/fs/cgroup
+```
+
+On success the output is `cgroup2fs`, and services are managed by systemd. Write down the memory ceilings of the container, the WSL virtual machine, and the physical host as three separate numbers. Register only repositories you are willing to compile on this machine. Do not attach unaudited external code to a high-privilege private runner.
+
+## 2. Read `--help` from the pinned source
+
+From the root of the `qatlib-tools` checkout you intend to run:
+
+```bash
+bash src/qatlib_env/setup_runner.sh --help
+```
+
+From a wheel install, locate the bundled script and read its help:
+
+```bash
+bash "$(python -c 'from pathlib import Path; import qatlib_env; print(Path(qatlib_env.__file__).with_name("setup_runner.sh"))')" --help
+```
+
+The help lists `init`, `known-hosts`, and `register`. Both `init` and `register` run as root. Compare the paths and quotas with the script you pinned, then run it.
+
+## 3. `init`: accounts and the shared slice, per lane
+
+```bash
+sudo bash src/qatlib_env/setup_runner.sh init
+```
+
+`QATLIB_LANES` selects the lanes. The default is `pub dev secondary`. Each lane receives:
+
+- the service account and group `qatlas-ci-<lane>`, with home `$QATLIB_CI_ROOT/<lane>`
+- that lane's `elan`, `venv`, `lake-cache`, `pkg-mirror`, and `runners/`
+- a template unit `qatlas-<lane>-runner@.service` whose `User=` and `Group=` are `qatlas-ci-<lane>`
+
+The same `init` writes the shared `qatlas-ci.slice`. The slice defaults are `MemoryHigh=90%` and `MemoryMax=95%`, overridable with `QATLIB_HOST_MEMORY_HIGH`, `QATLIB_HOST_MEMORY_MAX`, and `QATLIB_HOST_CPU_QUOTA`.
+
+On success, `id qatlas-ci-pub` resolves, and `systemctl cat qatlas-ci.slice` shows those watermarks.
+
+## 4. The account follows the lane; the directory and limits follow the instance
+
+When `setup_runner.sh` writes the template unit, `User=` is the lane account. `src/qatlib_env/runner_config.py` places the instance directory at `base / lane / "runners" / instance`. Therefore:
+
+| | Shared by every instance of one lane | Separate for each instance |
+| --- | --- | --- |
+| Identity | Service account `qatlas-ci-<lane>` | Registration name `qatlas-<lane>-<instance>`, and the registration token used for that registration |
+| Directories | The toolchain, virtual environment, and package mirror under the lane root | `$QATLIB_CI_ROOT/<lane>/runners/<instance>/`, including that instance's `.env`, `resources.toml`, and work directory |
+| systemd | Template `qatlas-<lane>-runner@.service` and the parent slice | Instance `qatlas-<lane>-runner@<instance>.service`, plus `qatlas-<lane>-runner@<instance>.service.d/resources.conf` |
+
+Both instances of `pub` have `User=qatlas-ci-pub`. Their work directories and resource drop-ins differ.
+
+## 5. `register`: one instance
+
+On GitHub, an authenticated `gh` that may create a registration token can omit `--token`. The script requests a short-lived token. Otherwise pass the token, and do not commit it:
+
+```bash
+sudo bash src/qatlib_env/setup_runner.sh register pub builder-a \
+  --url https://github.com/OWNER/REPO \
+  --labels self-hosted,linux,x64 \
+  --cpu-quota 200% \
+  --memory-high 16G \
+  --memory-max 20G
+```
+
+If `--labels` is omitted, a GitHub instance uses `self-hosted,linux,x64`. Gitea requires `--token`. Its default labels are `ubuntu-latest:host,self-hosted:host`, and any other label without a colon receives a `:host` suffix. A URL containing `github.com` registers with GitHub; any other URL registers with Gitea. `--forge github` or `--forge gitea` states the choice.
+
+`register` always writes an instance drop-in. If you omit `--cpu-quota`, `--memory-high`, and `--memory-max`, that drop-in sets all three to `infinity` and overrides the same keys in the template unit. To keep one instance inside a smaller budget than the slice, pass the three options on this command.
+
+On success, `systemctl is-active qatlas-pub-runner@builder-a.service` prints `active`. The repository's runner settings show the name `qatlas-pub-builder-a` and the labels you passed.
+
+## 6. Match the labels to the workflow that should run here
+
+Open `runs-on` in the downstream workflow. The labels it lists need to be registered on this instance. The two workflows in this tools repository say `ubuntu-latest`, so they stay on GitHub-hosted runners.
+
+## 7. Read the effective limits back
+
+```bash
+systemctl show qatlas-pub-runner@builder-a.service \
+  -p User -p Group -p WorkingDirectory -p Slice \
+  -p ControlGroup -p CPUQuota \
+  -p EffectiveMemoryHigh -p EffectiveMemoryMax -p KillMode
+```
+
+Check:
+
+- `User` and `Group` are `qatlas-ci-pub`
+- `WorkingDirectory` is that instance directory
+- `Slice` is `qatlas-ci.slice`
+- `EffectiveMemoryHigh` and `EffectiveMemoryMax` equal the values passed to `register`
+- `KillMode` is `control-group`. It sweeps the unit when the whole service stops. Cancelling one job in the web UI does not stop the service
+
+Also read the drop-in `qatlas-pub-runner@builder-a.service.d/resources.conf` and the live `memory.current` in that instance's cgroup directory.
+
+## 8. Accept the result as the lane's service account
+
+The unit loads `.env` from the instance directory. Read the configuration as that account with that file, not from root's shell:
+
+```bash
+runuser -u qatlas-ci-pub -- bash -c 'set -a && . /data/qatlas-ci/pub/runners/builder-a/.env && set +a && qatlib-env config explain --json'
+runuser -u qatlas-ci-pub -- bash -c 'set -a && . /data/qatlas-ci/pub/runners/builder-a/.env && set +a && qatlib-env pool status'
+```
+
+If `QATLIB_CI_ROOT` is different, use the path from `systemctl show -p EnvironmentFiles`. On success, the first command prints JSON containing `resources` and `paths`, without preparing dependencies or acquiring a lease. The second prints pool-status JSON.
+
+On Linux, a heavy build prefers a systemd user transient scope with hard memory and CPU limits. If the command has to stay in an outer cgroup, the backend requires a finite `memory.max`, an explicit CPU quota, and real headroom on every visible ancestor. `memory.high` alone, or a CPU affinity mask alone, is not that check.
+
+## 9. Four drills
+
+Before accepting production jobs, run a task that spawns several levels of child processes through each of these: a normal exit, a cancellation from the web UI, a per-module timeout, and a whole-stage timeout. After each one, look at:
+
+- whether any `lake` or `lean` from that job's cgroup is still in the process table
+- `memory.events` for that cgroup
+- `qatlib-env pool status`, run as the account from step 8, and whether the lease was released
+- the job conclusion, which should be the drill you just ran
+
+The instance is accepted when all four leave a clean machine. If memory stays high, or a process remains after cancellation, open [Runner troubleshooting](runner-troubleshooting.md) for that symptom. Do not fold a reclaim into the deploy commands.
 
 <a id="note-memory"></a>
 
-## cgroup Memory Accounting
+## Accounted memory stays high
 
-- **Symptom**: Host-level metrics show ample physical memory and no high-RSS build processes are running, yet newly submitted build jobs stall waiting for admission and eventually fail after timing out.
-- **Underlying Mechanism**: In Linux cgroup v2, `memory.current` accounts for the control group and all of its descendants together, **covering both process anonymous memory (`anon`) and the kernel page cache (`file`)**. After intensively unpacking `.ltar` cache archives and reading or writing hundreds or thousands of `.olean` artifacts, tens of GiB of file page cache can remain charged to the service's cgroup long after the compiler processes have exited. Suppose a cgroup layer sets `memory.high = 40 GiB` and residual page cache leaves `memory.current` at `36 GiB`: only `4 GiB` of accounted headroom remains at that layer—even if the physical host still has over 100 GiB of free RAM or an outer layer sets a higher `memory.max`, the admission controller checks every visible ancestor layer upward and will still be blocked by that tightest `4 GiB` ceiling (see the [Linux kernel cgroup v2 memory documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)).
-- **Why not relax hard admission using `current - inactive_file`?** During live troubleshooting, inspecting `memory.current`, `memory.high`, `memory.max`, `memory.stat`, `memory.events`, and `memory.pressure` layer by layer along the target service or process cgroup—and comparing `anon`, `file`, `shmem`, `inactive_file`, `file_dirty`, and `file_writeback`—does clearly distinguish active process memory from historical file page cache. However, `inactive_file` is merely a hot/cold classification on the kernel's LRU lists, not a guarantee of immediate, zero-cost reclamation: it may include pages currently under writeback or still memory-mapped, and reading across multiple control files does not yield an atomic snapshot. Moreover, although `shmem` is counted under `file`, it actually resides on the anonymous LRU lists, so memory-type counters and LRU-list counters must not be conflated. Subtracting `inactive_file` during pre-admission estimation would not only treat potentially non-reclaimable memory as guaranteed quota, but also violate the contract of the execution backend, which enforces hard checks against raw `max`/`current` values. Therefore, `qatlib-env` strictly takes the minimum non-negative value of `high`/`max - current` across all visible ancestor layers, combining it with host `MemAvailable`, system reservations, and shared resource pool ceilings to determine admission. Whenever a finite quota is observed without a valid `current` value—or when a quota file itself is unreadable or malformed—the probe conservatively rejects admission with **zero headroom** and explicitly surfaces `memory.error` under `resources.limits` in `config explain` output (outer host cgroup ancestors hidden inside containers must be inspected from the host side).
-- **Standard Remedies and Operating Boundaries (Idle Maintenance Windows)**:
-  1. **Issue user-space page-cache release hints on confirmed-cold archives or large artifacts**: Once an archive has been completely extracted, all write handles are closed, and the file will not be read again soon, reopen a file descriptor and call `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)`. Passing `0` for both offset and length applies the hint to the entire file; partial-range releases must be page-aligned. Data requiring persistence must first be synced to disk by the writer, as unflushed dirty pages will not be freed this way. Close the descriptor afterward and resample to verify that the `file` counter drops. Because this operation also affects any concurrent readers sharing the same underlying physical file, run it only on files confirmed to be cold (see [`posix_fadvise(2)`](https://man7.org/linux/man-pages/man2/posix_fadvise.2.html)).
-  2. **Perform targeted administrative reclamation on an idle cgroup**: Pause the target runner from accepting new jobs and confirm that no active workloads remain in the control group. A privileged administrator can then write a modest reclaim target to `memory.reclaim` inside the target cgroup directory (for example, `printf '%s\n' 512M > memory.reclaim`; the kernel may reclaim slightly more or less than requested and may return `EAGAIN` if fewer reclaimable pages exist than requested). Re-check `memory.current`, `memory.stat`, `memory.events`, and `memory.pressure`, and resume scheduling only after confirming that headroom has recovered. Never place automatic reclaim writes on the per-job hot path, and avoid writing to global `drop_caches` on shared hosts, which evicts hot caches that co-located services rely on for performance (see [`memory.reclaim`](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files) · [`drop_caches`](https://docs.kernel.org/admin-guide/sysctl/vm.html#drop-caches)).
+When the host still looks to have free memory, no high-RSS compiler is running, and new jobs wait for admission, read [cgroup memory accounting](runner-troubleshooting.md#note-memory). Hard admission uses `high` or `max` minus `current` on each visible ancestor. It does not treat `inactive_file` as quota that can be released immediately.
 
 <a id="note-cancellation"></a>
 
-## Job Cancellation and Subprocess Cleanup
+## A process remains after the job is cancelled
 
-- **Symptom**: The GitHub or Gitea web UI already shows a build job as cancelled or timed out, and the runner service still reports online and healthy, yet host memory remains pinned above 90% accompanied by severe reclaim thrashing; inspecting the process table frequently reveals orphaned `lake` or `lean` processes reparented to `PPID=1`.
-- **Underlying Mechanism**: Setting `KillMode=control-group` on a `systemd` service unit **sweeps stray processes inside the control group only when the entire service stops or restarts**. A self-hosted runner, however, is a long-lived daemon: cancelling a single CI job in the web UI only prompts the runner to terminate the top-level job wrapper process without causing `systemd` to stop the runner service itself. Once deeply spawned `lake` or `lean` descendants detach from their parent and become `PPID=1` orphans, they remain inside the runner service's cgroup and keep consuming memory. After accounted usage exceeds `MemoryHigh`, the kernel initiates high-frequency direct reclaim and allocation throttling; yet as long as usage stays below the `MemoryMax` hard ceiling without triggering an in-cgroup OOM kill, these processes get stuck in a tug-of-war—forcibly throttled and reclaimed while continuing to allocate memory—dragging the entire control group into prolonged thrashing (see [`systemd.kill`](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html) · [`systemd` resource control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)).
-- **Standard Remedies and Operating Boundaries**:
-  1. **Per-job isolated process domains and parent-death reaping**: On Linux, the shared supervisor spawns a dedicated `guardian` process for each managed command, and `guardian` sets `PR_SET_PDEATHSIG` so that it still receives a signal and completes cleanup even if the parent supervisor is hard-killed. Because setting a parent-death signal on the workload process alone cannot cover descendants that detach from the session via double-fork or `setsid`, `guardian` also enables `PR_SET_CHILD_SUBREAPER` to adopt orphaned descendants, verifies process identity by combining PID and start time, and drives the managed process group and all adopted descendants through `TERM`, a grace-period wait, `KILL`, and iterative reaping. Normal completion, manual cancellation, per-module timeouts, and whole-stage timeouts all share this teardown pipeline while preserving the original command's `stdin`, output capture, and signal exit-code contracts. In its implementation, `guardian` launches as a separate process to avoid deadlocks caused by using `preexec_fn` inside multithreaded parent processes; indiscriminate kills matching `lean` or `lake` by process name alone are strictly prohibited on shared hosts.
-  2. **Kernel control-group hard limits as a second line of defense**: Constrained commands execute inside a per-job transient `systemd` scope configured with `MemoryMax`, `MemorySwapMax=0`, `CPUQuota`, `RuntimeMaxSec`, and `KillMode=control-group`, defining group-wide boundaries for memory, swap, CPU, maximum runtime, and whole-group termination. Even in extreme cases where `guardian` itself is hard-killed at the same time, the kernel and `systemd` still contain and tear down the scope according to its resource ceilings and runtime deadline rather than waiting until the long-lived runner service stops. This layer requires a Linux environment with functional `systemd` user-mode CPU and memory controllers supporting these properties; if a property is unsupported or permissions are insufficient, the command fails immediately with an explicit error and never silently falls back to unconfined execution. Note, however, that this mechanism cannot protect against leftover state across a host crash, nor does it replace lifecycle management owned by an external container daemon.
-  3. **Bring ad-hoc experiments, directory enumeration, and text searches inside resource boundaries**: Everyday Python scripts and recursive searches can likewise leave behind stray child processes or inadvertently scan massive caches across multiple worktrees. Even outside a Lean project, you can invoke `qatlib-env exec -- <command>` directly for bounded execution: the default limits are a **300-second** runtime deadline, **4 GiB** of memory, and **1 CPU**, adjustable as needed via `--timeout`, `--memory-mib` (minimum `2048` MiB), and `--cpu`. This entrypoint reuses CPU and memory leases from the local shared resource pool; admission waiting is likewise bounded by a timeout, requests exceeding the pool's hard ceiling are rejected outright, and existing budgeting and admission rules for Lean builds remain unchanged. If the user-space supervisor triggers a timeout, the command returns exit status `124`; if the kernel runtime limit fires first, the exit status produced by signal termination in the underlying execution chain is preserved. Keep in mind that callers must opt into `qatlib-env exec` explicitly—it cannot automatically intercept raw shell commands issued directly by an external agent harness—and the local shared admission pool is not a background scheduling daemon, adding neither a quota database nor an I/O governor.
-
-     ```bash
-     qatlib-env exec --timeout 300 --memory-mib 4096 --cpu 1 -- python experiment.py
-     # Search only explicit source directories and explicitly prune derived trees
-     qatlib-env exec --timeout 60 -- rg --glob '*.lean' --glob '!.lake/**' --glob '!**/.lake/**' --glob '!.venv/**' --glob '!**/.venv/**' --glob '!.agent-tasks/**' --glob '!**/.agent-tasks/**' 'pattern' Source verification
-     ```
-
-     The `.ignore` file at the root of the `qatlib-tools` repository already excludes `.lake`, `.git`, `.venv`, `.agent-tasks`, `dist`, and `build` for tools that honor ignore files (such as `rg` in its default mode), but it does not automatically protect other worktrees or rewrite configurations for downstream consumer repositories. Plain `grep` and `find` do not read `.ignore` at all, and `rg --no-ignore` explicitly bypasses ignore rules, so `.lake`, `.venv`, and `.agent-tasks` must be excluded manually in those scenarios; custom directory-enumeration scripts should likewise prune those directories before recursing into them rather than filtering results after a full disk scan. Prevent unnecessary traversal at the source first, and use bounded runtime deadlines as a backstop.
-  4. **Cross-platform handle binding and stray-process forensics**: On Windows, managed build mode enforces group-wide CPU and memory hard limits along with lifecycle binding by attaching a `Job Object` during child process startup; closing the last Job handle causes the kernel to atomically terminate every remaining child process in the group (see [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)). By contrast, the general-purpose `qatlib-env exec` entrypoint above supports Linux only and explicitly rejects invocations on other platforms. When investigating suspected orphan processes on live hosts, do not jump to conclusions from a single `PPID=1` snapshot (`PPID=1` is only one clue); correlate PID, start time, full command line, working directory, and cgroup membership against the growth rates of the `high`, `max`, and `oom` counters in `memory.events`. When containerized workloads are involved, cross-check against the actual namespaces of the external container daemon as well.
+When the web UI already shows a cancellation, the service is still online, and a compiler process has `PPID=1`, read [Job cancellation and subprocess cleanup](runner-troubleshooting.md#note-cancellation). `PPID=1` means the parent is gone. Cancelling one job does not stop the long-running service, so that cancellation does not sweep the unit through the service's `KillMode=control-group`.
 
 <a id="windows-job-object"></a>
 
 ## Windows Job Object
 
-In Windows managed mode, the supervisor first spawns a bootstrap child process waiting for a release signal, assigns it to a [Windows Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) configured with CPU rate limits, memory ceilings, and the `KILL_ON_JOB_CLOSE` flag, and releases the child to execute the actual build command only after confirming that both job attachment and limit configuration succeeded; if either step fails, the supervisor refuses to start the managed command rather than falling back to unprotected execution. Whether the job exits normally, is cancelled mid-flight, or hits a timeout, the supervisor closes the corresponding Job handle so the kernel thoroughly reclaims every process in the job—including transient descendants that user-space polling never had a chance to observe—while fine-grained per-module timeouts continue to be tracked by user-space process observation. For enabling managed mode and its filesystem requirements, see the [Windows section of the Build Environment guide](build.md#windows); the general-purpose `qatlib-env exec` entrypoint currently supports only Linux environments equipped with the required cgroup controllers.
+See [Windows PowerShell installation](install.md#windows-powershell) for first installation, long paths, and UTF-8 settings.
+
+In Windows managed mode, the supervisor starts a bootstrap child that waits for release, assigns it to a [Windows Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) with a CPU limit, a memory ceiling, and `KILL_ON_JOB_CLOSE`, and releases the real command only after both the assignment and the limits succeed. If either step fails, the supervisor refuses to start and does not fall back to an unconfined run. After a normal exit, a cancellation, or a timeout, the supervisor closes the Job handle and the kernel reclaims the processes in the job. Per-module timeouts stay with the user-space watcher. Enabling the mode and the filesystem requirements are in the [Windows section of the build guide](build.md#windows). `qatlib-env exec` is available on Linux hosts that have the required cgroup controllers. How to correlate process identity after a cancellation is in the [same section of the troubleshooting page](runner-troubleshooting.md#windows-job-object).
 
 <a id="runner"></a>
 
-## Self-Hosted Runners
+## Deployment order
 
-1. **Verify system controllers and trust boundaries**: On Linux or WSL2, confirm that services are managed by `systemd` and that `stat -fc %T /sys/fs/cgroup` returns `cgroup2fs`, while clarifying the respective memory ceilings across the container, WSL2 VM, and physical host layers. Assign each runner instance its own working directory, dedicated registration credentials, and isolated runtime account; never connect unaudited, untrusted external code to private high-privilege runners.
-2. **Review the setup script and its two-stage responsibilities**: In a pinned `qatlib-tools` source checkout, run `bash src/qatlib_env/setup_runner.sh --help` to view complete usage; in a wheel installation, run `bash "$(python -c 'from pathlib import Path; import qatlib_env; print(Path(qatlib_env.__file__).with_name("setup_runner.sh"))')" --help` to locate the bundled script. Designed for Ubuntu / Debian + `systemd` environments, the script splits provisioning into two stages by responsibility: `init` configures host dependencies, a dedicated service account, and a shared parent `slice`; `register` registers a single runner instance and writes service-level resource limits. Always review target paths, credential scopes, and quota values manually before execution.
-3. **Co-budget the parent `slice` and per-instance quotas**: Declare `Slice`, `CPUQuota`, `MemoryHigh`, `MemoryMax`, `TasksMax`, and `KillMode=control-group` together in the `[Service]` section of the service drop-in configuration, ensuring that the combined concurrent peaks of all instances match the parent `slice` ceiling while leaving ample safety margin for the runner daemon itself, kernel file page cache, and other co-located services on the host. After writing the configuration and reloading `systemd`, run `systemctl show <service> -p ControlGroup -p Slice -p EffectiveMemoryHigh -p EffectiveMemoryMax -p KillMode` to read back and verify each effective setting, and inspect live accounting directly on the corresponding `/sys/fs/cgroup/...` node.
-4. **Validate admission under the actual runtime account**: Switch to the runner's actual service user and run `qatlib-env config explain` followed by `qatlib-env pool status`. On Linux, heavy build workloads preferentially run inside a constrained `systemd` user-mode transient scope; when environmental constraints require inheriting an existing outer cgroup instead, the execution backend strictly enforces a finite `memory.max`, an explicit CPU quota, and real headroom across every visible ancestor layer—configuring only a soft `memory.high` watermark or binding CPU affinity does not satisfy hard-isolation admission requirements.
-5. **Run end-to-end timeout and cancellation drills**: Before accepting production traffic, use a workload that spawns multi-layer child processes to rehearse all four scenarios—normal exit, manual cancellation, per-module timeout, and whole-stage timeout—and inspect the process table, target cgroup, shared resource pool leases, and `memory.events` counters after each drill. If memory usage stays persistently elevated during drills or routine operation, work through [cgroup Memory Accounting](#note-memory) and [Job Cancellation and Subprocess Cleanup](#note-cancellation) above according to the observed symptoms.
+1. `stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`, and you have written down which repositories this machine may run.
+2. Read `setup_runner.sh --help` from the pinned source.
+3. As root, run `init` and confirm the lane account `qatlas-ci-<lane>` and `qatlas-ci.slice`.
+4. As root, run `register <lane> <instance>` with labels and that instance's CPU and memory limits.
+5. Read back `User`, `WorkingDirectory`, `Slice`, and `EffectiveMemoryMax` with `systemctl show`.
+6. As that lane's service account, with the instance `.env` loaded, run `qatlib-env config explain --json` and `qatlib-env pool status`.
+7. Finish a normal exit, a cancellation, a per-module timeout, and a whole-stage timeout. Anything left over goes to [troubleshooting](runner-troubleshooting.md).

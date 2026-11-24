@@ -16,6 +16,27 @@ NAME = "0123456789abcdef.json"
 RECORD = {"schemaVersion": "2026-02-25", "service": "fixture", "data": {"x": 1}}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows file locking")
+def test_windows_shared_fetch_lock_serializes_two_processes(tmp_path):
+    code = """
+from pathlib import Path
+import sys
+import time
+from qatlib_env.workspace import cache_lock
+with cache_lock(Path(sys.argv[1])):
+    print(time.monotonic(), flush=True)
+    time.sleep(float(sys.argv[2]))
+"""
+    env = {**os.environ, "PYTHONPATH": str(Path(workspace.__file__).resolve().parents[1])}
+    command = [sys.executable, "-B", "-c", code, str(tmp_path)]
+    with subprocess.Popen([*command, "2"], stdout=subprocess.PIPE, text=True, env=env) as owner:
+        acquired_at = float(owner.stdout.readline())
+        waiter = subprocess.run([*command, "0"], capture_output=True, text=True,
+                                env=env, check=True, timeout=15)
+        assert float(waiter.stdout) - acquired_at >= 1.9
+        assert owner.wait(timeout=15) == 0
+
+
 @pytest.fixture
 def mapping(tmp_path):
     cache = tmp_path / "缓存 pool"
@@ -66,13 +87,16 @@ class Handles:
     def ReadFile(self, handle, size):
         return 0, os.read(handle.descriptor, size)
 
+    def GetFinalPathNameByHandle(self, handle, flags):
+        assert flags == 0
+        return str(handle.path)
+
     def SetFileInformationByHandle(self, handle, kind, info):
         assert kind == self.FileRenameInfo and info["ReplaceIfExists"] is True
-        directory = info["RootDirectory"]
-        if os.name == "posix":
-            os.replace(handle.path, info["FileName"], dst_dir_fd=directory.descriptor)
-        else:
-            os.replace(handle.path, directory.path / info["FileName"])
+        assert info["RootDirectory"] is None
+        target = Path(info["FileName"])
+        assert target.parent in self.active and handle.path in self.active
+        os.replace(handle.path, target)
 
 
 def windows_publication(monkeypatch, handles):
@@ -91,7 +115,7 @@ def test_windows_mapping_is_complete_and_handles_outlive_replace(mapping, monkey
         for path in (cache, cache.parent, staged, source.parent, target.parent, cache / "outputs"):
             assert path in handles.active
         assert source in handles.active
-        assert info["RootDirectory"].path == target.parent and info["FileName"] == NAME
+        assert info["RootDirectory"] is None and Path(info["FileName"]) == target
         rename(handle, kind, info)
     monkeypatch.setattr(handles, "SetFileInformationByHandle", publish)
     assert prepare._publish_native_mappings(staged, cache) == 1
@@ -140,7 +164,7 @@ def test_replace_failure_closes_handles_without_unsafe_retry(mapping, monkeypatc
     windows_publication(monkeypatch, handles)
     attempts = []
     def publish(handle, kind, info):
-        attempts.append((handle.path, info["RootDirectory"].path / info["FileName"]))
+        attempts.append((handle.path, Path(info["FileName"])))
         assert target.parent in handles.active and cache in handles.active
         raise PermissionError("incompatible target handle")
     monkeypatch.setattr(handles, "SetFileInformationByHandle", publish)
@@ -187,25 +211,19 @@ def test_invalid_mapping_never_creates_destination(mapping, monkeypatch, record)
     assert not (cache / "outputs").exists()
 
 
-@pytest.mark.skipif(os.name != "posix", reason="model Windows handle-relative rename with a POSIX directory fd")
-def test_windows_handle_relative_rename_survives_a_replaced_namespace(mapping, monkeypatch):
+def test_windows_mapping_uses_the_pinned_namespace_path(mapping, monkeypatch):
     cache, staged, source = mapping
     target_dir = cache / "outputs/Example"
-    saved = target_dir.with_name("Example-original")
-    outside = cache.parent / "outside"
-    outside.mkdir()
     handles = Handles()
     windows_publication(monkeypatch, handles)
-    rename = handles.SetFileInformationByHandle
-    def publish(handle, kind, info):
-        # Even if the share lock were defeated, the operation must use the
-        # original directory object, not resolve the replaced absolute path.
-        target_dir.rename(saved)
-        target_dir.symlink_to(outside, target_is_directory=True)
-        rename(handle, kind, info)
-    monkeypatch.setattr(handles, "SetFileInformationByHandle", publish)
+    canonical_path = handles.GetFinalPathNameByHandle
+    def resolve(handle, flags):
+        assert handle.path == target_dir
+        assert all(path in handles.active for path in (target_dir, target_dir.parent, cache, cache.parent))
+        return canonical_path(handle, flags)
+    monkeypatch.setattr(handles, "GetFinalPathNameByHandle", resolve)
     assert prepare._publish_native_mappings(staged, cache) == 1
-    assert not list(outside.iterdir()) and json.loads((saved / NAME).read_bytes()) == RECORD
+    assert json.loads((target_dir / NAME).read_bytes()) == RECORD
 
 
 def test_mapping_changed_after_json_validation_is_not_published(mapping, monkeypatch):

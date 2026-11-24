@@ -8,7 +8,43 @@ from unittest.mock import Mock
 import psutil
 import pytest
 import tests._bootstrap  # noqa: F401
-from qatlib_env import ci, r2_cache, resources
+from qatlib_env import budget, ci, prepare, r2_cache, resources, server
+
+
+def test_prepare_and_server_keys_ignore_crlf_but_detect_config_edits(tmp_path):
+    config = {
+        "lean-toolchain": "leanprover/lean4:v4.35.0\n",
+        "lake-manifest.json": '{"packages": []}\n',
+        "lakefile.toml": 'name = "Example"\n# 中文配置\n',
+        "lakefile.lean": "-- 中文配置\n",
+        "lake-cache.toml": "[cache]\n# 中文配置\n",
+    }
+    env = {"LAKE_CACHE_DIR": str(tmp_path / "cache")}
+    for eol in ("\n", "\r\n"):
+        for filename, value in config.items():
+            (tmp_path / filename).write_bytes(value.replace("\n", eol).encode("utf-8"))
+        keys = prepare.identity(tmp_path, env), server.server_key(tmp_path, env).digest
+        if eol == "\n":
+            expected = keys
+        else:
+            assert keys == expected
+    (tmp_path / "lakefile.toml").write_bytes(b'name = "Changed"\r\n')
+    assert prepare.identity(tmp_path, env) != expected[0]
+    assert server.server_key(tmp_path, env).digest != expected[1]
+
+
+def test_ci_and_budget_read_toml_as_utf8(tmp_path, monkeypatch):
+    config = tmp_path / "lakefile.toml"
+    config.write_bytes('name = "Example"\r\n# 中文配置\r\n'.encode("utf-8"))
+    read_text = Path.read_text
+
+    def legacy_locale(path, encoding=None, **kwargs):
+        return read_text(path, encoding=encoding or "ascii", **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", legacy_locale)
+    assert budget.SourceGraph._toml(config)["name"] == "Example"
+    assert ci.source_inputs(tmp_path, "Example") == [
+        "Example", "Example.lean", "lakefile.toml", "lean-toolchain", "lake-manifest.json"]
 
 
 def test_curlrc_uses_explicit_utf8_and_lf(tmp_path, monkeypatch):

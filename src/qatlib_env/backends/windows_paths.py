@@ -1,6 +1,24 @@
-"""Pin Windows directory names while publishing into a shared cache."""
+"""Windows filesystem handles for coordinating shared cache access."""
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+
+
+@contextmanager
+def locked_file(path: Path):
+    """Wait for an exclusive byte-range lock shared by Windows processes."""
+    import msvcrt
+    import pywintypes
+    import win32con
+    import win32file
+
+    with path.open("a+b") as file:
+        handle = msvcrt.get_osfhandle(file.fileno())
+        position = pywintypes.OVERLAPPED()
+        win32file.LockFileEx(handle, win32con.LOCKFILE_EXCLUSIVE_LOCK, 1, 0, position)
+        try:
+            yield
+        finally:
+            win32file.UnlockFileEx(handle, 1, 0, position)
 
 
 @contextmanager
@@ -36,7 +54,7 @@ def locked_directory(path: Path, *, create: bool = False):
 
 
 def replace_mapping(source: Path, directory, name: str, expected: bytes) -> None:
-    """Rename a verified, pinned source relative to the destination handle."""
+    """Rename a verified source into the pinned destination directory."""
     import win32file
 
     # GENERIC_READ | DELETE; permit readers, exclude writers and replacement.
@@ -48,8 +66,12 @@ def replace_mapping(source: Path, directory, name: str, expected: bytes) -> None
         _status, content = win32file.ReadFile(handle, len(expected) + 1)
         if content != expected:
             raise ValueError(f"cache mapping changed after validation: {source}")
+        # FileRenameInfo rejects the relative form on some Win32 runtimes.
+        # Resolve the name from the held directory handle. Its ancestor
+        # handles prevent reparse or rename while this path is used.
+        destination = Path(win32file.GetFinalPathNameByHandle(directory, 0)) / name
         win32file.SetFileInformationByHandle(handle, win32file.FileRenameInfo, {
-            "ReplaceIfExists": True, "RootDirectory": directory, "FileName": name,
+            "ReplaceIfExists": True, "RootDirectory": None, "FileName": str(destination),
         })
     finally:
         handle.Close()

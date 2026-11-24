@@ -19,7 +19,12 @@ import zipfile
 SCHEMA = 1
 
 
-def _digest(path: Path) -> str:
+def _text_digest(path: Path) -> str:
+    """Apply Lake's CRLF-to-LF rule to source and configuration inputs."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _artifact_digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -71,7 +76,7 @@ def local_identity(project: Path) -> str:
         if path.is_symlink():
             raise ValueError(f"refusing symlinked checkpoint input: {path}")
         digest.update(path.relative_to(project).as_posix().encode() + b"\0")
-        digest.update((_digest(path) if path.is_file() else "absent").encode() + b"\0")
+        digest.update((_text_digest(path) if path.is_file() else "absent").encode() + b"\0")
     return digest.hexdigest()
 
 
@@ -135,7 +140,7 @@ def _completed(project: Path, since_ns: int | None = None) -> list[dict]:
                          if path.is_file() and not path.is_symlink() and path != trace
                          and not path.name.endswith(".setup.json"))
         modules.append({"source": source.relative_to(project).as_posix(),
-                        "source_sha256": _digest(source), "dep_hash": dep_hash,
+                        "source_sha256": _text_digest(source), "dep_hash": dep_hash,
                         "files": sorted(set(files))})
     return modules
 
@@ -202,10 +207,10 @@ def _capture(project: Path, env: dict[str, str], *, since_ns: int | None = None)
                     relative = path.relative_to(project / ".lake/build").as_posix()
                     if relative in metadata["files"]:
                         continue
-                    checksum = _digest(path)
+                    checksum = _artifact_digest(path)
                     archive.write(path, relative)
                     # Detect a simultaneous build changing an artifact mid-copy.
-                    if checksum != _digest(path):
+                    if checksum != _artifact_digest(path):
                         raise ValueError(f"artifact changed while checkpointing: {path}")
                     metadata["files"][relative] = checksum
                 metadata["modules"].append(module)
@@ -240,7 +245,7 @@ def restore(project: Path, env: dict[str, str]) -> dict:
                 raise ValueError("local checkpoint identity/schema mismatch")
             for module in metadata["modules"]:
                 source = project / module["source"]
-                if not source.resolve().is_relative_to(project) or _digest(source) != module["source_sha256"]:
+                if not source.resolve().is_relative_to(project) or _text_digest(source) != module["source_sha256"]:
                     raise ValueError("local checkpoint source mismatch")
             # Verify every byte before writing anything; corrupt caches are
             # errors, not remote cache misses and not permission fallbacks.

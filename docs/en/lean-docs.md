@@ -1,29 +1,39 @@
 # Lean Documentation, Bibliography, and Source Retrieval
 
-<a id="doc-gen"></a>
-
-## Documentation Comments and Website Links
-
-Lean source files organize documentation using two kinds of documentation comments: `/-! ... -/` provides module-level documentation suited for outlining a file's responsibilities, core definitions, and dependencies; `/-- ... -/` attaches directly to an individual declaration to document its semantics, preconditions, and usage. In traditional Markdown comments, you can wrap a declaration's fully qualified name in backticks (for example, `MyLib.Facts.some_fact`); when generating the website, doc-gen4 resolves link targets against the analyzed environment and symbol table (see the [doc-gen4 analysis implementation](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Process/Analyze.lean#L164-L171) and [docstring link rendering](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Output/DocString.lean#L167-L228)). By contrast, Lean LSP hover in the editor renders only local documentation without the website's routing mechanism or bibliography index; if you want the corresponding paper to open directly from hover as well, use a standard Markdown link pointing to its DOI or arXiv URL.
-
-In files with Verso enabled, you can use the `{name}` role so that the compiler resolves declaration names. Traditional comments can coexist with Verso pilots; before expanding adoption, verify separately that misspelled names are caught by the compiler, editor hover renders properly, website links navigate to the intended targets, and template summaries do not display raw markup directly.
-
-When building the project documentation site, you can reuse HTML/JSON snapshots that match the current source tree and tool versions; if snapshot restoration fails, regenerate them and verify the output. If a change affects only portal copy, inspecting the corresponding pages and links directly is sufficient.
-
-<a id="bibliography"></a>
-
-## Bibliography Citations and Incremental Merging
-
-Documentation can cite entries in `docs/references.bib` via `[CiteKey]`; to pinpoint a specific location, append the theorem number, page number, or section after the citation key, such as `[CiteKey], Theorem X`. Site-generated bibliography links take the form `references.html#ref_<CiteKey>` (see the [doc-gen4 bibliography page implementation](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Output/References.lean#L75-L84)), so any handwritten links should be checked against the `href` and `id` attributes in the final HTML. Verifying that a formalized theorem matches the statement in the paper still requires reading the original source text.
-
-In day-to-day development, a development repository can maintain only an incremental bibliography; validation overlays it onto the locked public baseline to check for missing keys, duplicate keys within the same file, and conflicting entries under the same key. When merging into a receiving repository, first run a precheck in the receiving repository with `qatlib-env promotion merge-bibliography --increment <file>`, then add `--write` to apply the changes once validation passes; this command preserves the existing bytes of `docs/references.bib` verbatim and appends only the raw text of new entries. Once downstream dependency locks are updated, incremental entries that have already been incorporated with identical content can be pruned, followed by cross-checking citations.
+The working directory is the root of a Lean project whose locked dependencies are already checked out. Build the index, run one query, and open the source the hit names. Website rendering, bibliography merges, and the legacy index path come after the query.
 
 <a id="lexical-index"></a>
 
-## Local Indexing and Retrieval
+## Index, then query, then the source
 
-`qatlib-retrieve index` statically scans the local canonical libraries defined in Lake TOML, supported Git dependencies already checked out according to the lockfile, and `docs/references.bib` in each of these repositories; dependencies not yet checked out are skipped with a notice. The entire indexing process runs without launching the Lean compiler or Lake, and neither accesses the network to fetch missing dependencies nor requests build quota. Scanning is rooted at the canonical library roots of each source repository and automatically excludes `.git`, `.lake`, `.venv`, and `.agent-tasks`. After building the index for the first time, use `qatlib-retrieve index --changed` for subsequent incremental updates.
+```bash
+qatlib-retrieve index
+qatlib-retrieve query 'postselection normalization' --kind theorem
+qatlib-retrieve query --cite GilyenSuLowWiebe2019
+```
 
-The default index path is `${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlite3`, where `<corpus-key>` is the first 24 hexadecimal characters of the SHA-256 hash of the resolved absolute project root path. You can select a project with `--project` or specify an alternate index file with `--db`, provided the chosen path lies outside every indexed source repository. When the new index has not yet been created, query commands can open the corresponding file in the legacy directory `${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/` in read-only mode; running `index` directly rebuilds the index in the new directory, and if only a legacy index exists locally, running `index --changed` for the first time likewise performs a full rebuild in the new directory while preserving the legacy file.
+`index` succeeds when the process exits 0 without launching the Lean compiler or Lake, and without fetching missing dependencies or requesting build quota. `query` succeeds when it prints the location of a matching declaration. Open that file and compare the source signature in the hit, and the `variable` declarations in the enclosing `section`, with the implicit assumptions you expect. The query strings above are examples. Replace them with the words or citation key you are looking for.
 
-`query` and `find` access existing indexes strictly in read-only mode; if an older index format is encountered, simply rebuild the index. During retrieval, inspect the source signatures and enclosing `section` `variable` declarations included in search hits to check for duplicates and verify implicit assumptions before opening the source files to confirm. Because indexing relies on static scanning, macro expansions, auto-generated structure declarations, and compiler-derived declarations may be omitted; Lean compilation and consumer verification remain the final authority.
+`qatlib-retrieve index` statically scans the local canonical libraries defined in Lake TOML, supported Git dependencies already checked out from the lock, and `docs/references.bib` in each of those repositories. Dependencies that are not checked out yet are skipped with a notice. Scanning starts at each source repository's canonical library roots and excludes `.git`, `.lake`, `.venv`, and `.agent-tasks`. After the first index, use `qatlib-retrieve index --changed` for an incremental update.
+
+The default index path is `${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlite3`, where `<corpus-key>` is the first 24 hexadecimal characters of the SHA-256 of the resolved absolute project root. Select a project with `--project`, or another index file with `--db`. The chosen path has to lie outside every indexed source repository. Before the new index exists, a query can open the matching file in the legacy directory `${XDG_CACHE_HOME:-~/.cache}/qatlib/retrieve/` read-only. Running `index` rebuilds into the new directory. If only a legacy index is present, the first `index --changed` also rebuilds fully in the new directory and keeps the old file.
+
+`query` and `find` open an existing index read-only. Rebuild when the format is old. Macro expansions, generated structure fields, and compiler-derived declarations may be absent. Lean compilation and a consumer check remain the authority.
+
+<a id="doc-gen"></a>
+
+## Documentation comments and website links
+
+Lean source uses two documentation comments. `/-! ... -/` is the module comment, for the file's job, its main definitions, and its dependencies. `/-- ... -/` sits on one declaration and records its meaning, assumptions, and use. In a traditional Markdown comment, wrap a fully qualified name in backticks, for example `` `MyLib.Facts.some_fact` ``. When the website is generated, doc-gen4 resolves the link from the analyzed environment and symbol table (see the [doc-gen4 analysis implementation](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Process/Analyze.lean#L164-L171) and [docstring link rendering](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Output/DocString.lean#L167-L228)). Lean LSP hover in an editor renders the local comment only. It has no site router and no bibliography index. To open the paper from hover as well, add an ordinary Markdown link to the DOI or arXiv URL.
+
+A file with Verso enabled can use the `{name}` role and let the compiler resolve the name. Traditional comments can sit beside a Verso pilot. Before widening that use, check separately that a misspelled name is caught by the compiler, that hover still renders, that the website link lands on the right page, and that a template summary does not show the raw markup.
+
+When building the project documentation site, reuse an HTML/JSON snapshot that matches the current source and tool versions. If restoring the snapshot fails, regenerate it and check the output. A change that only edits portal copy can be checked on the page and its links.
+
+<a id="bibliography"></a>
+
+## Citations and incremental merges
+
+Cite `docs/references.bib` with `[CiteKey]`. To point at a place in the work, add a theorem number, page, or section after the key, for example `[CiteKey], Theorem X`. Generated bibliography links look like `references.html#ref_<CiteKey>` (see the [doc-gen4 bibliography page](https://github.com/leanprover/doc-gen4/blob/0e1ffe2e4ba5ecfdfaf15c65b8d3805dbb7134ae/DocGen4/Output/References.lean#L75-L84)). A handwritten link should be compared with the `href` and `id` in the final HTML. Whether a formalized statement matches the paper is settled by reading the paper.
+
+A development repository can keep only an incremental bibliography day to day. Validation overlays the locked public baseline and checks missing keys, duplicate keys in one file, and the same key with different text. When merging into the receiving repository, precheck there with `qatlib-env promotion merge-bibliography --increment <file>`, then add `--write` after it passes. The command keeps the existing bytes of `docs/references.bib` and appends only the raw text of new entries. After the downstream lock moves forward, remove incremental entries that are already present with the same text, then search for the citations again.

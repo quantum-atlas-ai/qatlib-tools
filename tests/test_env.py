@@ -15,6 +15,7 @@ from qatlib_env.cloud import unpack_bundle
 from qatlib_env.backends.linux import linux_command
 from qatlib_env.backends.macos import macos_limits
 from qatlib_env.backends.windows import windows_limits
+from qatlib_env.prepare import phase
 
 
 class EnvTest(unittest.TestCase):
@@ -46,6 +47,18 @@ class EnvTest(unittest.TestCase):
         self.assertIn("lean", linux_command(["lean"], memory_mib=2048, cpu=2))
         self.assertEqual(windows_limits(["lean"], memory_mib=2048), ["lean"])
         self.assertTrue(macos_limits(["lean"]))
+
+    def test_prepare_phase_telemetry_is_structured_on_stderr(self):
+        with tempfile.TemporaryFile(mode="w+") as stderr, patch("sys.stderr", stderr), patch("sys.stdout") as stdout:
+            with phase("fixture", package="Consumer"):
+                pass
+            stdout.write.assert_not_called()
+            stderr.seek(0)
+            events = [json.loads(line.removeprefix("QATLIB_PHASE ")) for line in stderr if line.strip()]
+        self.assertEqual([(event["state"], event["phase"]) for event in events],
+                         [("start", "fixture"), ("done", "fixture")])
+        self.assertGreaterEqual(events[1]["elapsed_s"], 0)
+        self.assertEqual(events[0]["package"], "Consumer")
 
     def test_shared_compatibility_wrappers_delegate_to_generic_implementations(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -23,7 +23,7 @@ class LibraryConflictsTests(unittest.TestCase):
     def write(self, repo, module, body):
         file = repo / (module.replace('.', '/') + '.lean')
         file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(body)
+        file.write_text(body, encoding='utf-8')
 
     def check(self):
         return guard.check(self.source, self.public)[0]
@@ -32,6 +32,49 @@ class LibraryConflictsTests(unittest.TestCase):
         self.write(self.source, 'Work.Left', 'namespace Shared\ndef value := 1\nend Shared\n')
         self.write(self.public, 'Published.Right', 'namespace Shared\ndef value := true\nend Shared\n')
         self.assertIn('export Shared.value', self.check()[0])
+
+    def test_shared_prefix_skips_unrelated_macros(self):
+        self.write(self.source, 'Work.Left', '''namespace Shared
+def value := 1
+end Shared
+namespace Other
+def branch := 1
+end Other
+''')
+        self.write(self.public, 'Published.Right', '''namespace Shared
+-- def value := true
+def values := "value"
+def branch := 2
+local macro "probe" : term => `(by exact 0)
+end Shared
+''')
+        errors, counts = guard.check(self.source, self.public)
+        self.assertEqual(errors, [])
+        self.assertEqual(counts['upstream_indexed_files'], 0)
+
+    def test_prefilter_preserves_qualified_escaped_and_root_name_collisions(self):
+        self.write(self.source, 'Work.Left', '''namespace Shared
+def «with.dot» := 1
+end Shared
+def rootValue := 1
+''')
+        self.write(self.public, 'Published.Right', '''namespace Elsewhere
+def _root_.Shared.«with.dot» := 2
+def _root_.rootValue := 2
+end Elsewhere
+''')
+        self.assertEqual([error.split(':', 1)[0] for error in self.check()],
+                         ['export Shared.with.dot', 'export rootValue'])
+
+    def test_macro_in_candidate_file_still_requires_declaration_index(self):
+        self.write(self.source, 'Work.Left', 'def Shared.value := 1\n')
+        self.write(self.public, 'Published.Right', '''namespace Shared
+def value := 2
+local macro "probe" : term => `(by exact 0)
+end Shared
+''')
+        with self.assertRaisesRegex(ValueError, 'unsupported macro forms'):
+            self.check()
 
     def test_library_roots_are_not_normalized_for_import_conflicts(self):
         self.write(self.source, 'Work.Left', 'namespace Work\ndef value := 1\nend Work\n')

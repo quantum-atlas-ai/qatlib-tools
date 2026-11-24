@@ -103,7 +103,7 @@ def source_import_gate(project):
     preferred = set()
     for configuration in (project / "pyproject.toml", project / "python/pyproject.toml"):
         if configuration.is_file():
-            scripts = tomllib.loads(configuration.read_text()).get("project", {}).get("scripts", {})
+            scripts = tomllib.loads(configuration.read_text(encoding="utf-8")).get("project", {}).get("scripts", {})
             preferred.update(value.split(":", 1)[0].split(".", 1)[0] for value in scripts.values()
                              if isinstance(value, str))
     selected = [path for path in candidates if path.parent.name in preferred]
@@ -164,7 +164,8 @@ def write_key(package, env):
 
 
 def source_inputs(project, library):
-    config = tomllib.loads((project / "lakefile.toml").read_text()) if (project / "lakefile.toml").is_file() else {}
+    lakefile = project / "lakefile.toml"
+    config = tomllib.loads(lakefile.read_text(encoding="utf-8")) if lakefile.is_file() else {}
     if config.get("lean_lib"):
         from .project import libraries
         paths = []
@@ -231,7 +232,8 @@ def public_repo(project, env):
 
 def source_checkout(candidate, locked, env):
     """Materialized locked sources are usable even from a tree-filtered clone."""
-    config = tomllib.loads((candidate / "lakefile.toml").read_text()) if (candidate / "lakefile.toml").is_file() else {}
+    lakefile = candidate / "lakefile.toml"
+    config = tomllib.loads(lakefile.read_text(encoding="utf-8")) if lakefile.is_file() else {}
     if config.get("lean_lib"):
         from .project import libraries
         roots = [candidate / lib.src_dir / root.replace(".", "/")
@@ -348,7 +350,7 @@ def lint(project, env):
 
 
 def cache_service(project, env, package):
-    config = tomllib.loads((project / "lake-cache.toml").read_text())["cache"]
+    config = tomllib.loads((project / "lake-cache.toml").read_text(encoding="utf-8"))["cache"]
     service = next(s for s in config["service"] if s["name"] == config["defaultService"])
     key = write_key(package, env) or service.get("s3Auth", "").strip()
     return service["revisionEndpoint"].rstrip("/"), key
@@ -452,7 +454,7 @@ def _root_traces(project, build):
     for trace in sorted(lean.rglob("*.trace")):
         relative = trace.relative_to(lean)
         config_file = project / "lakefile.toml"
-        config = tomllib.loads(config_file.read_text()) if config_file.is_file() else {}
+        config = tomllib.loads(config_file.read_text(encoding="utf-8")) if config_file.is_file() else {}
         roots = [project, *(project / lib.get("srcDir", config.get("srcDir", "."))
                             for lib in config.get("lean_lib", []))]
         source = next((root / relative.with_suffix(".lean") for root in roots

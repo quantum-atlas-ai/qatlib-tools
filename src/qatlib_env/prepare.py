@@ -12,13 +12,39 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from urllib.parse import quote
 
-from qatlib_env import workspace, supervisor
+from qatlib_env import diagnostics, workspace, supervisor
 from qatlib_env.envvars import env_value
 
 PREPARE_VERSION = 3
+
+
+@contextmanager
+def phase(name: str, **details):
+    """Emit machine-readable preparation lifecycle events on stderr."""
+    started = time.monotonic()
+    prefix = {"phase": name, **details}
+    print("QATLIB_PHASE " + json.dumps({**prefix, "state": "start"}, ensure_ascii=False, sort_keys=True),
+          file=sys.stderr, flush=True)
+    try:
+        key = "lake_config_ms" if name == "dependency-resolution" else "cache_check_ms"
+        with diagnostics.measure(key):
+            yield
+    except BaseException as error:
+        print("QATLIB_PHASE " + json.dumps({**prefix, "state": "error",
+                                               "elapsed_s": round(time.monotonic() - started, 3),
+                                               "error": type(error).__name__},
+                                              ensure_ascii=False, sort_keys=True),
+              file=sys.stderr, flush=True)
+        raise
+    else:
+        print("QATLIB_PHASE " + json.dumps({**prefix, "state": "done",
+                                               "elapsed_s": round(time.monotonic() - started, 3)},
+                                              ensure_ascii=False, sort_keys=True),
+              file=sys.stderr, flush=True)
 
 
 class CacheError(ValueError):
@@ -48,7 +74,8 @@ def identity(project: Path, env: dict) -> str:
     digest = hashlib.sha256(b"qatlas-prepare-v2\0")
     for name in ("lean-toolchain", "lake-manifest.json", "lakefile.toml", "lakefile.lean", "lake-cache.toml"):
         path = project / name
-        digest.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b""))
+        data = path.read_bytes().replace(b"\r\n", b"\n") if path.is_file() else b""
+        digest.update(name.encode() + b"\0" + data)
     digest.update(str(Path(env["LAKE_CACHE_DIR"]).resolve()).encode())
     digest.update((workspace.git_head(project) or "uncommitted").encode())
     for package in workspace.manifest(project)["packages"]:
@@ -77,7 +104,7 @@ def _cache_run(command, project, env):
                    if value and any(word in name.upper() for word in ("KEY", "TOKEN", "PASSWORD", "SECRET"))]
         config_path = effective.get("LAKE_CONFIG")
         if config_path and Path(config_path).is_file():
-            config = tomllib.loads(Path(config_path).read_text())
+            config = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
             secrets.extend(service.get("s3Auth", "") for service in config.get("cache", {}).get("service", []))
         for secret in sorted(set(secrets), key=len, reverse=True):
             if secret:
@@ -381,7 +408,7 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     config_file = package_root / "lake-cache.toml"
     if not config_file.is_file():
         return "unconfigured"
-    config = tomllib.loads(config_file.read_text())["cache"]
+    config = tomllib.loads(config_file.read_text(encoding="utf-8"))["cache"]
     service = next(s for s in config["service"] if s["name"] == config["defaultService"])
     package = workspace.package_name(package_root)
     from qatlib_env.r2_cache import package_environment
@@ -398,6 +425,18 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
         profile_env = env if package_root == project else {
             key: value for key, value in env.items() if key not in
             {"QATLIB_LIBRARY", "QATLIB_TEST_TARGET", "QATLIB_REPOSITORY"}}
+        if package_root != project and (project / "lake-manifest.json").is_file():
+            # Lake may record the local transport mirror as the checkout's origin.
+            from qatlib_forge.repo_api import RepoRef
+            for entry in workspace.manifest(project)["packages"]:
+                locked_root = project / ".lake/packages" / entry["name"].strip("«»")
+                if locked_root != package_root or entry.get("type", "git") != "git":
+                    continue
+                try:
+                    profile_env["QATLIB_REPOSITORY"] = RepoRef.parse(entry.get("url", "")).slug
+                except ValueError:
+                    pass  # A path dependency or an unknown host can still have a cache profile.
+                break
         library, _targets, slug = ci.profile(package, profile_env, package_root)
         if not slug:
             raise CacheError(f"cache repository is unavailable for {package}; configure its origin or repository profile")
@@ -450,14 +489,19 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     return "missing"
 
 
-def cold_modules(project: Path) -> int:
+def cold_modules(project: Path, env: dict | None = None) -> int:
     """Count missing library outputs in root and locked source packages."""
+    environment = dict(os.environ if env is None else env)
     count = 0
     locked_names = _locked_package_names(project)
     for root in workspace.package_roots(project):
+        if root != project:
+            from qatlib_env.budget import package_cache_warm
+            if package_cache_warm(project, root, environment):
+                continue
         config_file = root / "lakefile.toml"
         if config_file.is_file():
-            config = tomllib.loads(config_file.read_text())
+            config = tomllib.loads(config_file.read_text(encoding="utf-8"))
         elif locked_names.get(root) == "mathlib" and (root / "lakefile.lean").is_file():
             # Mathlib's known library namespace is stable. Count its source
             # tree directly instead of trying to interpret arbitrary Lean DSL.
@@ -494,7 +538,7 @@ def _locked_package_names(project: Path) -> dict[Path, str]:
 def enforce_cold_limit(project: Path, env: dict) -> int:
     from .config import load_config
     from .budget import _permission
-    count = cold_modules(project)
+    count = cold_modules(project, env)
     maximum = load_config(project, env).budget.max_cold_modules
     warning = int(env_value(env, "QATLIB_COLD_WARN_MODULES", "100"))
     if maximum < 0 or warning < 0:
@@ -512,16 +556,18 @@ def prepare(project: Path, env: dict, *, source=None, offline=False) -> dict:
     project = Path(project)
     env = package_environment(workspace.package_name(project), env, project=project)
     cache = Path(env["LAKE_CACHE_DIR"])
-    validate_cache(cache)
-    (project / ".lake").mkdir(exist_ok=True)
+    with phase("cache-validation", cache=str(cache)):
+        validate_cache(cache)
+        (project / ".lake").mkdir(exist_ok=True)
     with workspace.cache_lock(cache):
-        if offline:
-            for package in workspace.manifest(project)["packages"]:
-                root = project / ".lake/packages" / package["name"].strip("«»")
-                if workspace.git_head(root) != package.get("rev"):
-                    raise CacheError(f"offline dependency is absent or not locked: {package['name']}")
-        else:
-            workspace.resolve_dependencies(project, env, source)
+        with phase("dependency-resolution", offline=offline):
+            if offline:
+                for package in workspace.manifest(project)["packages"]:
+                    root = project / ".lake/packages" / package["name"].strip("«»")
+                    if workspace.git_head(root) != package.get("rev"):
+                        raise CacheError(f"offline dependency is absent or not locked: {package['name']}")
+            else:
+                workspace.resolve_dependencies(project, env, source)
         stamp = project / ".lake/qatlas-prepare.json"
         current = identity(project, env)
         previous = json.loads(stamp.read_text()) if stamp.is_file() else {}
@@ -535,26 +581,35 @@ def prepare(project: Path, env: dict, *, source=None, offline=False) -> dict:
             # Lock order is deterministic; the root is always restored last.
             roots = roots[1:] + roots[:1]
             for root in roots:
-                if locked_names.get(root) == "mathlib":
-                    _cache_run(["lake", "exe", "cache", "get"], project, env)
-                    results["mathlib"] = "mathlib"
+                name = locked_names.get(root)
+                if name is None and not (root / "lakefile.toml").is_file():
                     continue
-                if not (root / "lakefile.toml").is_file():
-                    continue
-                name = workspace.package_name(root)
-                if name == "mathlib":
-                    _cache_run(["lake", "exe", "cache", "get"], project, env)
-                    results[name] = "mathlib"
-                else:
-                    results[name] = restore_repository(project, root, env)
+                if name is None:
+                    name = workspace.package_name(root)
+                with phase("cache-restoration", package=name):
+                    if locked_names.get(root) == "mathlib":
+                        _cache_run(["lake", "exe", "cache", "get"], project, env)
+                        results["mathlib"] = "mathlib"
+                        continue
+                    if not (root / "lakefile.toml").is_file():
+                        continue
+                    name = workspace.package_name(root)
+                    if name == "mathlib":
+                        _cache_run(["lake", "exe", "cache", "get"], project, env)
+                        results[name] = "mathlib"
+                    else:
+                        results[name] = restore_repository(project, root, env)
             result["repositories"] = results
-        result["checkpoint"] = checkpoint.restore(project, env)
-        result["cold_modules"] = enforce_cold_limit(project, env)
+        with phase("checkpoint-restore"):
+            result["checkpoint"] = checkpoint.restore(project, env)
+        with phase("cold-module-accounting"):
+            result["cold_modules"] = enforce_cold_limit(project, env)
         # Offline preparation must not certify that remote caches were checked.
         if not offline:
             result["build_dirs"] = [str(root / ".lake/build") for root in workspace.package_roots(project)
                                     if (root / ".lake/build").is_dir()]
-            workspace.atomic_json(stamp, result)
+            with phase("prepare-receipt"):
+                workspace.atomic_json(stamp, result)
         return result
 
 

@@ -22,7 +22,7 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def git(root: Path, *args: str) -> str:
+def git_bytes(root: Path, *args: str) -> bytes:
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     env.update(GIT_OPTIONAL_LOCKS='0', GIT_NO_REPLACE_OBJECTS='1',
                GIT_NO_LAZY_FETCH='1', GIT_ALLOW_PROTOCOL='')
@@ -30,7 +30,33 @@ def git(root: Path, *args: str) -> str:
                             env=env, capture_output=True, timeout=15)
     if result.returncode:
         raise ValueError(f'{root}: cannot inspect local Git identity')
-    return result.stdout.decode('utf-8')
+    return result.stdout
+
+
+def git(root: Path, *args: str) -> str:
+    return git_bytes(root, *args).decode('utf-8')
+
+
+def matches_text_blob(root: Path, expected: str | None, data: bytes, normalized: bytes) -> bool:
+    if expected is None:
+        return False
+    algorithm = hashlib.sha256 if len(expected) == 64 else hashlib.sha1
+
+    def oid(content: bytes) -> str:
+        header = b'blob ' + str(len(content)).encode() + b'\0'
+        return algorithm(header + content).hexdigest()
+
+    if oid(normalized) == expected or (data != normalized and oid(data) == expected):
+        return True
+    # Most blobs store LF. Read the actual object on a mismatch to cover
+    # repositories that committed CRLF or mixed endings as-is.
+    try:
+        blob = git_bytes(root, 'cat-file', 'blob', expected)
+    except ValueError:
+        # An offline partial clone can lack the blob. The checkout cannot be
+        # certified against it, but unlocked sources can still be indexed.
+        return False
+    return blob.replace(b'\r\n', b'\n') == normalized
 
 
 def contained(root: Path, relative: str) -> Path:
@@ -85,7 +111,7 @@ class Corpus:
                         yield repo, relative, path.relative_to(source).with_suffix('').as_posix().replace('/', '.')
 
 
-def discover(project: str | Path | None = None) -> Corpus:
+def discover(project: str | Path | None = None, *, source_only: bool = False) -> Corpus:
     root = project_root(project)
     inputs: dict[str, str] = {}
     warnings: list[str] = []
@@ -96,7 +122,7 @@ def discover(project: str | Path | None = None) -> Corpus:
     def read(path: Path, owner: Path) -> bytes:
         if path.is_symlink() or not path.resolve().is_relative_to(owner):
             raise ValueError(f'symlink input is not admitted: {path}')
-        data = path.read_bytes() if path.is_file() else b''
+        data = path.read_bytes().replace(b'\r\n', b'\n') if path.is_file() else b''
         inputs[str(path)] = digest(data)
         return data
 
@@ -109,7 +135,7 @@ def discover(project: str | Path | None = None) -> Corpus:
             raise ValueError(f'{config_path}: invalid Lake TOML') from error
         libs = config.get('lean_lib', [])
         defaults = config.get('defaultTargets', [])
-        selected = [lib for lib in libs if lib.get('name') in defaults]
+        selected = libs if source_only else [lib for lib in libs if lib.get('name') in defaults]
         if not selected and len(libs) == 1:
             selected = libs
         if not selected:
@@ -137,7 +163,7 @@ def discover(project: str | Path | None = None) -> Corpus:
             raise ValueError(f'{path}: checkout {revision} differs from locked revision {pin}')
         read(path / 'lean-toolchain', path)
         read(path / 'lake-manifest.json', path)
-        bib_text = read(path / 'docs/references.bib', path).decode('utf-8')
+        bib_text = '' if source_only else read(path / 'docs/references.bib', path).decode('utf-8')
         if bib_text:
             entries, errors = parse_bibliography_entries(
                 bib_text, str(path / 'docs/references.bib'), allow_empty=pin is None)

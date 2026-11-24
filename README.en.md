@@ -2,11 +2,11 @@
 
 <img src="./.github/assets/qatlib-tools-wordmark.svg" alt="qatlib-tools" width="520" />
 
-**An engineering handbook and command-line tools for Lean 4 formalization projects**
+**Engineering handbook and companion command-line tools for Lean 4 formalization projects**
 
 [![CI](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml)
 [![Docs](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml)
-[![Handbook](https://img.shields.io/badge/docs-Handbook-263f5f)](https://quantum-atlas-ai.github.io/qatlib-tools/en/)
+[![Handbook](https://img.shields.io/badge/docs-handbook-263f5f)](https://quantum-atlas-ai.github.io/qatlib-tools/en/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 
@@ -16,186 +16,93 @@
 
 ---
 
-## <a id="overview"></a>Overview
+## <a id="overview"></a>Pick a path
 
-**qatlib-tools** is an engineering handbook and a set of lightweight command-line tools for [Qatlib](https://github.com/quantum-atlas-ai/qatlib) and other [Lean 4](https://lean-lang.org/) formalization projects. Use it to share build caches across worktrees, run builds with resource limits and isolated subprocesses, search source code and BibTeX entries through a static lexical index, and verify pull requests on GitHub and Gitea. Read the [online engineering handbook](https://quantum-atlas-ai.github.io/qatlib-tools/en/) or run `qatlib-env docs` after installation to read the Chinese handbook offline.
+**qatlib-tools** gathers the preparation, build, retrieval, and pull-request checks that recur across [Qatlib](https://github.com/quantum-atlas-ai/qatlib) and other [Lean 4](https://lean-lang.org/) formalization repositories. It provides this handbook alongside three commands you can call independently: `qatlib-env`, `qatlib-retrieve`, and `qatlib-forge`. Inspecting a branch, opening a pull request, and building a single target stay on `git`, `gh`, `tea`, `gt`, and `lake`.
 
-For routine operations, use `git`, `gh`, `tea` or `gt`, and `lake` directly. The tools here provide separate commands you can combine to prepare caches, manage builds, run lexical searches, and check that a pull request's head still matches the commit you reviewed. Each project maintains its own mathematical interfaces and review standards.
+Read the English handbook online at <https://quantum-atlas-ai.github.io/qatlib-tools/en/> (generated from the matching files in `docs/en/`). After installation, you can also read the handbook offline, though the offline command serves the Chinese text: `qatlib-env docs` prints this file's Chinese counterpart (`README.md`), `qatlib-env docs --list` lists the Chinese topics directly under `docs/`, and `qatlib-env docs <topic>` prints one of them.
 
-## Commands
-
-| Command | Purpose |
+| What you want to do | Open |
 | --- | --- |
-| `qatlib-env` | Prepare Lean dependencies and shared caches, run controlled builds under resource quotas, and manage local worktrees |
-| `qatlib-retrieve` | Search and retrieve Lean declarations, source signatures, and bibliographic references |
-| `qatlib-forge` | Aggregate and verify PR check results on GitHub and Gitea, and validate expected commits before write operations |
-
-Once installed, run `qatlib-env docs` at any time to read this handbook offline, or run `qatlib-env docs --list` to list all built-in topics and `qatlib-env docs <topic>` to read the corresponding chapter. For the exact options of each command, refer to the `--help` output of the currently installed version.
-
-## Engineering Handbook Guide
-
-| Topic | Offline Command (Chinese) | Contents |
-| --- | --- | --- |
-| [Build Environment, Caching, and Resource Control](docs/en/build.md) | `qatlib-env docs build` | Lake configuration, module visibility, shared caches, Windows cross-drive handling, and local resource budgets |
-| [CI Runners and Process Troubleshooting](docs/en/runner.md) | `qatlib-env docs runner` | cgroup memory accounting, process reaping on job cancellation, and deployment verification |
-| [Lean Documentation, Bibliography, and Source Retrieval](docs/en/lean-docs.md) | `qatlib-env docs lean-docs` | doc-gen4 cross-page linking, incremental bibliography validation, and static lexical indexing |
-| [Pull Requests on GitHub and Gitea](docs/en/forge.md) | `qatlib-env docs forge` | Two draft mechanisms, CI status verification, concurrency-safe merging, and branch cleanup |
-| [How Shared Work Enters the Public Library](docs/en/promotion.md) | `qatlib-env docs promotion` | Whole-file dependencies, consumer verification, draft rehearsals, and post-release dependency switching |
+| Check that the tools run on this machine | [Five-minute check](docs/en/quickstart.md) |
+| Edit one module in a Lean repository that already pins the tools | [A second worktree](docs/en/worktrees.md) |
+| Open a first draft pull request, or change this tools repository | [Pull requests](docs/en/pull-requests.md) · [Contributing](CONTRIBUTING.en.md) |
+| Read this repository's workflows, review a commit, or attach a runner | [GitHub workflows](docs/en/github-ci.md) · [Reviewing concurrent commits](docs/en/forge.md) · [Self-hosted runners](docs/en/runner.md) |
+| Verify Lean proofs, exported interfaces, and axiom dependencies | [Proof verification and axiom auditing](docs/en/verification.md) · `qatlib-env docs verification` (Chinese) |
 
 <a id="quickstart"></a>
 
-## Installation
+## Five-minute check
 
-A single installation provides all three command-line entry points: `qatlib-env`, `qatlib-retrieve`, and `qatlib-forge`. Choose the installation method that fits your workflow and always operate inside an isolated virtual environment—never run a bare `pip install` directly against the system Python interpreter.
+From a checkout of this tools repository, run these three commands in order:
 
-### Project-Pinned Version
+1. `uv tool install .`
+2. `qatlib-env docs --list`
+3. `qatlib-env config explain --json`
 
-For day-to-day development or running project checks inside a repository, use the tool version pinned by that project to stay consistent with CI. If a project declares its pinned dependencies in `python/pyproject.toml`, create a virtual environment at the repository root and install `./python` directly; repositories with a different directory layout should follow their own installation instructions.
+This step is done once the terminal prints the topic list and one JSON configuration object. For the expected working directory, exact commands, and fields to read, follow the [five-minute check](docs/en/quickstart.md). For pinned commits, wheels, Windows, and using a downstream repository's locked version, see [Install](docs/en/install.md).
 
-- **Using `uv`**
+## Three commands
 
-  ```bash
-  uv venv .venv
-  uv pip install --python .venv/bin/python ./python
-  source .venv/bin/activate
-  qatlib-env --help
-  qatlib-retrieve --help
-  ```
+| Command | What it does |
+| --- | --- |
+| `qatlib-env` | Prepares locked Lean dependencies and the shared cache, runs a build inside the resource budget, and manages local worktrees |
+| `qatlib-retrieve` | Searches Lean declarations, source signatures, and bibliography citations |
+| `qatlib-forge` | Summarizes checks for a single pull-request head, and compares the expected commit before merging or deleting a branch |
 
-- **Using `venv` + `pip`**
-
-  ```bash
-  python3 -m venv .venv
-  .venv/bin/python -m pip install --upgrade pip
-  .venv/bin/python -m pip install ./python
-  source .venv/bin/activate
-  qatlib-env --help
-  qatlib-retrieve --help
-  ```
-
-In Windows PowerShell, activate the virtual environment with `.venv\Scripts\Activate.ps1` instead, and replace the interpreter path in the installation commands with `.venv\Scripts\python.exe` (for example, `uv pip install --python .venv\Scripts\python.exe ./python` or `.venv\Scripts\python.exe -m pip install ./python`). To test a specific version of the tools independently, install the wheel built from that commit in a separate isolated environment and verify its corresponding source commit against the build record.
-
-### Standalone CLI Installation
-
-To invoke `qatlib-env`, `qatlib-retrieve`, and `qatlib-forge` from any directory outside a project-specific virtual environment, replace `/path/to/qatlib-tools` in the commands below with a local checkout path, a downloaded `.whl` file, or a pinned commit from an accessible repository (`'git+https://github.com/quantum-atlas-ai/qatlib-tools.git@<commit-sha>'`):
-
-- **Using `uv`**: Run `uv tool install /path/to/qatlib-tools` so `uv` manages a dedicated tool environment automatically; if your terminal cannot find the commands, check the binary directory with `uv tool dir --bin` and run `uv tool update-shell` to add it to `PATH`.
-- **Using `pipx`**: Run `pipx install /path/to/qatlib-tools`; if the binary directory is not yet on `PATH`, run `pipx ensurepath` to add it.
-- **Using `venv` + `pip`**: Manually create a dedicated virtual environment and add its `bin` directory (`Scripts` on Windows) to your shell's user `PATH`:
-
-  ```bash
-  python3 -m venv ~/.local/share/qatlib-tools-venv
-  ~/.local/share/qatlib-tools-venv/bin/python -m pip install --upgrade pip
-  ~/.local/share/qatlib-tools-venv/bin/python -m pip install /path/to/qatlib-tools
-  export PATH="$HOME/.local/share/qatlib-tools-venv/bin:$PATH"
-  ```
+Pass `--help` to any installed command for its exact options.
 
 <a id="configuration"></a>
-
-## Build Resources
-
-When no resource budget is explicitly configured, `qatlib-env` automatically derives the default resource pool capacity from the host's available memory, process CPU affinity, and any visible cgroup v1/v2 limits; when computing host memory headroom, it reserves the larger of 2 GiB or 10% of total physical memory as a system buffer. Under purely default settings, a single build typically requests roughly half of the pool's capacity, capped by default at 8 CPUs, 16 GiB of memory, and 4 parallel compilation processes; if the pool itself is small, a single build may use its full available capacity, and in single-core environments it falls back by default to 1 compilation process with 1 Lean thread.
-
-To inspect how a budget is derived, run the read-only diagnostic command `qatlib-env config explain --json`. Without fetching dependencies or acquiring build-pool quotas, it displays the detected underlying capacity (`resources`), the automatically derived values prior to overrides (`automatic`), and the effective parameters and routing configuration (`values` and `configuration.routing`), making it straightforward to combine source attribution (`sources`, `configuration.sources`) and diagnostic warnings (`warnings`) to decide whether manual tuning is needed. Persistent local settings can be stored in `~/.qatlib/env.toml`, while one-off adjustments for a single build can be passed via command-line flags. The tool preserves explicitly configured user values, though actual job execution remains jointly bounded by remaining capacity in the shared build pool and underlying platform resource limits. See [Configuration Sources and Resource Detection](docs/en/build.md#configuration) for details.
-
-## Local Directories
-
-The default state root directory for `qatlib-tools` is `~/.qatlib`, which can be redirected to another location via the `QATLIB_HOME` environment variable. Within this directory, personal configuration resides in `env.toml`, local retrieval indexes are stored in `retrieve/`, and newly created build-pool ledgers and cloud job receipts are placed under `state/pool/` and `state/cloud/`, respectively; to verify the exact read/write locations in effect, check the `paths` field in the output of `qatlib-env config explain --json`. Across version upgrades, the tools remain compatible with existing configuration files and indexes, and running build pools continue using their existing ledger and lock files; Lake build artifacts, login configurations for upstream CLIs, and legacy worktree pools are each maintained in separate paths. See [Directory Layout and Compatibility Rules](docs/en/build.md#local-paths) for details.
-
 <a id="artifact-cache"></a>
-## Building and Shared Artifact Caching
 
-```bash
-qatlib-env prepare
-qatlib-env plan MyLib.Facts
-qatlib-env run -- lake build MyLib.Facts
-```
+## Builds, caches, and the local budget
 
-During a build, Lake compiles the target module and its upstream dependencies in import order. When upstream dependency artifacts are already in place with matching hashes, you can quickly check an individual source file with `qatlib-env run -- lake --no-build lean <File.lean>`; if any dependency still needs to be built, the command fails immediately with an error.
+For a day-to-day edit, follow the sequence in [A second worktree](docs/en/worktrees.md): run `plan`, then `prepare`, then `run -- lake build`. To inspect capacity, effective values, and paths without fetching dependencies or acquiring a build-pool lease, run `qatlib-env config explain --json`.
 
-In Lean v4.35 source files with the `module` system enabled, declarations inside a module are private by default: a declaration must sit inside a `public section` or carry an explicit `public` modifier before downstream modules can reference its name, and `public import` is required whenever an imported module's public interface should be re-exported further downstream. If downstream consumers also need to unfold an ordinary definition body in proofs or computation—beyond merely referencing its name—verify that the declaration is annotated with `@[expose]` and write test cases that genuinely rely on unfolding it. Note that ordinary files without `module` enabled can still read private module internals; testing exclusively from non-`module` files often fails to surface cases where true `module` consumers cannot resolve a declaration name or unfold its definition body.
-
-During day-to-day development and dependency fetching, three classes of precompiled artifacts are stored and reused through distinct mechanisms:
-
-1. **Lake local shared artifacts**: When Lake in Lean v4.35 is invoked directly without explicit cache options, it reads from the shared cache in read-only mode by default, yet still restores artifacts into the current package's build directory on a module hit. For concurrent development across multiple worktrees, we recommend setting `enableArtifactCache = true` and `restoreAllArtifacts = false`: on a hit against native artifacts in the shared directory, Lake resolves the content hash from its input-tracking metadata and reads `.olean` files directly in place under `LAKE_CACHE_DIR`, without requiring filesystem reflink support or cross-worktree hard links. Meanwhile, each worktree retains its own independent `.lake` directory, and `.ilean` index files used by the editor continue to be written locally as usual.
-2. **R2 remote artifacts**: For dependency packages configured with an R2 remote cache, `qatlib-env prepare` first prepares the source code pinned by the dependency lock, downloads and verifies any precompiled artifacts missing locally, and registers their mappings in the local Lake cache. Because the hard-link operations required when publishing individual artifacts take place entirely within the cache directory, the shared cache and worktrees can reside on different drive letters on Windows.
-3. **Dedicated Mathlib cache**: Under the standard dependency layout, Mathlib's `lake exe cache get` unpacks precompiled archives directly into `.lake/packages/mathlib/.lake/build/` inside the current worktree.
-
-For cache field defaults, configuration precedence between the root package and dependencies, and detailed behavior when restoring or downloading artifacts across drives, see [Lake Cache Flags](docs/en/build.md#cache-flags) and [Windows Cross-Drive Storage and Path Length](docs/en/build.md#windows).
-
-Use `qatlib-env workspace scan <directory> [other directories ...]` to find worktrees. Add `--inspect-ignored` to inspect Git-ignored files.
-
-To reclaim disk space occupied by idle worktrees, run `qatlib-env workspace clean-caches --checkout <path> --derived-only --dry-run` to preview the `.lake/build` and `.lake/packages` directories. To retire entire worktrees, preview with `qatlib-env workspace trash-checkouts --checkout <path>` and add `--apply` after verification to move them to the trash. The tool also prunes stale registrations from the parent Git repository by default. See [Worktrees and Artifact Storage](docs/en/build.md#cache-layout) for details.
+Cache switches, the nine restore combinations, Windows cross-volume behavior, the seven configuration layers, and the files under `~/.qatlib` are documented in [Build environment, caching, and resource control](docs/en/build.md). Budget fields are under [Configuration precedence](docs/en/build.md#configuration), and directories are under [Local data directories](docs/en/build.md#local-paths).
 
 <a id="retrieval"></a>
 
-## Lean Documentation and Retrieval
+## Retrieval
 
-Running `qatlib-retrieve index` builds a local static lexical index, written by default to `${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlite3`, where `<corpus-key>` is the first 24 hexadecimal characters of the SHA-256 digest of the project root's resolved absolute path. If you select a custom database path via `--db`, the target file must reside outside all indexed source repositories. Once the index is ready, query commands locate matching declarations along with `variable` declarations from enclosing `section` blocks directly, without launching the Lean compiler or Lake:
-
-```bash
-qatlib-retrieve index
-qatlib-retrieve query 'postselection normalization' --kind theorem
-qatlib-retrieve query --cite GilyenSuLowWiebe2019
-```
-
-When documenting source files, use module docstrings `/-! ... -/` to state the overall responsibility of a module, and place `/-- ... -/` docstrings immediately above declarations to record mathematical semantics, preconditions, and typical usage. Wrap inline cross-declaration references in backticks using fully qualified names, and write bibliography citations as `[CiteKey]` matching entries in `docs/references.bib`. Downstream development repositories need only maintain newly added bibliography entries locally; during bibliography validation, the tooling automatically combines them with the locked public baseline to check uniformly for missing keys, duplicate keys, and conflicting entries under the same key.
-
-For documentation rendering, `doc-gen4` builds full-site documentation with a global symbol table, page routing, and a bibliography index, automatically turning backticked declaration names and citation keys into cross-page links. By contrast, the editor's Lean LSP hover renders only the current declaration's own docstring fragment without site-wide routing or a global bibliography index. To make reference papers directly clickable from editor hover popups as well, include standard Markdown links pointing to the DOI or arXiv URL in the comment. See [Lean Documentation, Bibliography, and Source Retrieval](docs/en/lean-docs.md) for details.
+From inside a Lean project, run `qatlib-retrieve index`, then `qatlib-retrieve query`, and open the source that a hit points to. Indexing, bibliographies, and website links are compared in [Lean documentation, bibliography, and source retrieval](docs/en/lean-docs.md).
 
 <a id="forge"></a>
-
-## GitHub and Gitea
-
-For everyday PR viewing, creation, and commenting, use `gh`, `tea`, or `gt` directly. When you need to aggregate check results across multiple APIs or execute guarded write operations verified against an expected commit, use the following commands:
-
 <a id="cli-reference"></a>
 
-| Command | Purpose |
-| --- | --- |
-| `qatlib-forge pr checks` | Aggregate relevant checks and actual job states for the same PR head |
-| `qatlib-forge pr paths` | Verify build-path matches and conditions for reusing existing CI results |
-| `qatlib-forge pr activity` | Filter out recognized bot activity to inspect long-inactive candidate PRs |
-| `qatlib-forge pr merge` | Merge a PR with expected-head verification |
-| `qatlib-forge branch delete` | Safely delete a branch after verifying its remote SHA and branch protection rules |
+## Pull requests
 
-GitHub and Gitea represent draft PRs and expose status endpoints differently: GitHub provides a dedicated `isDraft` field and exposes check data separately across check-runs, commit statuses, and Actions job endpoints, whereas Gitea derives draft status from instance-configured title prefixes (such as `WIP:` or `[WIP]`). On a draft PR, the Build job may be conditionally skipped while the outer commit-status summary still reports `pending`. Inspecting PR status therefore requires drilling down into workflow runs and individual jobs for the exact same PR head SHA to distinguish conditional skips (`skipped`), jobs that have not yet run, and genuine passes.
+To open a first draft, write a verification record that someone else can rerun, and read Checks for the current commit, follow [Pull requests](docs/en/pull-requests.md).
 
-When multiple contributors and agents submit drafts concurrently, a full-repository build often takes tens of minutes, whereas static documentation checks typically take about a minute. If a PR touches only documentation outside the configured build paths, repository rules allow running static checks alone. On top of that, as long as the tested PR head has not changed and any commits added to the mainline in the meantime are likewise documentation changes that do not match the build rules and touch paths disjoint from the current PR, passing job results already verified on that head can be reused directly without a redundant rebuild. Before reusing prior results, however, path rules, the tested baseline, and existing job evidence must still be verified item by item.
-
-New pushes can still arrive on a remote branch between the completion of human review and the actual merge or branch deletion. To guard against this, `qatlib-forge pr merge` passes the expected head commit to the server for verification, while `qatlib-forge branch delete` first checks whether the target is the default branch or matches a protection rule and then relies on Git's `--force-with-lease` to require that the remote ref still points to the expected SHA, preventing accidental deletion of newly pushed commits. See [Pull Requests on GitHub and Gitea](docs/en/forge.md) for details.
+A review answers three questions: which head the existing checks measured, whether that evidence applies to the current pull request, and whether it is safe to merge now. Walk through that workflow in [Pull requests on GitHub and Gitea](docs/en/forge.md). The summary commands are `qatlib-forge pr checks`, `qatlib-forge pr paths`, `qatlib-forge pr merge`, and `qatlib-forge branch delete`; pass `--help` to see their options.
 
 <a id="promotion"></a>
 
-## Promoting Shared Results to the Public Library
+## Shared work entering the public library
 
-To contribute reusable formalizations to a public library, gather the Lean files and their dependencies, then test a candidate version in projects that use those interfaces. Projects that depend on the library can rehearse the switch in a draft PR. Once the library publishes the stable interfaces and precompiled artifacts, update the dependency lock in that same PR and remove superseded local source files and bibliography entries now included in the library. Follow each project's guidelines for directory layout, review, and acceptance. See [Promotion Steps and Temporary Alias Checks](docs/en/promotion.md) for details.
+Follow [How shared work enters the public library](docs/en/promotion.md) for whole-file migration, an ordinary `module` consumer probe, lock verification in a clean worktree, and the lock update after a release.
 
-<a id="field-notes"></a><a id="runner"></a>
+<a id="field-notes"></a>
+<a id="runner"></a>
 
-## Build Troubleshooting and Runners
+## Runners
 
-Under Linux cgroup v2, `memory.current` counts both anonymous process memory and the filesystem page cache (`file`). After heavy reads and writes of compiled artifacts finish, unreclaimed page cache can continue occupying the cgroup's accounted memory budget even after the compiler processes themselves have exited. When diagnosing build-pool admission waits, inspect `memory.current`, the detailed breakdown in `memory.stat`, and the memory limits across each level of the cgroup hierarchy together.
+To attach a host, follow [Self-hosted runners](docs/en/runner.md) in order:
 
-When a persistent CI runner cancels a single job, it typically terminates only that job's process rather than stopping the entire runner service, so service-level `KillMode=control-group` is not triggered. On Linux, the tooling uses `PR_SET_PDEATHSIG` so the guard process promptly receives a termination signal if its parent exits, and `PR_SET_CHILD_SUBREAPER` to adopt orphaned descendant processes so they can be reaped cleanly; in environments with a working systemd backend, heavy tasks can also be placed in a dedicated transient scope so lingering processes are swept across the entire cgroup upon cancellation.
+1. Confirm the controllers.
+2. Read `--help` from the pinned source.
+3. Run `init`.
+4. Run `register`.
+5. Match labels.
+6. Read the effective limits back.
+7. Accept the result as that lane's service account.
 
-When configuring concurrency, `jobs` sets the number of parallel build processes and `lean_threads` sets the thread count within each process. The build pool budgets total requested CPU quota as the product of the two—for example, 4 processes opening 4 threads each request a CPU quota of 16. Multiple concurrent worktrees on the same host should share a single build-pool ledger for coordinated rate limiting, while keeping each worktree's `.lake` directory independent. See [CI Runners and Process Troubleshooting](docs/en/runner.md) for details.
+Page-cache accounting, processes left after cancellation, and the Windows Job Object are indexed by symptom in [Runner troubleshooting](docs/en/runner-troubleshooting.md).
 
 <a id="self-test"></a>
 
-## Tooling Self-Tests and Offline Manual Verification
+## Changing this tools repository
 
-When maintaining this tooling repository, run `uv lock --check`, `uv build`, and `uv run --with pytest --with hatchling --with jsonschema pytest -q -rs` sequentially with Python 3.12 to run the exact same build and full test suite locally as in GitHub CI.
+To run the local commands that match `.github/workflows/ci.yml` (including the human-contract check and the clean-environment wheel smoke test), see the [contributing guide](CONTRIBUTING.en.md#self-test). In this repository, `CI / test` runs for draft pull requests as well as documentation-only pull requests. Pages deployment is a separate workflow, described in [GitHub workflows](docs/en/github-ci.md).
 
-If `uv` is not installed in the current environment, you can create a fresh virtual environment, build distribution packages with `build` before running the self-tests, and leave installation tests that invoke `uv` directly for verification in an environment with `uv`. Always complete the build before running the test suite so that the wheel package under `dist/` read by the tests comes from the current working tree:
-
-```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -e . build pytest hatchling jsonschema
-.venv/bin/python -m build
-.venv/bin/python -m pytest -q -rs --ignore=tests/migrated_dev/test_migrated_dev_smoke_packages.py
-```
-
-The built wheel packages the repository root `README.md` byte-for-byte as `qatlib_env/_manual.md` and bundles `docs/` into `qatlib_env/docs/`. Running `qatlib-env docs --list` lists only the Markdown topics directly under `docs/`, which are selected for reading using the filename without its `.md` suffix. After installing the current wheel via `pipx` or a clean `venv` and confirming that the invoked command resolves to the freshly installed environment, run `qatlib-env docs | cmp README.md -` and `qatlib-env docs build | cmp docs/build.md -` from the repository root to verify byte-for-byte parity between the offline manual, topic guides, and their source files.
-
-This project is licensed under the [Apache License, Version 2.0](./LICENSE).
+This project is released under the [Apache License, Version 2.0](./LICENSE).

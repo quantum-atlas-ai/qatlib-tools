@@ -21,8 +21,7 @@ import tomllib
 from typing import Mapping
 
 from .config import load_config
-from .envvars import env_value
-from . import resources
+from . import diagnostics, resources
 from qatlib_search.lean_source import import_header, mask_comments
 
 MIB = 1024**2
@@ -66,6 +65,101 @@ class Module:
     toolchain: bool = False
 
 
+def _cache_roots(project: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
+    """Return the native Lake cache locations visible to this checkout.
+
+    ``LAKE_CACHE_DIR`` is the primary location selected by qatlib-env.  The
+    Elan toolchain cache is included as a compatibility fallback because Lake
+    can consume it before any output is materialised in the checkout.
+    """
+    roots: list[Path] = []
+    configured = str(env.get("LAKE_CACHE_DIR", "")).strip()
+    if configured:
+        roots.append(Path(configured).expanduser())
+    home = Path(env.get("USERPROFILE" if os.name == "nt" else "HOME", str(Path.home())))
+    elan = Path(env.get("ELAN_HOME", str(home / ".elan")))
+    toolchain = str(env.get("ELAN_TOOLCHAIN", "")).strip()
+    if not toolchain and (project / "lean-toolchain").is_file():
+        toolchain = (project / "lean-toolchain").read_text(encoding="utf-8").strip()
+    if toolchain:
+        roots.append(elan / "toolchains" / toolchain.replace("/", "--").replace(":", "---") / "lake" / "cache")
+    return tuple(dict.fromkeys(path.resolve() for path in roots))
+
+
+def _cache_has_complete_mapping(mapping: Path, cache: Path) -> bool:
+    """Check that a native mapping has readable artifacts for its outputs."""
+    try:
+        lines = [json.loads(line) for line in mapping.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if lines and isinstance(lines[0], str):
+            rows = lines[1:]
+        elif isinstance(mapping, Path):
+            record = json.loads(mapping.read_text(encoding="utf-8"))
+            rows = [record.get("data", record)]
+        else:  # pragma: no cover - defensive for unusual Path implementations
+            rows = []
+        descriptors: list[str] = []
+
+        def collect(value):
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{16}\.[A-Za-z0-9._-]+", value):
+                descriptors.append(value.lower())
+            elif isinstance(value, dict):
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        for row in rows:
+            collect(row)
+        olean = [name for name in descriptors if ".olean" in name]
+        artifacts = cache / "artifacts"
+        return bool(olean) and all((artifacts / name).is_file() and not (artifacts / name).is_symlink()
+                                   and (artifacts / name).stat().st_size > 0 for name in olean)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def package_cache_warm(project: Path, package_root: Path, env: Mapping[str, str]) -> bool:
+    """Return whether a locked dependency has a complete native cache hit.
+
+    Revision manifests are preferred because they bind the artifacts to the
+    exact lock revision.  A ``LAKE_PKG_URL_MAP`` entry may also point Lake at a
+    local mirror that has already published a matching output mapping.  The
+    latter is only accepted for a clean, locked package and never for the
+    root project.
+    """
+    if package_root.resolve() == project.resolve() or not package_root.is_dir():
+        return False
+    try:
+        manifest = json.loads((project / "lake-manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    name = package_root.name
+    entry = next((item for item in manifest.get("packages", [])
+                  if isinstance(item, dict) and str(item.get("name", "")).strip("«»") == name), None)
+    revision = str(entry.get("rev", "")) if entry else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        return False
+    if git(package_root, "status", "--porcelain=v1", "--untracked-files=all", "--",
+           "*.lean", "lakefile.toml", "lakefile.lean", "lean-toolchain"):
+        return False
+    urls = {}
+    try:
+        urls = json.loads(str(env.get("LAKE_PKG_URL_MAP", "{}")))
+    except (TypeError, ValueError):
+        return False
+    mapped = {str(key).strip("«»") for key in urls} if isinstance(urls, dict) else set()
+    for cache in _cache_roots(project, env):
+        exact = cache / "revisions" / name / (revision + ".jsonl")
+        if exact.is_file() and _cache_has_complete_mapping(exact, cache):
+            return True
+        if name in mapped:
+            for mapping in sorted((cache / "outputs" / name).glob("*.json")) if (cache / "outputs" / name).is_dir() else ():
+                if _cache_has_complete_mapping(mapping, cache):
+                    return True
+    return False
+
+
 class SourceGraph:
     def __init__(self, project: Path, env: Mapping[str, str]):
         self.project, self.env = project, env
@@ -78,6 +172,7 @@ class SourceGraph:
         self.module_errors: dict[str, set[str]] = defaultdict(set)
         self.lock_mismatches: list[dict] = []
         self.warm_cache: dict[str, bool] = {}
+        self.cache_warm_packages: set[Path] = set()
         self.package_stamp: dict[Path, int] = {}
         self.conf = self._toml(project / "lakefile.toml")
         self.add_package(project, "project", self.conf)
@@ -118,13 +213,17 @@ class SourceGraph:
                 conf = self._toml(base / "lakefile.toml")
                 self.add_package(base, name, conf)
         self.add_toolchain()
+        for package_root in {module.root for module in self.modules.values()
+                             if module.package != "project" and not module.toolchain}:
+            if package_cache_warm(self.project, package_root, self.env):
+                self.cache_warm_packages.add(package_root.resolve())
 
     @staticmethod
     def _toml(path: Path) -> dict:
         if not path.is_file():
             return {}
         try:
-            return tomllib.loads(path.read_text())
+            return tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise ValueError(f"{path}: invalid TOML: {error}") from error
 
@@ -232,9 +331,7 @@ class SourceGraph:
         if not re.fullmatch(r"leanprover/lean4:v4\.\d+\.\d+(?:-[\w.-]+)?", tc):
             self.errors.add("<missing or unpinned lean-toolchain>")
             return
-        explicit = env_value(self.env, "QATLIB_REAL_SYSROOT", None) or self.env.get("LEAN_SYSROOT")
-        elan = Path(self.env.get("ELAN_HOME", str(Path.home() / ".elan")))
-        prefix = Path(explicit) if explicit else elan / "toolchains" / tc.replace("/", "--").replace(":", "---")
+        prefix = diagnostics.toolchain_prefix(tc, self.env)
         for source in [prefix / "src/lean", prefix / "src/lean/lake"]:
             for name in ("Init", "Lean", "Std", "Lake"):
                 paths = [source / (name + ".lean"), *_sources(source / name)]
@@ -314,6 +411,8 @@ class SourceGraph:
 
     def _warm(self, name: str) -> bool:
         module = self.modules[name]
+        if module.root.resolve() in self.cache_warm_packages:
+            return True
         output = module.output
         try:
             stat = output.stat()
@@ -322,6 +421,11 @@ class SourceGraph:
             if module.toolchain:
                 return True
             trace = output.with_suffix(".trace")
+            # Locked package sources are immutable inputs.  Lake's native
+            # cache and upstream package checkouts legitimately omit the
+            # workspace-local trace while retaining a usable .olean.
+            if module.package != "project" and not trace.is_file():
+                return True
             stamp = min(trace.stat().st_mtime_ns, stat.st_mtime_ns)
             if module.root not in self.package_stamp:
                 paths = [module.root / p for p in ("lakefile.toml", "lakefile.lean", "lean-toolchain", "lake-manifest.json")]
@@ -371,33 +475,18 @@ def remote_cache(project: Path, head: str | None, config) -> dict:
         return {"status": "unknown", "module_hit_rate": None}
 
 
-def estimate(project: str | Path, targets=(), *, env: Mapping[str, str] | None = None,
-             cli=None, policy="auto", cold=False, full_gate=False, memory_mib=0,
-             check_remote_cache=False) -> dict:
-    if policy not in {"auto", "local", "cloud"}:
-        raise ValueError("policy must be auto, local, or cloud")
-    if memory_mib < 0:
-        raise ValueError("memory-mib must be nonnegative")
-    project = Path(project).resolve()
-    environment = os.environ if env is None else env
-    runtime = resources.resolve_config(project, cli, environment)
-    config = runtime.configuration
-    graph = SourceGraph(project, environment)
-    selected, entire = graph.targets(targets)
-    full_gate = full_gate or entire
+def _build_closure(graph: SourceGraph, selected: set[str], *, cold: bool):
+    project = graph.project
     # Build project reverse edges even for modules outside the selected closure.
     reverse = defaultdict(set)
     for name in graph.project_modules:
         for dep in graph.deps(name):
             reverse[dep].add(name)
     closure = graph.walk(selected, graph.deps)
-    changed_names = set()
     paths = (git(project, "diff", "--name-only", "HEAD", "--", "*.lean") or "").splitlines()
     paths += (git(project, "ls-files", "--others", "--exclude-standard", "--", "*.lean") or "").splitlines()
-    changed_paths = {str((project / p).resolve()) for p in paths}
-    for name, module in graph.modules.items():
-        if module.package == "project" and module.path and str(module.path.resolve()) in changed_paths:
-            changed_names.add(name)
+    changed_paths = {(project / p).resolve() for p in paths}
+    changed_names = {name for name in graph.project_modules if graph.modules[name].path.resolve() in changed_paths}
     initial = {n for n in closure & graph.modules.keys() if not graph.warm(n)} | (changed_names & closure)
     if cold:
         initial |= {n for n in closure & graph.modules.keys() if not graph.modules[n].toolchain}
@@ -417,16 +506,40 @@ def estimate(project: str | Path, targets=(), *, env: Mapping[str, str] | None =
             if dep and dep.output.is_file() and graph.modules[name].output.is_file() and dep.output.stat().st_mtime_ns > graph.modules[name].output.stat().st_mtime_ns:
                 invalid.add(name)
     invalid = graph.walk(invalid | (closure - known), lambda n: users[n]) & known
+    if graph.lock_mismatches:
+        # Outputs from mismatched dependencies are never certified warm.
+        invalid |= package_nodes
+    reverse_count = len((affected & graph.project_modules) - selected)
+    return closure, invalid & package_nodes, reverse_count
+
+
+def estimate(project: str | Path, targets=(), *, env: Mapping[str, str] | None = None,
+             cli=None, policy="auto", cold=False, full_gate=False, memory_mib=0,
+             check_remote_cache=False, cache_only=False) -> dict:
+    if policy not in {"auto", "local", "cloud"}:
+        raise ValueError("policy must be auto, local, or cloud")
+    if memory_mib < 0:
+        raise ValueError("memory-mib must be nonnegative")
+    project = Path(project).resolve()
+    environment = os.environ if env is None else env
+    runtime = resources.resolve_config(project, cli, environment)
+    config = runtime.configuration
+    graph = SourceGraph(project, environment)
+    selected, entire = graph.targets(targets)
+    full_gate = full_gate or entire
+    cache_only = cache_only and not (full_gate or cold)
+    if cache_only:
+        # Lake validates its native depHashes and refuses to build cache misses.
+        closure, rebuilt, reverse_count = graph.walk(selected, graph.deps), set(), 0
+    else:
+        closure, rebuilt, reverse_count = _build_closure(graph, selected, cold=cold)
+    known = closure & graph.modules.keys()
+    package_nodes = {n for n in known if not graph.modules[n].toolchain}
     reachable_errors = {error for name in closure for error in graph.module_errors.get(name, ())}
     unresolved = sorted((closure - graph.modules.keys()) | graph.errors | reachable_errors)
     head = git(project, "rev-parse", "HEAD")
     if head is None:
         unresolved.append("<missing Git HEAD>")
-    if graph.lock_mismatches:
-        # Outputs from mismatched dependencies are never certified warm.
-        invalid |= package_nodes
-    rebuilt = invalid & package_nodes
-    reverse_count = len((affected & graph.project_modules) - selected)
     jobs = runtime.values["jobs"]
     process_mib = max(2048, runtime.values["memory_budget"] // MIB // jobs)
     heavy = sorted(n for n in rebuilt if any(fnmatch.fnmatch(n, p) or p in n or
@@ -461,13 +574,15 @@ def estimate(project: str | Path, targets=(), *, env: Mapping[str, str] | None =
     if policy == "cloud": reason("cloud_requested")
     return {"schema_version": 1, "head": head, "targets": list(targets), "target_modules": len(selected),
             "closure_package_modules": len(package_nodes), "closure_toolchain_modules": len(known - package_nodes),
-            "reverse_invalidated_modules": reverse_count, "warm_modules": len(package_nodes - rebuilt),
+            "reverse_invalidated_modules": reverse_count,
+            "warm_modules": None if cache_only else len(package_nodes - rebuilt),
             "cold_or_rebuild_modules": len(rebuilt), "unresolved_imports": unresolved,
             "dependency_lock_mismatches": graph.lock_mismatches, "heavy_modules": heavy,
             "estimated_peak_mib": peak, "estimated_seconds_range": seconds,
             "estimate_basis": {"seconds_per_module": [5, 60], "per_process_mib": process_mib,
                                "jobs": jobs, "lean_threads": runtime.values["lean_threads"],
-                               "cache_validation": "trace/mtime/lock screening; native depHash not evaluated",
+                               "cache_validation": "Lake --no-build at execution" if cache_only else
+                               "trace/mtime/lock screening; native depHash not evaluated",
                                "confidence": "heuristic; excludes linking and audit overhead"},
             "full_gate": bool(full_gate), "mode": "cloud" if reasons else "local", "reasons": reasons,
             "configuration": config.explain(),
@@ -483,8 +598,9 @@ class AdmissionError(ValueError):
 
 
 def admit(project, targets=(), *, env=None, cli=None, policy="auto", full_gate=False,
-          allow_local_heavy=False) -> dict:
-    plan = estimate(project, targets, env=env, cli=cli, policy=policy, full_gate=full_gate or _full_gate.get())
+          allow_local_heavy=False, cache_only=False) -> dict:
+    plan = estimate(project, targets, env=env, cli=cli, policy=policy,
+                    full_gate=full_gate or _full_gate.get(), cache_only=cache_only)
     allowed = bool(allow_local_heavy or _permission.get())
     plan["allow_local_heavy"] = allowed
     if any(r["code"] in {"pool_memory_exceeded", "pool_cpu_exceeded", "task_memory_exceeded",
@@ -493,6 +609,18 @@ def admit(project, targets=(), *, env=None, cli=None, policy="auto", full_gate=F
     if plan["mode"] == "cloud" and (policy == "cloud" or not allowed):
         raise AdmissionError(plan)
     return plan
+
+
+def cache_only_lean(argv, project: Path) -> bool:
+    """Recognize the native cache-only path without accepting Lake overrides."""
+    if len(argv) < 4 or Path(argv[0]).stem.casefold() != "lake" or argv[-2] != "lean":
+        return False
+    options = set(argv[1:-2])
+    return ("--no-build" in options and options <= {"--no-build", "-q", "--quiet", "-v", "--verbose",
+                                                     "--ansi", "--no-ansi"}
+            and not argv[-1].startswith(("-", "+")) and argv[-1].endswith(".lean")
+            and (project / "lakefile.toml").is_file() and not (project / "lakefile.lean").exists()
+            and not (project / ".lake/package-overrides.json").exists())
 
 
 def command_request(argv, project: Path) -> tuple[bool, list[str], bool]:

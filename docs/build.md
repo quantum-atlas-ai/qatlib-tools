@@ -1,5 +1,9 @@
 # 编译环境、缓存与资源控制
 
+构建后的公理白名单、零 `sorry` 门禁、下游接口检查与内核重放见 [Lean 证明复核与公理审计](verification.md)。
+
+本页作为按主题查阅的参考手册。若想在第二棵工作树中完整实操一次依赖计划、环境准备、模块构建、单文件检查与清理预览，请从[在 Lean 仓库里打开第二棵工作树](worktrees.md)开始。首次下载 Lean 工具链或编译依赖的耗时说明见[五分钟验证](quickstart.md)末尾，该步骤独立于命令行工具本身的安装验证。
+
 <a id="lakefile"></a>
 
 ## `lakefile.toml` 怎么读
@@ -98,6 +102,12 @@ globs = ["MyLib.*"]
 - **仅回收派生构建数据**：可执行 `qatlib-env workspace clean-caches --checkout <路径> --derived-only --dry-run` 提前预览将要清理的 `.lake/build` 与 `.lake/packages` 内容，核对安全无误后，再将参数替换为 `--apply` 正式执行。
 - **回收整棵关联工作树**：如果需要清理已经废弃的旧关联工作树，先运行 `trash-checkouts` 进行安全预览；在确认该工作树内不存在未提交的独有材料、没有其他分支正在占用且无任何后台进程正在写入后，再执行安全回收。回收完成后，工具默认会自动注销并清理失效的 Git 工作树登记，同时完整保留原有的分支引用。在工具输出的报告中，文件移动操作与磁盘实际腾退释放的空间大小将分别独立核算。
 
+<a id="github-acceleration"></a>
+
+## GitHub 受限网络加速
+
+原地址不可用时，按[可选的公开 Lean Git 镜像](install.md#可选的公开-lean-git-镜像)启用限定仓库范围的镜像。
+
 <a id="windows"></a>
 
 ## Windows 跨卷和长路径
@@ -113,6 +123,16 @@ globs = ["MyLib.*"]
 针对 Windows 平台下深层目录嵌套导致的超长路径问题，首要建议是尽量将工作区与缓存目录置于较短的磁盘根路径下。需要明确区分两套长路径机制的边界：Git for Windows 提供的 `core.longpaths=true` 配置仅能解除 Git 自身操作的路径长度限制；而若要让操作系统的 Win32 API 彻底放开传统 260 字符的 `MAX_PATH` 上限，除了必须在系统注册表中启用 `LongPathsEnabled` 之外，可执行程序自身还必须在其清单（manifest）中显式声明 `longPathAware`。因此对于 Lake、Python、外部归档解压工具以及系统回收站，均需分别确认其长路径兼容性。另外请注意，启用长路径支持并不能打破“NTFS 无法跨卷建立硬链接”的物理限制。
 
 [Lake 保存与恢复实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Common.lean) · [Windows 硬链接](https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions) · [Win32 路径上限](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation) · [Git for Windows](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)
+
+首次克隆包含深层路径的仓库时，可使用 `git clone --config core.longpaths=true <URL>`，使长路径配置从初始检出起生效并由同仓关联工作树（linked worktree）自动继承。Python 依赖安装同样存在跨盘行为：若 `uv` 缓存位于 `C:` 盘而目标虚拟环境位于 `D:` 盘，`uv` 会在无法创建跨盘硬链接时自动改用文件复制——安装成功后仍可能打印硬链接降级提示，复制产生的文件占用虚拟环境所在盘的空间。
+
+围绕行尾符、缓存复用与多工作树协作，Windows 环境下还需注意以下机制：
+
+- **Lake 与 Mathlib 的 `CRLF → LF` 行尾归一化**：排查缓存未命中时，可先用 `git ls-files --eol` 对照暂存区索引、工作树行尾与 `.gitattributes` 规则。即使 `core.autocrlf=true` 将索引中的 LF 检出为工作树中的 CRLF，Lean 4.35 的 Lake 也会在 `Module.recFetchInput → Hash.ofText` 路径上调用 `crlfToLf`，以归一化后的源码文本哈希参与 `depHash` 计算；Mathlib 的 `Cache/Hashing.lean` 在计算下载缓存键前同样先执行 `crlfToLf`。因此，只要 Git 版本与对象、目标平台、依赖锁及编译参数一致，LF 与 CRLF 检出即可共享同一套 R2 清单与 Lake 模块缓存键——缓存查找应直接沿用 Git 对象哈希与 Lake 原生键，无需针对检出文件的原始字节额外加锁。此外，根仓库的 `.gitattributes` 仅约束根仓库自身文件，各 Lake Git 依赖均按其自有属性独立检出；在 Windows 上通过 Lake 物化锁定的 Git 依赖时，工具会为该子进程注入 `core.autocrlf=input`，使新检出的依赖保留上游存储行尾（显式声明的上游属性依然生效），同时既有 CRLF 检出仍按归一化内容判定是否存在本地改动。
+- **原生缓存复用与跨盘复制回退**。在 Windows 原生 Lean `4.35.0` 的单模块实测中，同一模块的 LF 与 CRLF 源码生成相同的 `depHash`，CRLF 工作树命中缓存并报告 `Reused`。从 `C:` 盘共享缓存向 `D:` 盘工作树恢复 `.ilean` 文件时，Lake 记录了硬链接失败码 `4037`，随后复制文件并正常退出。磁盘与内存实测数据见[资源占用与跨盘布局](install.md#resource-footprint)。
+- **并发 `prepare` 文件锁与禁止整目录拷贝 `.lake`**：多棵工作树同时针对同一共享缓存执行 `prepare` 时，Windows 通过缓存目录内的 `.fetch.lock` 串行化准备阶段，而各工作树内的常规增量编译仍可正常并发执行。切勿将旧工作树的 `.lake` 目录直接整目录复制到新检出的工作树中：复制工具往往保留早于新检出源码的旧文件时间戳（例如同锁 Mathlib 中的 `Chebyshev.olean` 与 `.trace` 虽均已就绪，其修改时间却仍早于目标树的 `.lean` 源文件），这会导致 `qatlib-env plan` 的时间戳预筛将其误判为冷模块，尽管原生 Lake 实际按 `depHash` 校验输入与工件。正确做法是在每棵工作树中各自运行 `prepare` 恢复构件，再按该树自身的准入评估安排编译。
+
+[Lake 4.35 模块输入](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Module.lean) · [Lake 4.35 文本哈希](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/Build/Trace.lean) · [Mathlib 4.35 缓存哈希](https://github.com/leanprover-community/mathlib4/blob/56a005855ea17e0b0958f73ec801ae140b0a1679/Cache/Hashing.lean)
 
 在 Windows 环境下，受管构建以及伴随编译任务的缓存准备流程均依托原生 Lake 运行，并借助 Windows Job Object 统一对整组进程施加 CPU 与内存的刚性约束。由于 `qatlib-env` 的默认重型模块匹配规则列表非空，且 Windows 缺乏专用的 POSIX 编译器包装层（Wrapper），既无法为匹配到的高负载模块单独分配隔离执行槽位，也无法在单次编译器调用中精确注入 `-M` 内存上限参数，因此受管 Lake 在检测到非空的重模块规则时会主动抛错拦截。针对 Windows 环境，请务必在生效的配置文件中显式配置 `heavy_patterns = []`，并通过 `qatlib-env config explain --json` 验证该配置已正确生效。关于 Job Object 的进程树初始化与生命周期清理机制，请详见 [Runner 进程隔离](runner.md#windows-job-object)。
 
@@ -178,6 +198,6 @@ require_explicit_local_heavy = true
 | 云端作业回执 | `${QATLIB_HOME:-~/.qatlib}/state/cloud/<corpus-key>.json` | CLI 参数 `--state` 具备最高优先级。若检出根目录下已存在 `.qatlib-env/cloud-state.json`，系统将优先复用并读写该回执文件。 |
 | Lake 工件与本地检查点 | Lake 工件存储目录及其 `checkpoints/` 子目录 | 环境变量 `LAKE_CACHE_DIR` 具有最高优先级；若未特别声明，则沿用 elan 对应工具链的内置目录或独立 Lake 实例的 XDG 缓存路径，并完整保留历史数据。 |
 
-在同一台宿主机上并发触发的各项构建调用，必须使用同一套全局账本与锁文件机制。归档或迁移前，应先结束该资源池的在途构建任务，再统一各调用方的工具版本与运行环境。若旧有账本或锁文件仍在原处，工具会复用该资源池。
+在同一台宿主机上并发触发的所有受管构建必须共用同一套全局账本与锁文件。归档或迁移账本目录前，请先排空该资源池中的在途构建任务，并统一各调用方的工具版本与运行环境；只要历史默认路径下的旧账本或锁文件仍在原处，工具会继续原地复用该资源池。
 
-用 `qatlib-env workspace scan /path/to/current /path/to/archive --inspect-ignored` 扫描显式指定的目录，并检查 Git 忽略的文件。扫描只读，可用 `--exact` 限定为已知检出根目录。工作树状态由对应工程仓库维护。
+若需盘点指定目录下的多棵工作树及其状态，可运行只读扫描命令 `qatlib-env workspace scan /path/to/current /path/to/archive --inspect-ignored`（连同被 Git 忽略的本地文件一并检查；传入 `--exact` 可将检查范围严格限定为给定的检出根目录）。各工作树自身的开发与分支状态仍由对应工程仓库独立维护。

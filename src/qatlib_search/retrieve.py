@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -17,7 +16,7 @@ import time
 
 from . import lean_declarations, lean_doc_source, lean_source
 from .doc_references import INLINE_RE, strip_fences, strip_source_excerpts
-from .retrieve_corpus import check_destination, default_db, digest, discover, git
+from .retrieve_corpus import check_destination, default_db, digest, discover, git, matches_text_blob
 
 SCHEMA = 1
 STOP = {'a', 'an', 'the', 'of', 'and', 'or', 'to', 'in', 'for', 'is', 'with'}
@@ -45,7 +44,8 @@ def fts_query(words: list[str], operator: str = 'AND') -> str:
 def scanner_identity() -> str:
     files = ('retrieve.py', 'retrieve_corpus.py', 'lean_source.py',
              'lean_declarations.py', 'lean_doc_source.py', 'doc_references.py', 'paths.py')
-    return digest(b''.join(Path(__file__).with_name(name).read_bytes() for name in files))
+    return digest(b''.join(Path(__file__).with_name(name).read_bytes().replace(b'\r\n', b'\n')
+                           for name in files))
 
 
 def metadata(c: sqlite3.Connection) -> dict:
@@ -102,11 +102,6 @@ def source_path(repo: dict, relative: str) -> bool:
             if relative == prefix + '.lean' or relative.startswith(prefix + '/') and relative.endswith('.lean'):
                 return True
     return False
-
-
-def blob_hash(data: bytes, expected: str | None) -> str:
-    algorithm = hashlib.sha256 if expected and len(expected) == 64 else hashlib.sha1
-    return algorithm(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
 
 
 def extract(text: str, path: Path, root: Path):
@@ -176,21 +171,26 @@ def build_index(project=None, db: str | Path | None = None, *, changed=False, us
                 raise ValueError('index belongs to a different project')
             backend = previous['backend']
         old_files = {(r['root'], r['path']): dict(r) for r in c.execute('SELECT * FROM files')} if changed else {}
-        # Locked sources must really be the pinned Git blobs, including dirty bytes.
+        # Locked sources must match the pinned Git text, including substantive edits.
         tracked = {}
         dirty = {}
         for repo in corpus.repos:
+            root = Path(repo['root'])
             if repo['revision']:
                 tracked[repo['root']] = {
                     row.split('\t', 1)[1]: row.split()[2]
-                    for row in git(Path(repo['root']), 'ls-tree', '-rz', repo['tree']).split('\0') if row}
+                    for row in git(root, 'ls-tree', '-rz', repo['tree']).split('\0') if row}
             dirty[repo['root']] = repo['revision'] is None
             if repo['revision']:
                 for relative in ('docs/references.bib', 'lakefile.toml', 'lake-manifest.json', 'lean-toolchain'):
-                    control = Path(repo['root']) / relative
+                    control = root / relative
                     expected = tracked[repo['root']].get(relative)
-                    if (control.is_file() and blob_hash(control.read_bytes(), expected) != expected
-                            or not control.is_file() and expected is not None):
+                    if control.is_file():
+                        data = control.read_bytes()
+                        matches = matches_text_blob(root, expected, data, data.replace(b'\r\n', b'\n'))
+                    else:
+                        matches = expected is None
+                    if not matches:
                         dirty[repo['root']] = True
             if repo['locked'] and dirty[repo['root']]:
                 raise ValueError(f"locked source differs from its Git blob: {repo['root']}")
@@ -220,13 +220,14 @@ def build_index(project=None, db: str | Path | None = None, *, changed=False, us
             for repo, relative, module in corpus.files():
                 key = (repo['root'], relative)
                 seen.add(key)
-                source = Path(repo['root']) / relative
+                root = Path(repo['root'])
+                source = root / relative
                 data = source.read_bytes()
-                sha = digest(data)
+                normalized = data.replace(b'\r\n', b'\n')
+                sha = digest(normalized)
                 if repo['revision']:
                     expected = tracked[repo['root']].get(relative)
-                    blob = blob_hash(data, expected)
-                    if expected != blob:
+                    if not matches_text_blob(root, expected, data, normalized):
                         if repo['locked']:
                             raise ValueError(f'locked source differs from its Git blob: {source}')
                         dirty[repo['root']] = True
@@ -238,8 +239,8 @@ def build_index(project=None, db: str | Path | None = None, *, changed=False, us
                     continue
                 if old:
                     remove(old['id'])
-                text = data.decode('utf-8')
-                decls, backgrounds, links, warning = extract(text, source, Path(repo['root']))
+                text = normalized.decode('utf-8')
+                decls, backgrounds, links, warning = extract(text, source, root)
                 if warning:
                     parse_warnings.append(warning)
                 file_id = c.execute('INSERT INTO files(repo,root,path,module,hash,warning) VALUES(?,?,?,?,?,?)',
@@ -481,7 +482,7 @@ def query(text: str, project=None, db=None, *, limit=10, cite=None, kind=None, r
             if source.is_symlink() or not source.resolve().is_relative_to(Path(row['root'])):
                 raise ValueError(f'stale source path: {source}; run index --changed')
             try:
-                data = source.read_bytes()
+                data = source.read_bytes().replace(b'\r\n', b'\n')
             except OSError:
                 raise ValueError(f'stale source (missing): {source}; run index --changed') from None
             if digest(data) != row['hash']:
@@ -506,6 +507,10 @@ def query(text: str, project=None, db=None, *, limit=10, cite=None, kind=None, r
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--version"]:
+        from importlib.metadata import version
+        print(f'qatlib-retrieve {version("qatlib-tools")}')
+        return 0
     # Only project/db/help are global. Everything after "--" is literal query
     # text, including words such as "index" that would otherwise select writes.
     position = 0

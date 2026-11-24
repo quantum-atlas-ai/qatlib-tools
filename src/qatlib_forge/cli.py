@@ -167,6 +167,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    if arguments == ["--version"]:
+        from importlib.metadata import version
+        print(f'qatlib-forge {version("qatlib-tools")}')
+        return 0
     args = _parser().parse_args(arguments)
     try:
         if args.command == "repo":

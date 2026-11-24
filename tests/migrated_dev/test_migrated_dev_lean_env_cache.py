@@ -35,11 +35,11 @@ class CacheTests(unittest.TestCase):
         project = self.root / name
         project.mkdir()
         (project / "Root").mkdir()
-        (project / "Root/Done.lean").write_text("def answer := 42\n")
-        (project / "Root/Incomplete.lean").write_text("def later := 43\n")
-        (project / "lakefile.toml").write_text('name="ConsumerLib"\n[[lean_lib]]\nname="Root"\n')
-        (project / "lean-toolchain").write_text("leanprover/lean4:v4.35.0\n")
-        (project / "lake-manifest.json").write_text('{"packages":[]}\n')
+        (project / "Root/Done.lean").write_bytes(b"def answer := 42\n")
+        (project / "Root/Incomplete.lean").write_bytes(b"def later := 43\n")
+        (project / "lakefile.toml").write_bytes(b'name="ConsumerLib"\n[[lean_lib]]\nname="Root"\n')
+        (project / "lean-toolchain").write_bytes(b"leanprover/lean4:v4.35.0\n")
+        (project / "lake-manifest.json").write_bytes(b'{"packages":[]}\n')
         return project
 
     def test_keys_precedence_and_private_save(self):
@@ -102,6 +102,10 @@ raise SystemExit(1)
         receipt = checkpoint.capture(first, env)
         self.assertEqual(receipt["modules"], 1)
         second = self.project("fresh-checkout")
+        for relative in ("lakefile.toml", "lake-manifest.json", "lean-toolchain", "Root/Done.lean"):
+            path = second / relative
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertEqual(checkpoint.local_identity(second), receipt["identity"])
         self.assertEqual(checkpoint.restore(second, env)["modules"], 1)
         self.assertEqual((second / ".lake/build/lib/lean/Root/Done.olean").read_bytes(), b"compiled olean")
         self.assertFalse((second / ".lake/build/lib/lean/Root/Incomplete.trace").exists())

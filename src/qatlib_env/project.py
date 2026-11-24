@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tomllib
+from urllib.parse import unquote, urlsplit
 
 
 @dataclass(frozen=True)
@@ -78,19 +81,118 @@ def source_directories(project: Path) -> tuple[str, ...]:
                         and not path.name.startswith('.') and any(path.rglob('*.lean'))))
 
 
-def repository_slug(project: Path) -> str:
-    from qatlib_forge.repo_api import RepoRef
-    # Read canonical identity, before transport-only url.insteadOf rewrites.
+def _git_config_values(project: Path) -> tuple[str, ...]:
+    """Read configured remote URLs without applying transport rewrites."""
     environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    result = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd=project,
-                            env=environment, capture_output=True, text=True)
-    if result.returncode:
-        return ""
     try:
-        ref = RepoRef.parse(result.stdout.strip())
+        result = subprocess.run(
+            ["git", "config", "--get-regexp", r"^remote\..*\.url$"],
+            cwd=project, env=environment, capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if result.returncode:
+        return ()
+    values = []
+    for line in result.stdout.splitlines():
+        _, separator, value = line.partition(" ")
+        if separator and value.strip():
+            values.append(value.strip())
+    return tuple(values)
+
+
+def _local_origin_path(value: str, base: Path) -> Path | None:
+    """Resolve a filesystem remote while leaving scp-style URLs untouched."""
+    value = value.strip()
+    if value.startswith("file://"):
+        parsed = urlsplit(value)
+        if parsed.netloc not in {"", "localhost"}:
+            return None
+        return Path(unquote(parsed.path)).expanduser().resolve()
+    if "://" in value or re.match(r"^[A-Za-z]:[\\/]", value):
+        return None
+    if value.startswith(("/", "./", "../", "~")) or ":" not in value:
+        path = Path(value).expanduser()
+        return (base / path if not path.is_absolute() else path).resolve()
+    return None
+
+
+def _manifest_repository_urls(project: Path, package_names: set[str]) -> tuple[str, ...]:
+    """Find locked dependency URLs for a checkout or its local mirror."""
+    urls = []
+    try:
+        resolved = project.resolve()
+    except OSError:
+        resolved = project.absolute()
+    for ancestor in (resolved, *resolved.parents):
+        manifest = ancestor / "lake-manifest.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        packages = data.get("packages", [])
+        if not isinstance(packages, list):
+            continue
+        packages_dir = data.get("packagesDir", ".lake/packages")
+        try:
+            package_root = (ancestor / packages_dir).resolve()
+            relative = resolved.relative_to(package_root)
+        except (OSError, TypeError, ValueError):
+            relative = None
+        names = set(package_names)
+        if relative is not None and len(relative.parts) == 1:
+            names.add(relative.parts[0].strip("«»"))
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+            name = str(package.get("name", "")).strip("«»")
+            url = package.get("url")
+            if name in names and isinstance(url, str) and url.strip():
+                urls.append(url.strip())
+    return tuple(dict.fromkeys(urls))
+
+
+def _repository_slug_from_origin(project: Path, value: str, seen: set[Path]) -> str:
+    from qatlib_forge.repo_api import RepoRef
+    try:
+        ref = RepoRef.parse(value)
         return f"{ref.owner}/{ref.repo}"
     except ValueError:
+        pass
+    local = _local_origin_path(value, project)
+    if local is None:
         return ""
+    package_names = {project.name, local.name}
+    package_lakefile = project / "lakefile.toml"
+    try:
+        package_lake = tomllib.loads(package_lakefile.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        package_lake = {}
+    if isinstance(package_lake.get("name"), str):
+        package_names.add(package_lake["name"].strip("«»"))
+    for candidate in _manifest_repository_urls(project, package_names):
+        slug = _repository_slug_from_origin(project, candidate, seen)
+        if slug:
+            return slug
+    if local in seen:
+        return ""
+    seen.add(local)
+    for candidate in _git_config_values(local):
+        slug = _repository_slug_from_origin(local, candidate, seen)
+        if slug:
+            return slug
+    return ""
+
+
+def repository_slug(project: Path) -> str:
+    """Return a canonical repository slug, including for local mirror origins."""
+    for origin in dict.fromkeys(_git_config_values(project)):
+        slug = _repository_slug_from_origin(project, origin, set())
+        if slug:
+            return slug
+    return ""
 
 
 def inferred_profile(project: Path) -> dict:

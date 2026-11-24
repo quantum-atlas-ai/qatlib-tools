@@ -16,7 +16,7 @@ import re
 import sys
 import time
 
-from qatlib_search.lean_declarations import declaration_names
+from qatlib_search.lean_declarations import IDENT_RE, declaration_names
 from qatlib_search.lean_source import mask_comments
 from qatlib_search.promotion import _git, locked_revision, verify_source_revision
 
@@ -28,6 +28,16 @@ SYNTAX = re.compile(
     r"^[ \t]*(?P<modifiers>(?:@\[[^\]]*\]\s*|(?:public|private|local|scoped|meta)\s+)*)"
     r"(?P<kind>notation|infixl|infixr|infix|prefix|postfix|macro|syntax)\b", re.M)
 LITERAL = re.compile(r'/-|-/|--|r#*"|"(?:\\.|[^"\\])*"|«[^»]*»', re.S)
+
+
+def may_share_export(text: str, endpoints: dict[str, set[str]]) -> bool:
+    """An explicit FQN spells both its first and last name components."""
+    if not any(first in text for first in endpoints):
+        return False
+    code = mask_comments(text, preserve_escaped_identifiers=True)
+    identifiers = {match[0][1:-1] if match[0].startswith('«') else match[0]
+                   for match in IDENT_RE.finditer(code)}
+    return any(not endpoints[first].isdisjoint(identifiers) for first in endpoints.keys() & identifiers)
 
 
 def explicit_exports(text: str) -> set[tuple[str, ...]]:
@@ -180,17 +190,14 @@ def check(repo: Path, upstream: Path, *, source_root: str | None = None,
                   upstream_indexed_files=0,
                   source_global_syntax=0, upstream_global_syntax=0)
     errors = []
-    roots: set[str] = set()
+    endpoints: dict[str, set[str]] = {}
     for side, tree, override in (('source', repo, source_root), ('upstream', upstream, upstream_root)):
         for module, path in library_sources(tree, override,
                                            tracked_only=side == 'upstream' and (tree / '.git').exists()):
             counts[side + '_files'] += 1
             text = path.read_text(encoding='utf-8')
             try:
-                # An explicit FQN must spell its first namespace component in
-                # the source. This conservative byte filter can have false
-                # positives (comments/literals), never a skipped matching name.
-                indexed = side == 'source' or any(root in text for root in roots)
+                indexed = side == 'source' or may_share_export(text, endpoints)
                 exports = explicit_exports(text) if indexed else set()
                 rules = global_syntax(text)
             except ValueError as error:
@@ -200,7 +207,8 @@ def check(repo: Path, upstream: Path, *, source_root: str | None = None,
             if side == 'source':
                 modules[module] = path
                 names.update((name, path) for name in exports)
-                roots.update(name[0] for name in exports)
+                for name in exports:
+                    endpoints.setdefault(name[0], set()).add(name[-1])
                 syntax.update((rule, path) for rule in rules)
                 continue
             counts['upstream_indexed_files'] += int(indexed)

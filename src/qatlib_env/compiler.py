@@ -63,8 +63,10 @@ def environment(project: Path, base_env: dict[str, str]) -> dict[str, str]:
         real = Path(configured_lean)
         sysroot = real.parent.parent
     else:
-        probe = supervisor.run(["lean", "--print-prefix"], cwd=project, env=result,
-                               capture_output=True, text=True, check=True, timeout=30)
+        from qatlib_env.diagnostics import measure
+        with measure("elan_resolve_ms"):
+            probe = supervisor.run(["lean", "--print-prefix"], cwd=project, env=result,
+                                   capture_output=True, text=True, check=True, timeout=30)
         sysroot = Path(probe.stdout.strip()).resolve()
         real = sysroot / "bin/lean"
     if not real.is_file() or not (sysroot / "lib/lean/Init.olean").is_file():
