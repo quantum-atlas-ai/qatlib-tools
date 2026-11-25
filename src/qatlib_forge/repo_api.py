@@ -648,10 +648,12 @@ class RepoAPI:
         return [row for row in rows if row.get("head_sha") == head_sha
                 and (event is None or row.get("event") == event)]
 
-    def action_jobs(self, run_id):
-        """Read the latest attempt's jobs, including terminal skipped jobs."""
-        return self.request(f"{self.endpoint}/actions/runs/{int(run_id)}/jobs",
-                            paginate=True, collection="jobs")
+    def action_jobs(self, run_id, *, run_attempt=None):
+        """Read jobs for the requested GitHub attempt, or the latest by default."""
+        endpoint = f"{self.endpoint}/actions/runs/{int(run_id)}"
+        if run_attempt is not None and self.ref.platform == "github":
+            endpoint += f"/attempts/{int(run_attempt)}"
+        return self.request(endpoint + "/jobs", paginate=True, collection="jobs")
 
     def dispatch(self, workflow, ref, inputs=None):
         payload = {"ref": ref, "inputs": inputs or {}}

@@ -16,11 +16,12 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import time
 import tomllib
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import urllib.error
 import urllib.request
 
@@ -241,10 +242,88 @@ def _run(repo: Path, env: dict[str, str], args: list[str], *, capture: bool = Fa
     return workspace.run(args, cwd=repo, env=env, capture=capture)
 
 
-def compute_input_tree(repo: Path, tree_inputs: list[str], env: dict[str, str] | None = None) -> str:
-    output = _run(repo, dict(os.environ if env is None else env),
-                  ["git", "rev-parse", *["HEAD:" + item for item in tree_inputs]], capture=True)
-    return hashlib.sha256(output.encode()).hexdigest()
+def compute_input_tree(repo: Path, tree_inputs: list[str], env: dict[str, str] | None = None,
+                       *, revision: str = "HEAD") -> str:
+    if not tree_inputs:
+        raise ValueError("at least one input path is required")
+    output = subprocess.check_output(["git", "rev-parse", *(f"{revision}:{item}" for item in tree_inputs)],
+                                     cwd=repo, env=env, stderr=subprocess.PIPE)
+    return hashlib.sha256(output).hexdigest()
+
+
+def probe_manifest(url: str) -> dict:
+    from .prepare import CacheError, manifest_contents
+
+    status, count, state = None, None, "transport_error"
+    try:
+        # Skip user curl configuration so this observation never uses a Lake write key.
+        response = subprocess.run(
+            ["curl", "-q", "-sS", "-L", "--proto", "=http,https", "--connect-timeout", "15",
+             "--max-time", "30", "-w", "\n%{http_code}", url],
+            capture_output=True, timeout=35,
+        )
+        body, _, code = response.stdout.rpartition(b"\n")
+        if len(code) == 3 and code.isdigit():
+            status = int(code) or None
+        if response.returncode == 0:
+            if status == 200:
+                _, count = manifest_contents(body)
+                state = "valid"
+            elif status == 404:
+                state = "miss"
+            else:
+                state = "http_error"
+    except CacheError:
+        state = "invalid_manifest"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return {"http_status": status, "entry_count": count, "state": state}
+
+
+def inspect_main(repo: Path, argv: list[str]) -> int:
+    from .ci import cache_service, cache_settings, profile, source_inputs, toolchain_dir
+    from .workspace import package_name
+
+    parser = argparse.ArgumentParser(prog="qatlib-env cache inspect",
+                                     description="Inspect committed build inputs and optionally probe public Lake manifests")
+    parser.add_argument("--path", action="append", help="Repository-relative input path, in hash order (repeatable)")
+    parser.add_argument("--remote", action="store_true", help="GET both public manifests anonymously using curl")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    package = package_name(repo) if not args.path or args.remote else None
+    library, _, slug = profile(package, project=repo) if package else (None, None, None)
+    paths = args.path or source_inputs(repo, library)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    tree = compute_input_tree(repo, paths, revision=head)
+    toolchain = None
+    if args.remote:
+        toolchain = subprocess.check_output(["git", "show", head + ":lean-toolchain"],
+                                            cwd=repo).decode("utf-8").strip()
+    result = {"head_sha": head, "input_tree": tree, "paths": paths}
+    failed = False
+    if args.remote:
+        endpoint = cache_service(cache_settings(repo)).get("revisionEndpoint", "").rstrip("/")
+        url = urlparse(endpoint)
+        if not slug or not toolchain or url.scheme not in {"http", "https"} or not url.hostname \
+                or url.username is not None or url.query or url.fragment:
+            raise ValueError("remote inspection requires a cache repository, a toolchain, and a public revision endpoint")
+        prefix = quote(f"{slug}/tc/{toolchain_dir(toolchain)}", safe="/")
+        manifests = {}
+        for kind, suffix in (("revision", head + ".jsonl"), ("input_tree", "inputs/" + tree + ".jsonl")):
+            key = f"{prefix}/{suffix}"
+            observation = probe_manifest(f"{endpoint}/{key}")
+            failed |= observation["state"] not in {"valid", "miss"}
+            manifests[kind] = {"key": key, **observation}
+        result["manifests"] = manifests
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"input_tree={tree} head_sha={head}")
+        for path in paths:
+            print(f"  {path}")
+        for kind, manifest in result.get("manifests", {}).items():
+            print(f"{kind}: {manifest['state']} HTTP={manifest['http_status']} entries={manifest['entry_count']}")
+    return int(failed)
 
 
 def _sign(key: bytes, value: str) -> bytes:

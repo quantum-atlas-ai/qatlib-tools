@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager, nullcontext
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -183,9 +182,8 @@ def source_inputs(project, library):
 
 
 def input_tree(project, library):
-    paths = source_inputs(project, library)
-    data = subprocess.check_output(["git", "rev-parse", *("HEAD:" + p for p in paths)], cwd=project)
-    return hashlib.sha256(data).hexdigest()
+    from .r2_cache import compute_input_tree
+    return compute_input_tree(project, source_inputs(project, library))
 
 
 def toolchain_dir(raw):
@@ -349,11 +347,17 @@ def lint(project, env):
     mirror_main(project, env)
 
 
-def cache_service(project, env, package):
-    config = tomllib.loads((project / "lake-cache.toml").read_text(encoding="utf-8"))["cache"]
-    service = next(s for s in config["service"] if s["name"] == config["defaultService"])
-    key = write_key(package, env) or service.get("s3Auth", "").strip()
-    return service["revisionEndpoint"].rstrip("/"), key
+def cache_settings(project):
+    return tomllib.loads((project / "lake-cache.toml").read_text(encoding="utf-8")).get("cache", {})
+
+
+def cache_service(config, *, upload=False):
+    name = config.get("defaultUploadService") if upload else None
+    name = name or config.get("defaultService")
+    for service in config.get("service", []):
+        if service["name"] == name:
+            return service
+    raise ValueError("configured Lake cache service is missing from lake-cache.toml")
 
 
 @contextmanager
@@ -670,23 +674,36 @@ def restore_ltars(candidate, cache, build):
 
 
 def compile_targets(project, env, targets, kind, candidate):
+    from .prepare import phase
+
     output = project / ".lake/outputs.jsonl"
     command = ["lake", "--no-build", "build", *targets]
-    if kind == "exact" and supervisor.run(
-        command, cwd=project, env=workspace.command_runtime_environment(project, env, command),
-        timeout=float(env_value(env, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
-        module_timeout=float(env_value(env, "QATLIB_MODULE_TIMEOUT", "1800")) or None
-    ).returncode == 0:
+    summary = env.get("GITHUB_STEP_SUMMARY")
+    returncode = None
+    with phase("no-build", summary=summary, cache_kind=kind) as observation:
+        if kind == "exact":
+            returncode = supervisor.run(
+                command, cwd=project, env=workspace.command_runtime_environment(project, env, command),
+                timeout=float(env_value(env, "QATLIB_STAGE_TIMEOUT", "10800")) or None,
+                module_timeout=float(env_value(env, "QATLIB_MODULE_TIMEOUT", "1800")) or None
+            ).returncode
+        observation["result"] = {None: "skipped", 0: "verified"}.get(returncode, "rejected")
+        if returncode is not None:
+            observation["exit_code"] = returncode
+    if returncode == 0:
         shutil.copyfile(candidate, output)
     else:
-        restore_ltars(candidate, Path(env["LAKE_CACHE_DIR"]), project / ".lake/build")
-        workspace.run(["lake", "--fail-fast", "build", *targets, "-o", ".lake/outputs.jsonl"],
-                      cwd=project, env=env)
-    if not output.is_file() or not output.stat().st_size:
-        raise ValueError("build produced no output manifest")
-    complete_outputs_manifest(project, output, Path(env["LAKE_CACHE_DIR"]), candidate, env)
-    if _root_traces(project, project / ".lake/build") and not manifest_is_usable(output):
-        raise ValueError("build produced an unusable output manifest")
+        with phase("ltar-restore", summary=summary):
+            restore_ltars(candidate, Path(env["LAKE_CACHE_DIR"]), project / ".lake/build")
+        with phase("fallback-build", summary=summary, reason="no-build-rejected" if kind == "exact" else kind):
+            workspace.run(["lake", "--fail-fast", "build", *targets, "-o", ".lake/outputs.jsonl"],
+                          cwd=project, env=env)
+    with phase("output-manifest", summary=summary):
+        if not output.is_file() or not output.stat().st_size:
+            raise ValueError("build produced no output manifest")
+        complete_outputs_manifest(project, output, Path(env["LAKE_CACHE_DIR"]), candidate, env)
+        if _root_traces(project, project / ".lake/build") and not manifest_is_usable(output):
+            raise ValueError("build produced an unusable output manifest")
     return output
 
 
@@ -718,14 +735,14 @@ def build(project, env):
     if source_gate:
         run(source_gate)
     library, targets, repo_slug = profile(package, env, project)
-    from qatlib_env.prepare import prepare
-    prepare(project, env)
+    from qatlib_env.prepare import phase, prepare
+    summary = env.get("GITHUB_STEP_SUMMARY")
+    with phase("prepare", summary=summary):
+        prepare(project, env)
     sha = workspace.git_head(project)
     tree = input_tree(project, library)
     tc_raw = env["ELAN_TOOLCHAIN"]
     tc_dir = toolchain_dir(tc_raw)
-    endpoint, key = cache_service(project, env, package)
-    canonical_base = endpoint + "/" + repo_slug + "/tc/" + tc_dir
     with tempfile.TemporaryDirectory(dir=env["TMPDIR"]) as directory:
         candidate = Path(directory) / "candidate.jsonl"
         cached = project / ".lake/qatlas-root-cache.jsonl"
@@ -739,11 +756,15 @@ def build(project, env):
                 kind = details["kind"]
         print("CACHE_HIT kind=" + kind, flush=True)
         output = compile_targets(project, env, targets, kind, candidate)
-        run(["lake", "lint"])
-        run(["lake", "test"])
+        with phase("lake-lint", summary=summary):
+            run(["lake", "lint"])
+        with phase("lake-test", summary=summary):
+            run(["lake", "test"])
         if env.get("CI_BASE_SHA") and ci_value(env, "EVENT_NAME") == "pull_request":
             run([sys.executable, "-B", "-m", "qatlib_env.check_scoped_env_lint", "--base", env["CI_BASE_SHA"]])
         if may_publish(env, package):
+            service = cache_service(cache_settings(project), upload=True)
+            canonical_base = service["revisionEndpoint"].rstrip("/") + "/" + repo_slug + "/tc/" + tc_dir
             selected_key = write_key(package, env)
             publish_env = native_key_environment(env, selected_key)
             delta, count = delta_manifest(output, candidate)
@@ -754,6 +775,7 @@ def build(project, env):
                 stage = Path(directory) / "staging"
                 run(["lake", "cache", "stage", str(delta_file), str(stage)])
                 workspace.run(["lake", "cache", "put-staged", str(stage), "--repo=" + repo_slug,
+                     "--service=" + service["name"],
                      "--toolchain=" + tc_raw,
                      "--rev=delta-" + sha + "-" + (ci_value(env, "RUN_ID") or uuid.uuid4().hex)],
                      cwd=project, env=publish_env)

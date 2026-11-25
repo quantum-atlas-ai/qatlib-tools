@@ -1,8 +1,11 @@
 <div align="center">
 
-<img src="./.github/assets/qatlib-tools-wordmark.svg" alt="qatlib-tools" width="520" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/qatlib-tools-wordmark-dark.svg" />
+  <img src="./.github/assets/qatlib-tools-wordmark.svg" alt="Qatlib Tools" width="480" />
+</picture>
 
-**面向 Lean 4 形式化项目的工程维护手册与配套命令行工具**
+**Qatlib 工程手册与可复用 Lean 工具**
 
 [![CI](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml)
 [![Docs](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml)
@@ -18,7 +21,7 @@
 
 ## <a id="overview"></a>从这里选一条路
 
-**qatlib-tools** 面向 [Qatlib](https://github.com/quantum-atlas-ai/qatlib) 及一般 [Lean 4](https://lean-lang.org/) 形式化仓库，将日常反复用到的环境准备、构建、检索和提交核验流程整理为一本工程手册，并配套提供三个可独立调用的命令：`qatlib-env`、`qatlib-retrieve`、`qatlib-forge`。查看分支、创建拉取请求和编译单个目标，仍直接使用 `git`、`gh`、`tea`、`gt` 和 `lake`。
+手册介绍 [Qatlib](https://github.com/quantum-atlas-ai/qatlib) 的环境准备、构建、检索和提交核验流程。`qatlib-env`、`qatlib-retrieve` 和 `qatlib-forge` 可独立使用，也适用于其他 [Lean 4](https://lean-lang.org/) 项目。查看分支、创建拉取请求和编译单个目标，仍直接使用 `git`、`gh`、`tea`、`gt` 和 `lake`。
 
 在线手册位于 <https://quantum-atlas-ai.github.io/qatlib-tools/>。安装完成后，也可以在终端离线查阅：`qatlib-env docs` 打印本文件，`qatlib-env docs --list` 列出 `docs/` 目录下的全部中文专题，`qatlib-env docs <专题>` 打印对应专题正文。英文网页由 `docs/en/` 中的同名专题生成，离线命令读取的均为中文原文。
 
@@ -28,6 +31,7 @@
 | 在已锁定工具版本的 Lean 仓库中修改模块 | [第二棵工作树](docs/worktrees.md) |
 | 提交第一份草稿拉取请求，或修改本工具仓 | [拉取请求](docs/pull-requests.md) · [贡献指南](CONTRIBUTING.md) |
 | 了解本仓工作流、审阅并行提交，或接入 Runner | [GitHub 工作流](docs/github-ci.md) · [审阅并行提交](docs/forge.md) · [自托管 Runner](docs/runner.md) |
+| 配置跨仓缓存或定位 CI 回退 | [Cloudflare R2 跨仓缓存](docs/r2-cache.md) · [Actions 阶段计时与缓存回退](docs/actions-timing.md) |
 | 复核 Lean 证明、导出接口和公理依赖 | [证明复核与公理审计](docs/verification.md) · `qatlib-env docs verification` |
 
 <a id="quickstart"></a>

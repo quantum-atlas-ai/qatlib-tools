@@ -1,29 +1,27 @@
 /*
- * Qatlib-Tools VitePress Theme — Crafted by Gemini 4 Carbon
- * Visual tokens harmonized with Qatlib Portal (https://quantum-atlas-ai.github.io/qatlib/):
- * Ink Blue (#263F5F), Teal Ink (#245858), Plum Slate (#5B4D68), Paper Cool (#F8FAFD)
+ * Qatlib and qatlib-tools share these colors, font stacks and prose leading.
  */
 
 :root {
-  --wordmark-cutout: #f8fafd;
+  --vp-nav-logo-height: 27px;
 
   --vp-c-bg: #f8fafd;
   --vp-c-bg-alt: #f0f4fa;
   --vp-c-bg-elv: #ffffff;
-  --vp-c-bg-soft: #eef3fa;
+  --vp-c-bg-soft: #f0f4fa;
 
   --vp-c-text-1: #182232;
-  --vp-c-text-2: #415168;
-  --vp-c-text-3: #68778d;
+  --vp-c-text-2: #526178;
+  --vp-c-text-3: #7b8ba3;
 
-  --vp-c-divider: #dde5f0;
-  --vp-c-gutter: #dde5f0;
-  --vp-c-border: #cfd9e8;
+  --vp-c-divider: #dfe6f0;
+  --vp-c-gutter: var(--vp-c-divider);
+  --vp-c-border: #c7d3e3;
 
   --vp-c-brand-1: #263f5f;
   --vp-c-brand-2: #1b2e47;
   --vp-c-brand-3: #245858;
-  --vp-c-brand-soft: rgba(38, 63, 95, 0.085);
+  --vp-c-brand-soft: rgba(38, 63, 95, 0.08);
 
   --vp-button-brand-bg: #263f5f;
   --vp-button-brand-hover-bg: #1b2e47;
@@ -43,31 +41,33 @@
   --vp-home-hero-name-color: transparent;
   --vp-home-hero-name-background: linear-gradient(125deg, #1d334f 15%, #263f5f 52%, #245858 92%);
 
-  --vp-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
-    'Hiragino Sans GB', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
-  --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular,
-    Menlo, Monaco, Consolas, monospace;
+  --vp-font-family-base: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'PingFang SC', 'HarmonyOS Sans SC', 'Source Han Sans SC',
+    'Noto Sans CJK SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', 'JuliaMono', ui-monospace, SFMono-Regular,
+    Menlo, Monaco, Consolas, 'Sarasa Mono SC', 'Noto Sans Mono CJK SC',
+    'Source Han Mono SC', 'PingFang SC', 'Source Han Sans SC',
+    'Noto Sans CJK SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
+  --prose-leading: 1.72;
 }
 
 .dark {
-  --wordmark-cutout: #0c121d;
 
   --vp-c-bg: #0c121d;
   --vp-c-bg-alt: #090e17;
   --vp-c-bg-elv: #131c2b;
-  --vp-c-bg-soft: #162133;
+  --vp-c-bg-soft: #192538;
 
-  --vp-c-text-1: #e8eef7;
-  --vp-c-text-2: #a5b4ca;
-  --vp-c-text-3: #7687a0;
+  --vp-c-text-1: #e6edf7;
+  --vp-c-text-2: #9cb0c9;
+  --vp-c-text-3: #6c819c;
 
-  --vp-c-divider: #1f2d42;
-  --vp-c-gutter: #1f2d42;
-  --vp-c-border: #25364f;
+  --vp-c-divider: #223147;
+  --vp-c-border: #314663;
 
-  --vp-c-brand-1: #8cb6eb;
+  --vp-c-brand-1: #dbedff;
   --vp-c-brand-2: #b2d0f5;
-  --vp-c-brand-3: #6eb0b0;
+  --vp-c-brand-3: #66c2bd;
   --vp-c-brand-soft: rgba(140, 182, 235, 0.13);
 
   --vp-button-brand-bg: #2c4c73;
@@ -80,7 +80,7 @@
   --vp-button-alt-border: #25364f;
   --vp-button-alt-text: #dce6f5;
 
-  --vp-code-block-bg: #080d16;
+  --vp-code-block-bg: #090e17;
   --vp-code-color: #a9ccf5;
   --vp-code-bg: rgba(140, 182, 235, 0.12);
 
@@ -102,36 +102,121 @@ html:not(.dark) .vp-doc [class*='language-'] > span.lang {
   color: #7c90ab;
 }
 
-/* Navbar Qatlib · tools lockup */
-.qatlib-brand-lockup {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--vp-c-brand-1);
-  transition: opacity 0.18s ease;
-}
-
-.qatlib-brand-lockup:hover {
-  opacity: 0.86;
-}
-
-.qatlib-wordmark-svg {
-  height: 23px;
+/* Keep the full wordmark at its native proportions. */
+.VPNavBarTitle img.logo {
   width: auto;
-  display: block;
+  margin-inline-end: 0;
 }
 
-.qatlib-tools-pill {
-  font-family: var(--vp-font-family-mono);
-  font-size: 11.5px;
+/* Move the navigation links into the menu when the bar needs more room. */
+@media (768px <= width < 1216px) {
+  html:lang(en) {
+    --nav-links-display: none;
+    --nav-menu-button-display: flex;
+    --nav-screen-display: block;
+  }
+
+  .VPNavBar .VPNavBarMenu { display: var(--nav-links-display, flex); }
+  .VPNavBar .VPNavBarExtra { display: var(--nav-links-display, block); }
+  .VPNavBar .VPNavBarHamburger { display: var(--nav-menu-button-display, none); }
+  .VPNav .VPNavScreen { display: var(--nav-screen-display, none); }
+}
+
+@media (768px <= width < 1024px) {
+  :root {
+    --nav-links-display: none;
+    --nav-menu-button-display: flex;
+    --nav-screen-display: block;
+  }
+}
+
+@media (768px <= width < 1344px) {
+  .VPNavBar .VPNavBarSearch { padding-inline-start: 24px; }
+  .VPNavBar .VPNavBarMenuLink { padding-inline: 7px; }
+  .VPNavBar .DocSearch-Button-Placeholder { padding-inline-end: 6px; }
+}
+
+.lang-switcher {
+  position: relative;
+  flex-shrink: 0;
+  margin-inline-start: 8px;
+}
+
+.lang-switcher summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding-inline: 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background: var(--vp-c-bg-elv);
+  color: var(--vp-c-text-2);
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  line-height: 1;
-  padding: 4px 8px;
-  border-radius: 999px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.lang-switcher summary::-webkit-details-marker { display: none; }
+
+.lang-switcher summary:hover {
+  color: var(--vp-c-text-1);
+  border-color: var(--vp-c-border);
+  background: var(--vp-c-bg-soft);
+}
+
+.lang-options {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + 6px);
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+}
+
+.lang-options a {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  color: var(--vp-c-text-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.lang-options a:hover, .lang-options a[aria-current="page"] {
   color: var(--vp-c-brand-1);
   background: var(--vp-c-brand-soft);
-  border: 1px solid color-mix(in srgb, var(--vp-c-brand-1) 24%, transparent);
+}
+
+.lang-switcher :is(summary, a):focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+  .lang-switcher { margin-inline-start: 0; }
+  .lang-switcher summary { padding-inline: 7px; }
+}
+
+@media (max-width: 420px) {
+  :root { --vp-nav-logo-height: 26px; }
+  .VPNavBar .wrapper { padding-inline: 8px; }
+  .VPNavBar .content-body { column-gap: 4px; }
+  .VPNavBar .DocSearch-Button,
+  .VPNavBar .VPNavBarHamburger { width: 32px; }
+  .lang-switcher summary { gap: 4px; padding-inline: 5px; }
+}
+
+@media (max-width: 350px) {
+  :root { --vp-nav-logo-height: 23px; }
 }
 
 /* Refined Hero & Feature Cards */
@@ -204,7 +289,13 @@ html:not(.dark) .vp-doc [class*='language-'] > span.lang {
 /* Editorial Prose & Table Rhythm */
 .vp-doc p,
 .vp-doc li {
-  line-height: 1.78;
+  line-height: var(--prose-leading);
+}
+
+html:lang(zh) {
+  --prose-leading: 1.75;
+  text-spacing-trim: space-first;
+  font-kerning: normal;
 }
 
 .vp-doc h2 {

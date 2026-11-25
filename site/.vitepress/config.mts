@@ -1,21 +1,53 @@
-import { defineConfig } from 'vitepress';
+import { defineConfig, type HeadConfig } from 'vitepress';
+import { renderSearchIndex } from './search.mjs';
+import { siteMetadata } from './site-metadata.mjs';
+
+const basePath = (process.env.VITEPRESS_BASE || '/qatlib-tools/').replace(/^\/+|\/+$/g, '');
+const base = basePath ? `/${basePath}/` : '/';
+const cleanUrls = process.env.VITEPRESS_CLEAN_URLS !== 'false';
+
+const pngIcons = ['light', 'dark'].flatMap((theme) =>
+  ['32x32', '16x16'].map((size): HeadConfig => [
+    'link',
+    {
+      rel: 'icon',
+      type: 'image/png',
+      sizes: size,
+      href: `${base}favicon-${theme}-${size}.png`,
+      media: `(prefers-color-scheme: ${theme})`,
+    },
+  ]),
+);
 
 export default defineConfig({
-  base: process.env.VITEPRESS_BASE || '/qatlib-tools/',
+  ...siteMetadata(base, cleanUrls),
+  base,
   srcDir: 'src',
   outDir: 'src/.vitepress/dist',
-  cleanUrls: process.env.VITEPRESS_CLEAN_URLS !== 'false',
+  cleanUrls,
+  metaChunk: true,
   lastUpdated: false,
   markdown: {
     theme: 'github-dark',
   },
   head: [
     ['meta', { name: 'theme-color', content: '#263f5f' }],
+    ['link', { rel: 'icon', href: `${base}favicon.ico` }],
+    ...pngIcons,
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}favicon-adaptive.svg`, sizes: 'any' }],
+    ['link', { rel: 'apple-touch-icon', href: `${base}apple-touch-icon.png`, sizes: '180x180' }],
   ],
   themeConfig: {
+    logo: {
+      light: '/qatlib-tools-wordmark.svg',
+      dark: '/qatlib-tools-wordmark-dark.svg',
+      alt: 'Qatlib Tools',
+    },
+    siteTitle: false,
     search: {
       provider: 'local',
       options: {
+        _render: renderSearchIndex,
         locales: {
           root: {
             translations: {
@@ -36,12 +68,10 @@ export default defineConfig({
   },
   locales: {
     root: {
-      label: '简体中文',
-      lang: 'zh-CN',
+      lang: 'zh-Hans',
       title: 'qatlib-tools',
-      description: 'Lean 4 形式化项目工程维护手册与共享工具链',
+      description: 'Qatlib 工程手册与可复用 Lean 工具',
       themeConfig: {
-        siteTitle: false,
         nav: [
           { text: '五分钟验证', link: '/docs/quickstart' },
           { text: '在 Lean 仓库里工作', link: '/docs/worktrees' },
@@ -64,6 +94,7 @@ export default defineConfig({
             text: '维护者',
             items: [
               { text: 'GitHub 工作流与 Pages', link: '/docs/github-ci' },
+              { text: 'Actions 阶段计时与缓存回退', link: '/docs/actions-timing' },
               { text: '审阅并行提交', link: '/docs/forge' },
               { text: '自托管 Runner', link: '/docs/runner' },
               { text: 'Runner 排障', link: '/docs/runner-troubleshooting' },
@@ -73,6 +104,7 @@ export default defineConfig({
             text: '编译与验证',
             items: [
               { text: '编译、缓存与预算', link: '/docs/build' },
+              { text: 'Cloudflare R2 跨仓缓存', link: '/docs/r2-cache' },
               { text: '证明复核与编译门禁', link: '/docs/verification' },
             ],
           },
@@ -104,13 +136,11 @@ export default defineConfig({
       },
     },
     en: {
-      label: 'English',
-      lang: 'en-US',
+      lang: 'en',
       link: '/en/',
       title: 'qatlib-tools',
-      description: 'Engineering Handbook & Shared Tooling for Lean 4 Formalization Repositories',
+      description: 'Engineering handbook and reusable Lean tooling for Qatlib',
       themeConfig: {
-        siteTitle: false,
         nav: [
           { text: 'Five-minute check', link: '/en/docs/quickstart' },
           { text: 'Work in a Lean repo', link: '/en/docs/worktrees' },
@@ -133,6 +163,7 @@ export default defineConfig({
             text: 'Maintainers',
             items: [
               { text: 'GitHub workflows and Pages', link: '/en/docs/github-ci' },
+              { text: 'Actions stage timing and cache fallback', link: '/en/docs/actions-timing' },
               { text: 'Review concurrent commits', link: '/en/docs/forge' },
               { text: 'Self-hosted runners', link: '/en/docs/runner' },
               { text: 'Runner troubleshooting', link: '/en/docs/runner-troubleshooting' },
@@ -142,6 +173,7 @@ export default defineConfig({
             text: 'Build and verification',
             items: [
               { text: 'Build, cache, and budget', link: '/en/docs/build' },
+              { text: 'Cross-repository R2 caching', link: '/en/docs/r2-cache' },
               { text: 'Proof verification and build gates', link: '/en/docs/verification' },
             ],
           },

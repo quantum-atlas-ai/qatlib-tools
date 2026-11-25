@@ -1,0 +1,41 @@
+name: Documentation checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: VitePress (clean URLs ${{ matrix.clean-urls }})
+    runs-on: ${{ fromJSON(vars.QATLIB_TOOLS_TEST_RUNNERS || '["ubuntu-latest"]') }}
+    strategy:
+      matrix:
+        clean-urls: ['true', 'false']
+    defaults:
+      run:
+        working-directory: site
+    env:
+      VITEPRESS_BASE: /qatlib-tools/
+      VITEPRESS_CLEAN_URLS: ${{ matrix.clean-urls }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        if: runner.environment == 'github-hosted'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Check Node and npm
+        run: node --version && npm --version
+      - run: npm ci
+      - run: npm run docs:build
+      - name: Check documentation outputs
+        run: |
+          for path in index.html en/index.html docs/worktrees.html en/docs/worktrees.html \
+              qatlib-tools-social-preview.png sitemap.xml llms.txt; do
+            test -s "src/.vitepress/dist/$path"
+          done

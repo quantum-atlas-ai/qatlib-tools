@@ -4,6 +4,8 @@ For post-build axiom allowlists, zero-`sorry` gates, downstream interface checks
 
 This page serves as a topic-by-topic reference manual. For a hands-on walkthrough covering build planning, dependency preparation, module compilation, single-file checking, and cleanup previews in a second worktree, start with [Open a second worktree in a Lean repository](worktrees.md). Expected timing for an initial Lean toolchain download or dependency build is covered at the end of the [five-minute check](quickstart.md), separately from installing the CLI itself.
 
+For shared build artifacts and documentation snapshots, see [Cross-repository R2 caching](r2-cache.md). To identify where time goes during a restore or rebuild, see [Actions stage timing and cache fallback](actions-timing.md).
+
 <a id="lakefile"></a>
 
 ## How to Read `lakefile.toml`
@@ -58,6 +60,16 @@ When you run `lake build <Module>`, Lake builds the target module and its entire
 When you only need to quickly check a single file under active editing, prefer `lake --no-build lean <File.lean>`. This command instructs Lake to assemble the runtime import context according to the project's dependency graph and environment configuration, and then type-check the target file directly against existing dependency artifacts. If any artifact in the dependency chain has not yet been built, the command exits immediately with an error rather than implicitly triggering an expensive cascading build. When that happens, selectively build the missing prerequisites via `qatlib-env run -- lake build <Module>`, and then run `qatlib-env run -- lake --no-build lean <File.lean>` to check the file quickly. Furthermore, when shared caching is enabled, never invoke the bare `lean` binary directly or rely solely on walking the local `.lake/build` directory to check for outputs—both practices miss artifacts managed by Lake in the shared global cache.
 
 [Lake v4.35 CLI Implementation](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/CLI/Main.lean)
+
+### Reuse a Lean server while editing
+
+On Unix, prepare the worktree and build the file's prerequisites first. Run
+`qatlib-env check --server File.lean` after each saved edit. It returns JSON
+diagnostics and uses the same worktree-local server as `qatlib-env server-check`.
+The daemon holds a shared-pool lease while idle. Use `qatlib-env server status`
+to inspect it and `qatlib-env server stop` to release its lease immediately.
+Use the usual `qatlib-env check` for the import, lint, build, and kernel audit
+gate. On Windows, use the single-file Lake command above.
 
 <a id="cache-flags"></a>
 

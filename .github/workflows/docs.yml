@@ -7,6 +7,7 @@ on:
       - '*.md'
       - 'docs/**'
       - 'site/**'
+      - '.github/assets/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -21,19 +22,22 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ !github.event.repository.private }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event.repository.private && vars.QATLIB_TOOLS_TEST_RUNNERS || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
+        if: runner.environment == 'github-hosted'
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: site/package-lock.json
       - uses: actions/configure-pages@v5
+        if: ${{ !github.event.repository.private }}
       - name: Build documentation
+        env:
+          VITEPRESS_CLEAN_URLS: ${{ github.event.repository.private && 'false' || 'true' }}
         run: npm --prefix site ci && npm --prefix site run docs:build
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -49,6 +49,19 @@ def _pr_run(api, run, number):
     return any(pr["number"] == number for pr in run.get("pull_requests") or [])
 
 
+def _timing(row):
+    start, end = row.get("started_at"), row.get("completed_at")
+    seconds = None
+    if start and end and row.get("conclusion") != "skipped":
+        try:
+            elapsed = (_date(end) - _date(start)).total_seconds()
+        except (ValueError, RepoError, AttributeError):
+            elapsed = -1
+        if elapsed >= 0:
+            seconds = elapsed
+    return {"started_at": start, "completed_at": end, "duration_seconds": seconds}
+
+
 def checks(api, number, *, expected_head=None, required_jobs=()):
     """Return observations for one PR head; a successful read is not a green CI verdict."""
     pr = api.pull_request(number)
@@ -59,15 +72,26 @@ def checks(api, number, *, expected_head=None, required_jobs=()):
     runs = sorted(api.action_runs(head_sha=sha), key=lambda row: row["id"], reverse=True)
     jobs, job_states = [], {}
     for run in runs:
-        for job in api.action_jobs(run["id"]):
+        attempt = run.get("run_attempt")
+        options = {"run_attempt": attempt} if attempt is not None else {}
+        for job in api.action_jobs(run["id"], **options):
             if job.get("head_sha", sha) != sha or job.get("run_id", run["id"]) != run["id"]:
                 raise RepoError("Actions job disagrees with run identity")
+            job_attempt = job.get("run_attempt") or attempt
+            if attempt is not None and job_attempt != attempt:
+                raise RepoError("Actions job disagrees with run attempt")
             terminal = state(job)
             job_states[run["id"], job["id"]] = terminal
             jobs.append({"source": "job", "name": job["name"], "state": terminal,
-                         "id": job["id"], "run_id": run["id"],
+                         "id": job["id"], "run_id": run["id"], "run_attempt": job_attempt,
                          "workflow": run.get("path") or run.get("name"), "event": run.get("event"),
-                         "url": job.get("html_url")})
+                         "url": job.get("html_url"), **_timing(job),
+                         "steps": [
+                             {"number": step.get("number"), "name": step.get("name"),
+                              "status": step.get("status"), "conclusion": step.get("conclusion"),
+                              **_timing(step)}
+                             for step in job.get("steps") or []
+                         ]})
     statuses = []
     for row in api.request(prefix + "/statuses", paginate=True):
         if row.get("sha") not in (None, sha):
@@ -102,7 +126,9 @@ def checks(api, number, *, expected_head=None, required_jobs=()):
             raise RepoError(f"required job is ambiguous: {selector}")
         required[selector] = latest[0] if latest else {"state": "absent"}
     return {"head_sha": sha, "runs": [
-        {"id": run["id"], "workflow": run.get("path") or run.get("name"),
+        {"id": run["id"], "run_attempt": run.get("run_attempt"),
+         "created_at": run.get("created_at"), "run_started_at": run.get("run_started_at"),
+         "workflow": run.get("path") or run.get("name"),
          "event": run.get("event"), "state": state(run), "url": run.get("html_url")}
         for run in runs], "jobs": jobs, "statuses": statuses, "check_runs": check_runs,
         "required_jobs": required,

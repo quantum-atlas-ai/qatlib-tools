@@ -20,8 +20,15 @@ On success, `../mylib-facts-check` exists, `git status` inside it shows a clean 
 
 ```bash
 cd ../mylib-facts-check
+qatlib-env doctor
 qatlib-env plan MyLib.Facts
 ```
+
+`doctor` checks the locked Elan toolchain files, compares Git dependencies in `lake-manifest.json` with their checkout HEADs, and looks for usable local mirrors of missing or mismatched pins. It also reports whether artifacts have native output mappings in the effective `LAKE_CACHE_DIR`. Run `qatlib-env doctor --project /path/to/worktree --json` for a versioned report with finding codes, counts, and example paths. The check is read-only and runs without Lean, Lake, or network access. Exit 0 means inspection completed with status `ok` or `warning`. Exit 1 means the report contains an inspection or configuration error.
+
+If Lake reports **“No server olean generated. Ensure the module system is enabled.”**, look for `missing_server_olean_descriptor` or `missing_local_server_olean`. A module can have a base `.olean` but lack its server companion. `missing_cache_server_olean` means the mapping names the companion but the cache file is unavailable. Legacy sources without a `module` header can legitimately have only the base file. The scan checks ordinary and server olean descriptors and visible files, along with archive presence. It does not unpack archives, compute Lake input hashes, or verify native cache hits for a target.
+
+For each build directory, `hardlink_eligible` means it shares a volume with the cache artifacts and Lake can try a hardlink. Lake falls back to copying if the link fails. `copy_fallback` indicates different volumes on POSIX or Windows, including paths that resolve onto another volume through a junction. If artifacts are present with no published output mappings, check cache registration before downloading them again.
 
 `plan` inspects the source import graph, lockfile, and current Git diff in read-only mode, printing one JSON object to standard output without running `lake build`. Check these key fields:
 

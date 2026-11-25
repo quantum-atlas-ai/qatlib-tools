@@ -2,8 +2,6 @@
 
 本文面向维护本仓库及为下游仓库接入 CI 的读者。若你是贡献者，想查看当前提交的检查状态，请查阅[拉取请求](pull-requests.md)；若你是审阅者，需要判断已有检查结论是否仍然有效以及当前能否合并，请查阅[审阅并行提交](forge.md)；若需注册自托管 Runner，相关命令见[自托管 Runner](runner.md)。
 
-本仓库目前配置了两份工作流，各自承担不同的验证职责。
-
 ## 事件、作业、权限、验证
 
 | | `CI`（`.github/workflows/ci.yml`） | `Documentation`（`.github/workflows/docs.yml`） |
@@ -15,9 +13,9 @@
 | 作业 | `test`：包含人工契约检查、`uv lock --check`、`uv build`、pytest 以及干净虚拟环境中的 wheel 冒烟测试 | `build` 负责构建 VitePress 站点；`deploy` 仅在仓库公开且 `github.ref` 为 `refs/heads/main` 时运行，并使用名为 `github-pages` 的环境 |
 | 绿色说明什么 | 该提交已通过 Python 3.12 下的工具仓检查。草稿拉取请求会向契约脚本追加 `--draft`；就绪拉取请求和推送到 `main` 的运行不追加 | `build` 成功说明文档站可以正常构建；`deploy` 成功才说明公开仓库的 `main` 已将站点交付给 Pages |
 
-拉取请求页面上的 `CI` 通过，不能用来判断 Pages 是否已经构建或部署——`docs.yml` 的 `on` 触发条件中并不包含 `pull_request`。
+独立的 `Documentation checks`（`.github/workflows/docs-check.yml`）在拉取请求上分别开启和关闭简洁 URL 构建 VitePress。这个工作流使用 `contents: read`，不执行 Pages 部署。
 
-两份工作流的 `actions/checkout` 均设置了 `persist-credentials: false`，因此作业中后续的 git 推送不会沿用检出阶段自动保存的凭据。
+三份工作流的 `actions/checkout` 均设置了 `persist-credentials: false`，因此作业中后续的 Git 命令不会沿用检出阶段保存的凭据。
 
 ## 一张拉取请求会跑哪一份
 
@@ -39,6 +37,8 @@
 此外，宿主机上还支持通过 `git config url.<镜像>.insteadOf` 配置可选的 GitHub 拉取 URL 改写。`setup_runner.sh init` 仅在设置了 `QATLIB_GITHUB_MIRROR` 时，才会为该 lane 对应的账号写入 `https://github.com/` 的替换规则。这仅用于拉取依赖时的 URL 替换，与下文的 Gitea 推送是两回事。
 
 ## 下游仓库接入 `qatlib-env ci`
+
+下游 Lean 仓库可按 [Cloudflare R2 跨仓缓存](r2-cache.md) 选择原生 Lake 或托管工作流。核对作业耗时和重编证据时，见 [Actions 阶段计时与缓存回退](actions-timing.md)。
 
 本仓库的 `ci.yml` 不调用 `qatlib-env ci`。下游 Lean 仓库若要使用这四个子命令，请在其自身的工作流中先安装所锁定的工具版本，再按需调用：
 

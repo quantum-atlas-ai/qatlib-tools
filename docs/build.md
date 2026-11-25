@@ -1,8 +1,12 @@
-# 编译环境、缓存与资源控制
+# 编译缓存、构建环境与资源控制
+
+<a id="编译环境、缓存与资源控制"></a>
 
 构建后的公理白名单、零 `sorry` 门禁、下游接口检查与内核重放见 [Lean 证明复核与公理审计](verification.md)。
 
 本页作为按主题查阅的参考手册。若想在第二棵工作树中完整实操一次依赖计划、环境准备、模块构建、单文件检查与清理预览，请从[在 Lean 仓库里打开第二棵工作树](worktrees.md)开始。首次下载 Lean 工具链或编译依赖的耗时说明见[五分钟验证](quickstart.md)末尾，该步骤独立于命令行工具本身的安装验证。
+
+跨仓共享编译工件或文档快照时，见 [Cloudflare R2 跨仓缓存](r2-cache.md)。排查下载、恢复与重编的耗时，见 [Actions 阶段计时与缓存回退](actions-timing.md)。
 
 <a id="lakefile"></a>
 
@@ -59,9 +63,20 @@ globs = ["MyLib.*"]
 
 [Lake v4.35 命令实现](https://github.com/leanprover/lean4/blob/v4.35.0/src/lake/Lake/CLI/Main.lean)
 
+### 编辑时复用 Lean 服务器
+
+在 Unix 上，先准备工作树并编译文件所需的依赖。每次保存后运行
+`qatlib-env check --server File.lean`，即可通过与 `qatlib-env server-check`
+共用的工作树常驻服务获取 JSON 诊断。服务空闲时仍持有共享池租约。
+用 `qatlib-env server status` 查看状态，或用 `qatlib-env server stop`
+立即释放租约。导入、lint、构建和内核审计仍通过普通 `qatlib-env check`
+执行。Windows 上可使用上面的 Lake 单文件检查命令。
+
 <a id="cache-flags"></a>
 
-## 缓存读写与恢复开关
+## 编译缓存的读写与恢复开关
+
+<a id="缓存读写与恢复开关"></a>
 
 两个控制缓存行为的核心开关——`enableArtifactCache`（对应环境变量 `LAKE_ARTIFACT_CACHE`）与 `restoreAllArtifacts`（对应环境变量 `LAKE_RESTORE_ARTIFACTS`）均定义在包级别，具体的 `[[lean_lib]]` 目标中不重复提供这两个字段。在构建过程中，对于参与构建的**每一个包**，Lake 都会独立计算这两个开关的生效值：先读取该包自身的显式配置，若未设置则回退至工作区默认值；而工作区默认值则优先读取环境变量，最后回退至根包的相关字段。两条计算链相互独立且按序求值。
 

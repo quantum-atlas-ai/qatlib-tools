@@ -23,28 +23,31 @@ PREPARE_VERSION = 3
 
 
 @contextmanager
-def phase(name: str, **details):
-    """Emit machine-readable preparation lifecycle events on stderr."""
+def phase(name: str, *, summary=None, **details):
+    """Emit lifecycle events and optionally append completed phases to a job summary."""
     started = time.monotonic()
-    prefix = {"phase": name, **details}
-    print("QATLIB_PHASE " + json.dumps({**prefix, "state": "start"}, ensure_ascii=False, sort_keys=True),
-          file=sys.stderr, flush=True)
+    def emit(state, **fields):
+        record = {"phase": name, **details, "state": state, **fields}
+        print("QATLIB_PHASE " + json.dumps(record, ensure_ascii=False, sort_keys=True),
+              file=sys.stderr, flush=True)
+        if summary and state != "start":
+            try:
+                with open(summary, "a", encoding="utf-8") as stream:
+                    print(f"- **{name}** · {state} · {fields['elapsed_s']:.3f} s"
+                          + "".join(f" · {key}={value}" for key, value in details.items()), file=stream)
+            except OSError:
+                print("Unable to append CI timing to GITHUB_STEP_SUMMARY", file=sys.stderr)
+
+    emit("start")
     try:
         key = "lake_config_ms" if name == "dependency-resolution" else "cache_check_ms"
         with diagnostics.measure(key):
-            yield
+            yield details
     except BaseException as error:
-        print("QATLIB_PHASE " + json.dumps({**prefix, "state": "error",
-                                               "elapsed_s": round(time.monotonic() - started, 3),
-                                               "error": type(error).__name__},
-                                              ensure_ascii=False, sort_keys=True),
-              file=sys.stderr, flush=True)
+        emit("error", elapsed_s=round(time.monotonic() - started, 3), error=type(error).__name__)
         raise
     else:
-        print("QATLIB_PHASE " + json.dumps({**prefix, "state": "done",
-                                               "elapsed_s": round(time.monotonic() - started, 3)},
-                                              ensure_ascii=False, sort_keys=True),
-              file=sys.stderr, flush=True)
+        emit("done", elapsed_s=round(time.monotonic() - started, 3))
 
 
 class CacheError(ValueError):
@@ -115,10 +118,10 @@ def _cache_run(command, project, env):
     return result
 
 
-def _artifact_descriptors(path: Path) -> set[str]:
+def manifest_contents(raw: bytes) -> tuple[set[str], int]:
     """Flatten complete Lake output data with the native collectOutputDescrs rules."""
     try:
-        lines = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        lines = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
         if not lines or not isinstance(lines[0], str) or len(lines) == 1:
             raise ValueError("missing mapping rows")
         descriptors = set()
@@ -156,8 +159,8 @@ def _artifact_descriptors(path: Path) -> set[str]:
                 raise ValueError("conflicting mapping rows")
             mappings[canonical] = row[1]
             collect(row[1])
-        return descriptors
-    except (OSError, ValueError, TypeError) as error:
+        return descriptors, len(lines) - 1
+    except (ValueError, TypeError, RecursionError) as error:
         raise CacheError("corrupt cache manifest: invalid Lake mapping or artifact descriptor") from error
 
 
@@ -223,7 +226,7 @@ def _restore_artifacts(project: Path, manifest: Path, service: dict, scope: str,
     weakening permissions or exposing temporary partial output mappings.
     """
     from qatlib_env.r2_cache import ArtifactHashMismatch, _verify_artifact_hashes
-    descriptors = _artifact_descriptors(manifest)
+    descriptors, _ = manifest_contents(manifest.read_bytes())
     cache = Path(env["LAKE_CACHE_DIR"])
     validate_cache(cache)
     artifacts = cache / "artifacts"
@@ -251,7 +254,9 @@ def _restore_artifacts(project: Path, manifest: Path, service: dict, scope: str,
                 downloads[content_hash] = downloaded
                 by_hash[content_hash] = downloaded
             paths[name] = by_hash[content_hash]
-        _fetch_artifacts(downloads, endpoint, scope, project, env, package, staging)
+        if downloads:
+            with phase("r2-artifacts", package=package, downloads=len(downloads)):
+                _fetch_artifacts(downloads, endpoint, scope, project, env, package, staging)
         # Includes existing 0444 files, checks every extension and does not trust
         # sidecars. A real permission/hash error is never treated as a miss.
         try:
@@ -408,10 +413,10 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     config_file = package_root / "lake-cache.toml"
     if not config_file.is_file():
         return "unconfigured"
-    config = tomllib.loads(config_file.read_text(encoding="utf-8"))["cache"]
-    service = next(s for s in config["service"] if s["name"] == config["defaultService"])
+    config = ci.cache_settings(package_root)
+    service = ci.cache_service(config)
     package = workspace.package_name(package_root)
-    from qatlib_env.r2_cache import package_environment
+    from qatlib_env.r2_cache import compute_input_tree, package_environment
     env = package_environment(package if package_root == project else "", env,
                               project=package_root if package_root == project else None)
     scope_option = "--repo="
@@ -444,9 +449,10 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     if not sha:
         raise CacheError(f"cache source identity unavailable: {package_root}")
     paths = ci.source_inputs(package_root, library)
-    tree_result = supervisor.run(["git", "rev-parse", *("HEAD:" + p for p in paths)],
-                                 cwd=package_root, env=env, capture_output=True, text=True)
-    tree = hashlib.sha256(tree_result.stdout.encode()).hexdigest() if tree_result.returncode == 0 else ""
+    try:
+        tree = compute_input_tree(package_root, paths, env)
+    except subprocess.CalledProcessError:
+        tree = ""
     ancestors = supervisor.run(["git", "rev-list", "--max-count=25", "HEAD~1"],
                                cwd=package_root, env=env, capture_output=True, text=True)
     exact_keys = [sha + ".jsonl", *(["inputs/" + tree + ".jsonl"] if tree and package != "Physlib" else [])]
@@ -461,13 +467,18 @@ def restore_repository(project: Path, package_root: Path, env: dict) -> str:
     key_env = dict(env)
     if package_root != project:
         key_env.pop("LAKE_CACHE_KEY", None)
-    key = ci.write_key(package, key_env) or service.get("s3Auth", "").strip()
+    split_services = config.get("defaultUploadService") not in (None, "", service["name"])
+    key = service.get("s3Auth", "").strip()
+    if not split_services:
+        key = ci.write_key(package, key_env) or key
     (project / ".lake").mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="qatlas-prepare-", dir=project / ".lake") as temporary:
         manifest = Path(temporary) / "candidate.jsonl"
         with ci.authenticated({**env, "TMPDIR": temporary}, key) as auth:
             for relative in dict.fromkeys(keys):
-                status = _fetch(base + "/" + relative, manifest, project, auth, package)
+                with phase("r2-manifest", package=package, key=relative) as observation:
+                    status = _fetch(base + "/" + relative, manifest, project, auth, package)
+                    observation["http_status"] = int(status)
                 if status == "404":
                     continue
                 if status != "200":

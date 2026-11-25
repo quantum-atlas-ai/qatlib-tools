@@ -1,9 +1,10 @@
 ---
 layout: home
+description: "Engineering handbook and reusable Lean tooling for Qatlib"
 
 hero:
   name: "qatlib-tools"
-  text: "Engineering handbook and tools for Lean 4"
+  text: "Engineering handbook and reusable Lean tooling for Qatlib"
   tagline: "Check that the commands run, edit one module in a second worktree, then read the checks on that commit. Cache, runners, and review rules stay in the later guides."
   actions:
     - theme: brand

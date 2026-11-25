@@ -176,6 +176,34 @@ def test_cli_emits_result_on_stdout_and_phase_events_on_stderr(tmp_path, daemon_
     server.stop(project=project, env=daemon_env)
 
 
+def test_check_server_reuses_session_and_reports_failed_diagnostics(tmp_path, daemon_env, capsys):
+    from qatlib_env.__main__ import main
+
+    (tmp_path / "lean-toolchain").write_text("toolchain\n", encoding="utf-8")
+    target = tmp_path / "Main.lean"
+    target.write_text("def good := 1\n", encoding="utf-8")
+    args = ["check", "--project", str(tmp_path), "--server", str(target), "--no-gh-proxy"]
+    try:
+        assert main(args) == 0
+        first = json.loads(capsys.readouterr().out)
+        assert first["ok"] and first["version"] == 1
+        target.write_text("ERROR\n", encoding="utf-8")
+        assert main(args) == 1
+        second = json.loads(capsys.readouterr().out)
+        assert not second["ok"] and second["version"] == 2
+        assert second["server_key"] == first["server_key"]
+    finally:
+        server.stop(project=tmp_path, env=daemon_env)
+
+
+@pytest.mark.parametrize("extra", [["Mock.Module"], ["--full-gate"], ["--jobs", "2"], ["--offline"]])
+def test_check_server_rejects_build_arguments(extra, capsys):
+    with pytest.raises(SystemExit) as exc:
+        workspace.main(["check", "--server", "Main.lean", *extra])
+    assert exc.value.code == 2
+    assert "check --server accepts one file" in capsys.readouterr().err
+
+
 def test_daemon_owns_shared_pool_lease_and_rechecks_changed_budget(tmp_path, daemon_env):
     target = tmp_path / "Main.lean"
     target.write_text("def good := 1\n", encoding="utf-8")

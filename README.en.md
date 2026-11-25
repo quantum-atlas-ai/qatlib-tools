@@ -1,8 +1,11 @@
 <div align="center">
 
-<img src="./.github/assets/qatlib-tools-wordmark.svg" alt="qatlib-tools" width="520" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/qatlib-tools-wordmark-dark.svg" />
+  <img src="./.github/assets/qatlib-tools-wordmark.svg" alt="Qatlib Tools" width="480" />
+</picture>
 
-**Engineering handbook and companion command-line tools for Lean 4 formalization projects**
+**Engineering handbook and reusable Lean tooling for Qatlib**
 
 [![CI](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/ci.yml)
 [![Docs](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml/badge.svg)](https://github.com/quantum-atlas-ai/qatlib-tools/actions/workflows/docs.yml)
@@ -18,7 +21,7 @@
 
 ## <a id="overview"></a>Pick a path
 
-**qatlib-tools** gathers the preparation, build, retrieval, and pull-request checks that recur across [Qatlib](https://github.com/quantum-atlas-ai/qatlib) and other [Lean 4](https://lean-lang.org/) formalization repositories. It provides this handbook alongside three commands you can call independently: `qatlib-env`, `qatlib-retrieve`, and `qatlib-forge`. Inspecting a branch, opening a pull request, and building a single target stay on `git`, `gh`, `tea`, `gt`, and `lake`.
+The handbook covers environment setup, builds, retrieval, and pull-request checks for [Qatlib](https://github.com/quantum-atlas-ai/qatlib). You can use `qatlib-env`, `qatlib-retrieve`, and `qatlib-forge` independently in other [Lean 4](https://lean-lang.org/) projects. Use `git`, `gh`, `tea`, `gt`, and `lake` directly to inspect branches, open pull requests, and build individual targets.
 
 Read the English handbook online at <https://quantum-atlas-ai.github.io/qatlib-tools/en/> (generated from the matching files in `docs/en/`). After installation, you can also read the handbook offline, though the offline command serves the Chinese text: `qatlib-env docs` prints this file's Chinese counterpart (`README.md`), `qatlib-env docs --list` lists the Chinese topics directly under `docs/`, and `qatlib-env docs <topic>` prints one of them.
 
@@ -28,6 +31,7 @@ Read the English handbook online at <https://quantum-atlas-ai.github.io/qatlib-t
 | Edit one module in a Lean repository that already pins the tools | [A second worktree](docs/en/worktrees.md) |
 | Open a first draft pull request, or change this tools repository | [Pull requests](docs/en/pull-requests.md) · [Contributing](CONTRIBUTING.en.md) |
 | Read this repository's workflows, review a commit, or attach a runner | [GitHub workflows](docs/en/github-ci.md) · [Reviewing concurrent commits](docs/en/forge.md) · [Self-hosted runners](docs/en/runner.md) |
+| Share caches across repositories or diagnose a build fallback | [Cross-repository R2 caching](docs/en/r2-cache.md) · [Actions stage timing and cache fallback](docs/en/actions-timing.md) |
 | Verify Lean proofs, exported interfaces, and axiom dependencies | [Proof verification and axiom auditing](docs/en/verification.md) · `qatlib-env docs verification` (Chinese) |
 
 <a id="quickstart"></a>

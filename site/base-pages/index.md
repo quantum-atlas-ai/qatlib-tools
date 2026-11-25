@@ -1,9 +1,10 @@
 ---
 layout: home
+description: "Qatlib 工程手册与可复用 Lean 工具"
 
 hero:
   name: "qatlib-tools"
-  text: "Lean 4 形式化项目的工程手册与工具"
+  text: "Qatlib 工程手册与可复用 Lean 工具"
   tagline: "先确认命令能跑，再在第二棵工作树里改一个模块，然后看当前提交的检查。缓存、Runner 和审阅规则留在后面的手册里。"
   actions:
     - theme: brand

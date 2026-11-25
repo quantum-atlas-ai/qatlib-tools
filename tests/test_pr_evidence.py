@@ -57,6 +57,28 @@ def test_gitea_exact_job_corrects_only_its_own_summary():
         pr_evidence.checks(api, 1, expected_head="c" * 40)
 
 
+def test_github_checks_pin_attempt_and_summarize_observed_step_times():
+    api = api_for("github")
+    api.pull_request = Mock(return_value={"head": {"sha": SHA}})
+    api.action_runs = Mock(return_value=[{"id": 5, "run_attempt": 2, "status": "in_progress"}])
+    start, end = "2026-01-01T00:00:00Z", "2026-01-01T00:00:12Z"
+    api.action_jobs = Mock(return_value=[{
+        "id": 8, "head_sha": SHA, "name": "build", "status": "in_progress", "started_at": start,
+        "steps": [
+            {"number": 1, "name": "Fetch", "started_at": start, "completed_at": end, "conclusion": "success"},
+            {"number": 2, "name": "Compile", "started_at": end, "status": "in_progress"},
+            {"number": 3, "name": "Publish", "conclusion": "skipped", "started_at": end, "completed_at": end},
+        ],
+    }])
+    api.request = Mock(return_value=[])
+    report = pr_evidence.checks(api, 1, expected_head=SHA)
+    api.action_jobs.assert_called_once_with(5, run_attempt=2)
+    job = report["jobs"][0]
+    assert report["runs"][0]["run_attempt"] == job["run_attempt"] == 2
+    assert job["duration_seconds"] is None
+    assert [step["duration_seconds"] for step in job["steps"]] == [12, None, None]
+
+
 def test_activity_ignores_bot_comments_and_pr_updated_at():
     api = api_for("github")
     api.pull_request = Mock(return_value={

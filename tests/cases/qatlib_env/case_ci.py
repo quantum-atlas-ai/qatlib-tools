@@ -107,10 +107,16 @@ class CITests(unittest.TestCase):
         def build(*args, **kwargs):
             output.write_text("new build\n")
         for kind, probe_rc, expected_builds in [("exact", 0, 0), ("exact", 1, 1), ("ancestor", 0, 1), ("none", 0, 1)]:
+            summary = self.root / ("summary-" + kind + str(probe_rc))
             with patch.object(ci.supervisor, "run", return_value=subprocess.CompletedProcess([], probe_rc)) as probe, \
                  patch.object(ci.workspace, "run", side_effect=build) as command, \
                  patch.object(ci, "restore_ltars") as restore:
-                ci.compile_targets(self.root, {"LAKE_CACHE_DIR": str(self.root / "cache")}, ["Library"], kind, candidate)
+                ci.compile_targets(self.root, {"LAKE_CACHE_DIR": str(self.root / "cache"),
+                                               "GITHUB_STEP_SUMMARY": str(summary)}, ["Library"], kind, candidate)
+            timings = summary.read_text(encoding="utf-8")
+            result = ("rejected" if probe_rc else "verified") if kind == "exact" else "skipped"
+            self.assertIn(f"cache_kind={kind} · result={result}", timings)
+            self.assertEqual("fallback-build" in timings, bool(expected_builds))
             self.assertEqual(command.call_count, expected_builds)
             self.assertEqual(restore.call_count, expected_builds)
             self.assertEqual(probe.call_count, int(kind == "exact"))
@@ -118,6 +124,14 @@ class CITests(unittest.TestCase):
                 self.assertEqual(command.call_args.args[0], ["lake", "--fail-fast", "build", "Library", "-o", ".lake/outputs.jsonl"])
             else:
                 self.assertEqual(output.read_bytes(), candidate.read_bytes())
+
+    def test_upload_service_keeps_single_endpoint_compatibility(self):
+        read, write = {"name": "read"}, {"name": "write"}
+        config = {"defaultService": "read", "service": [read, write]}
+        self.assertIs(ci.cache_service(config, upload=True), read)
+        config["defaultUploadService"] = "write"
+        self.assertIs(ci.cache_service(config), read)
+        self.assertIs(ci.cache_service(config, upload=True), write)
 
     def test_archive_restoration_links_by_trace_hash(self):
         cache, build = self.root / "cache", self.root / "build"

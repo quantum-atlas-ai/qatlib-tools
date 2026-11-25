@@ -13,7 +13,9 @@ const TOPICS = [
   'worktrees',
   'pull-requests',
   'github-ci',
+  'actions-timing',
   'build',
+  'r2-cache',
   'verification',
   'lean-docs',
   'forge',
@@ -107,15 +109,32 @@ function copyMapped(relSrc, relDest, { guideTitle, ...opts }) {
 }
 
 fs.mkdirSync(path.join(srcDir, 'en'), { recursive: true });
-fs.mkdirSync(path.join(srcDir, 'public'), { recursive: true });
-fs.copyFileSync(
-  path.join(repoRoot, '.github/assets/qatlib-tools-wordmark.svg'),
-  path.join(srcDir, 'public/qatlib-tools-wordmark.svg'),
-);
+const assetsDir = path.join(repoRoot, '.github/assets');
+const publicDir = path.join(srcDir, 'public');
+// Regenerate public files so retired assets do not carry over between builds.
+fs.rmSync(publicDir, { recursive: true, force: true });
+fs.mkdirSync(publicDir, { recursive: true });
+for (const asset of [
+  'qatlib-tools-wordmark.svg',
+  'qatlib-tools-wordmark-dark.svg',
+  'qatlib-tools-social-preview.png',
+  'favicon/favicon-adaptive.svg',
+  'favicon/favicon.ico',
+  'favicon/favicon-light-16x16.png',
+  'favicon/favicon-light-32x32.png',
+  'favicon/favicon-dark-16x16.png',
+  'favicon/favicon-dark-32x32.png',
+  'favicon/apple-touch-icon.png',
+]) {
+  fs.copyFileSync(path.join(assetsDir, asset), path.join(publicDir, path.basename(asset)));
+}
 
 // Copy landing pages crafted for VitePress root
 fs.copyFileSync(path.join(siteDir, 'base-pages/index.md'), path.join(srcDir, 'index.md'));
 fs.copyFileSync(path.join(siteDir, 'base-pages/en/index.md'), path.join(srcDir, 'en/index.md'));
+
+// Keep the legacy locale entry out of the VitePress pages and sitemap.
+fs.cpSync(path.join(siteDir, 'base-pages/zh'), path.join(publicDir, 'zh'), { recursive: true });
 
 // Chinese single-source documents
 copyMapped('README.md', 'guide.md', { guideTitle: '手册首页' });

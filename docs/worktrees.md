@@ -1,4 +1,6 @@
-# 在 Lean 仓库里打开第二棵工作树
+# 第二棵工作树：在 Lean 仓库里完成一次修改
+
+<a id="在-lean-仓库里打开第二棵工作树"></a>
 
 本页以一个已锁定 `qatlib-tools` 版本的 **Lean 项目**仓库为前提，且当前终端中的 `qatlib-env` 来自该环境（若需对工具仓本身做快速自检，请先阅读[五分钟验证](quickstart.md)）。下文围绕同一个示例走完一次完整修改：当 `lakefile.toml` 将 `srcDir` 设为 `"src"` 时，源文件 `src/MyLib/Facts.lean` 对应的模块参数即为 `MyLib.Facts`。由于包名、库目标名与模块命名空间在 Lake 中彼此独立，若你实际修改的文件位于其他路径，请替换为真实路径，并确保模块参数与文件路径一一对应（相关字段规则见[`lakefile.toml` 怎么读](build.md#lakefile)）。
 
@@ -20,8 +22,15 @@ qatlib-env worktree ../mylib-facts-check fix/facts-note --no-bootstrap
 
 ```bash
 cd ../mylib-facts-check
+qatlib-env doctor
 qatlib-env plan MyLib.Facts
 ```
+
+`doctor` 检查 Elan 中锁定的工具链文件，将 `lake-manifest.json` 的 Git 依赖提交与各检出的 HEAD 对照，并为缺失或不一致的依赖查找含锁定提交的本地镜像。它还检查生效的 `LAKE_CACHE_DIR` 内是否有工件及原生输出映射。运行 `qatlib-env doctor --project /path/to/worktree --json` 可得到带版本号、问题代码、数量与示例路径的报告。检查为只读，无需运行 Lean、Lake 或访问网络。退出码 0 表示检查完成，状态为 `ok` 或 `warning`。报告含检查错误或配置错误时，退出码为 1。
+
+如果 Lake 报 **“No server olean generated. Ensure the module system is enabled.”**，请查看 `missing_server_olean_descriptor` 或 `missing_local_server_olean`。启用模块系统的源码可能已经有基础 `.olean`，却缺少配套的服务端文件。`missing_cache_server_olean` 表示映射已列出服务端文件，但缓存中的文件不可用。没有 `module` 声明的旧式源码可以只有基础文件。检查覆盖基础与服务端 olean 的描述符和可见文件，并检查归档是否存在。它不会解包、计算 Lake 输入哈希或验证某一目标能否命中缓存。
+
+每个构建目录都会报告卷关系。`hardlink_eligible` 表示它与缓存工件位于同一卷，Lake 会尝试硬链接，失败时回退到复制。`copy_fallback` 表示 POSIX 或 Windows 上的路径落在不同卷，包括经 junction 指向另一卷的情况。若工件存在但没有已发布的输出映射，重新下载前先检查缓存登记步骤。
 
 `plan` 只读解析源码导入图、依赖锁与当前 Git 差异，向标准输出打印一个 JSON 对象，不会启动 `lake build`。重点核对以下字段：
 

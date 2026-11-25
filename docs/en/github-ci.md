@@ -2,8 +2,6 @@
 
 This page is for maintainers of this repository and for anyone wiring downstream CI. If you are a contributor checking the status of your current commit, see [Pull requests](pull-requests.md). If you are a reviewer deciding whether an earlier conclusion still applies and whether a merge is safe now, see [Reviewing concurrent commits](forge.md). For the commands that register a self-hosted runner, see [Self-hosted runners](runner.md).
 
-This repository defines two workflows, and they answer different questions.
-
 ## Events, jobs, permissions, and what a green check shows
 
 | | `CI` (`.github/workflows/ci.yml`) | `Documentation` (`.github/workflows/docs.yml`) |
@@ -15,9 +13,9 @@ This repository defines two workflows, and they answer different questions.
 | Jobs | `test`: human contracts, `uv lock --check`, `uv build`, pytest, and a wheel smoke test in a clean virtual environment | `build` builds the VitePress site. `deploy` runs only when the repository is public and `github.ref` is `refs/heads/main`, using the `github-pages` environment |
 | What green means | The Python 3.12 checks for this tools repository passed on that commit. A draft pull request passes `--draft` to the contract script; a ready pull request and a push to `main` do not | A successful `build` confirms that the site builds. A successful `deploy` confirms that the public repository's `main` branch published the site to Pages |
 
-A green `CI` check on a pull request does not mean Pages built or deployed, because `docs.yml` has no `pull_request` trigger.
+The separate `Documentation checks` workflow (`.github/workflows/docs-check.yml`) builds the VitePress site with clean URLs enabled and disabled on pull requests. It uses `contents: read` and does not deploy to Pages.
 
-Both workflows set `persist-credentials: false` on `actions/checkout`, so a later git push in the job does not reuse credentials stored by that checkout.
+All three workflows set `persist-credentials: false` on `actions/checkout`, so later Git commands do not reuse credentials stored by checkout.
 
 ## Which workflow a pull request runs
 
@@ -39,6 +37,8 @@ Check `on` in `docs.yml`: pull requests are not included. The site builds when a
 You can also configure an optional GitHub fetch rewrite on the host with `git config url.<mirror>.insteadOf`. `setup_runner.sh init` writes an `insteadOf` rule for `https://github.com/` on the lane account only when `QATLIB_GITHUB_MIRROR` is set. That rewrite applies while fetching; the Gitea push described below is a separate action.
 
 ## Wiring `qatlib-env ci` into a downstream repository
+
+See [Cross-repository R2 caching](r2-cache.md) for native Lake and managed workflows, and [Actions stage timing and cache fallback](actions-timing.md) for job timings and recompilation evidence.
 
 `ci.yml` in this repository does not call `qatlib-env ci`. To use the four subcommands in a downstream Lean repository, install the tool version locked by that repository, then call:
 

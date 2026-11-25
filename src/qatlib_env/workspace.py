@@ -1077,13 +1077,16 @@ def main(argv=None):
     installer.add_argument("--project", type=Path, default=argparse.SUPPRESS)
     installer.add_argument("--archive", type=Path, help="local official Lean .zip or .tar.zst")
     installer.add_argument("--sha256", help="trusted official SHA-256 of the archive")
+    doctor = commands.add_parser("doctor", help="inspect toolchain, package pins and Lake artifacts without preparing")
+    doctor.add_argument("--project", type=Path, default=argparse.SUPPRESS)
+    doctor.add_argument("--json", action="store_true", help="emit a machine-readable report")
     config = commands.add_parser("config", help="explain resource configuration without preparing a workspace",
                                  description="Report host/cgroup capacity, effective settings and user storage paths as JSON. QATLIB_HOME defaults to ~/.qatlib. This does not prepare dependencies or acquire a lease.")
     config.add_argument("action", choices=("explain",))
     config.add_argument("--json", action="store_true", help="emit JSON (the default)")
     options(config)
     cache = commands.add_parser("cache")
-    cache.add_argument("action", choices=("explain", "upload"))
+    cache.add_argument("action", choices=("explain", "inspect", "upload"))
     cache.add_argument("args", nargs=argparse.REMAINDER)
     manual_path = Path(__file__).with_name("_manual.md")
     if not manual_path.is_file():
@@ -1116,6 +1119,9 @@ def main(argv=None):
     options(tree)
     validate = commands.add_parser("check")
     options(validate)
+    validate.add_argument("--project", type=Path, default=argparse.SUPPRESS)
+    validate.add_argument("--server", type=Path, metavar="FILE",
+                          help="request single-file diagnostics from the persistent Lean server")
     validate.add_argument("modules", nargs="*")
     pool = commands.add_parser("pool")
     pool.add_argument("action", choices=("status", "prune"), nargs="?", default="status")
@@ -1139,11 +1145,26 @@ def main(argv=None):
         parser.error("specify --gh-proxy or --no-gh-proxy once per invocation")
     args.gh_proxy = args.global_gh_proxy if command_proxy is None else command_proxy
     project = args.project.resolve()
+    if args.command == "doctor":
+        from qatlib_env.doctor import run
+        return run(project, dict(os.environ), source=args.source_root, as_json=args.json)
     if args.command == "install-toolchain":
         print(json.dumps(toolchain.install(project, dict(os.environ), archive=args.archive, digest=args.sha256),
                          indent=2))
         return 0
     cli = {name: getattr(args, name, None) for name in resource_options if getattr(args, name, None) is not None}
+    if args.command == "check" and args.server is not None:
+        if (args.modules or cli or args.offline or args.no_prepare or args.allow_local_heavy
+                or args.full_gate or args.policy != "auto" or args.source_root is not None):
+            parser.error("check --server accepts one file, --project, and GitHub transport options only")
+        from qatlib_env.server import main as server_main
+
+        server_args = ["check", "--project", str(project), str(args.server.resolve())]
+        if args.gh_proxy == "":
+            server_args.append("--no-gh-proxy")
+        elif args.gh_proxy is not None:
+            server_args.append(f"--gh-proxy={args.gh_proxy}")
+        return server_main(server_args)
     if args.command == "conflicts":
         from qatlib_env.conflicts import main as conflicts_main
         selected = ["--package", args.package]
@@ -1236,6 +1257,9 @@ def main(argv=None):
     if args.command == "cache" and args.action == "upload":
         from qatlib_env.r2_cache import main as upload
         return upload(["--repo", str(project), *args.args])
+    if args.command == "cache" and args.action == "inspect":
+        from qatlib_env.r2_cache import inspect_main
+        return inspect_main(project, args.args)
     if args.command == "maintain-mirror":
         configured_mirror = env_value(os.environ, "QATLIB_PKG_MIRROR", None)
         mirror = args.mirror or (Path(configured_mirror) if configured_mirror else None)

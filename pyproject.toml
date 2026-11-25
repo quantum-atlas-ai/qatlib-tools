@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qatlib-tools"
-version = "0.2.0"
-description = "Controlled Lean environments, read-only retrieval, and shared lexical gates"
+version = "0.3.0"
+description = "Engineering handbook and reusable Lean tooling for Qatlib"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
