@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "contour-inner-phase-candidate",
+  "status": "candidate",
+  "kind": "repair",
+  "source": {
+    "identifier": "arXiv:2511.10267",
+    "version": "v4",
+    "url": "https://arxiv.org/pdf/2511.10267v4",
+    "sha256": "1a073f1bc937a525295877457b42b2553ba2aa0048074c48a6a4541b202eb8cf",
+    "locator": {"kind": "equation", "label": "Eq. (7)"}
+  },
+  "evidence": [
+    {
+      "kind": "repair",
+      "summary": "Separate left and right preparations preserve the normalized complex weights of the inner LCU.",
+      "url": "https://arxiv.org/pdf/2511.10267v4#page=7"
+    }
+  ],
+  "gates": {
+    "logic_kernel": "Review the pinned Lean declaration and run the build and transitive axiom check before admission.",
+    "source_alignment": "Compare the two preparations at Equation (7) against the specified versioned PDF.",
+    "scientific_semantics": "Review the input unitary and adjoint model. Restrict this finding to the inner encoding."
+  }
+}

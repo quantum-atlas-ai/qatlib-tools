@@ -20,6 +20,34 @@ qatlib-retrieve query --cite GilyenSuLowWiebe2019
 
 `query` 和 `find` 只读已有索引。遇到旧格式时，重新建立即可。宏展开、结构体自动生成项和编译器派生声明可能未被收录。最终仍以 Lean 编译和消费者验证为准。
 
+## 版本化文献快照
+
+在工具仓检出目录中，用公开样例生成 `index.jsonl`、`manifest.json` 和离线反向索引。文献查询只需要前两个文件。
+
+```bash
+uv sync --locked --extra literature
+uv run qatlib-retrieve export-literature-index tests/fixtures/literature/public-curation.json --output dist/literature
+uv run qatlib-retrieve lookup-paper --snapshot dist/literature arXiv:1806.01838v1
+uv run qatlib-retrieve search-interface --snapshot dist/literature --resource-field adjointQueryCount
+uv run qatlib-retrieve check-errata --snapshot dist/literature 2511.10267v4 --locator 'Eq. (7)'
+uv run qatlib-retrieve export-literature-html --snapshot dist/literature --output dist/literature/index.html
+```
+
+导出器只读取显式指定的、经审阅可公开的策展文件。manifest 固定公开源码提交、Lean 工具链、依赖锁哈希、数据版本和索引 SHA-256。`source_date` 取源码提交的 UTC 日期，重建时不读取当前时间。若要复核 Lean 声明，先在固定提交上用 `qatlib-retrieve index --project CHECKOUT --db CACHE` 建缓存，再给导出命令追加 `--project CHECKOUT --db CACHE`。旧的本地缓存若报告扫描器变化，先完整运行一次 `index`。
+
+| 状态 | 含义 |
+| --- | --- |
+| `MATCH` | 找到书目身份、明确指定的来源版本或该版本的勘误。版本固定的勘误通过 `AFFECTED` 和 `FIXED_IN` 区分历史问题与公开修订。 |
+| `NO_MATCH` | 当前快照没有命中。 |
+| `RELATED_ONLY` | 词法匹配得到的 Lean 候选。使用前需核对类型、前提和调用者。 |
+| `SOURCE_VERSION_UNKNOWN` | 书目身份存在，当前快照无法绑定所问版本。出版社 DOI 可用于书目命中，每份来源文本需要独立核对。 |
+
+查询把 JSON 写入 stdout，错误写入 stderr。接口结果的 `source_signature` 是源码签名，`variable_context` 给出外围变量。没有可信的 elaborated type、审计或审阅回执时，相应字段为 `null` 或 `not_attested`。
+
+将本地 MCP 客户端配置为运行 `qatlib-retrieve literature-mcp --snapshot SNAPSHOT`，并使用安装了 `qatlib-tools[literature]` 的同一环境。客户端通过 stdio 发现 `qatlib_lookup_paper`、`qatlib_search_interface`、`qatlib_check_errata`。参数名在工具 Schema 中可见，响应与对应 CLI 相同。
+
+外部贡献使用 `.github/PULL_REQUEST_TEMPLATE/literature-finding.md`，每项发现写成独立 JSON 文件。运行 `qatlib-retrieve validate-literature-finding RECORD.json`，也可传入多个文件验证 ID 唯一性。通过静态检查后，仍需核对固定环境下的 Lean 构建与公理闭包、来源版本与定位，以及科学语义，才能纳入公开快照。
+
 <a id="doc-gen"></a>
 
 ## 文档注释和网站链接

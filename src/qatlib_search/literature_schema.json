@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_commit", "source_repository", "source_date", "lean_toolchain", "dependency_lock_sha256", "scope", "papers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "source_repository": {"type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+    "source_date": {"type": "string", "format": "date"},
+    "lean_toolchain": {"$ref": "#/$defs/text"},
+    "dependency_lock_sha256": {"$ref": "#/$defs/digest"},
+    "scope": {"$ref": "#/$defs/text"},
+    "papers": {"type": "array", "items": {"$ref": "#/$defs/paper"}}
+  },
+  "$defs": {
+    "text": {"type": "string", "pattern": "\\S"},
+    "texts": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "nullableText": {"anyOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+    "id": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$"},
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "url": {"type": "string", "format": "uri", "pattern": "^https://[a-zA-Z0-9.-]+/"},
+    "version": {"type": "string", "pattern": "^v[1-9][0-9]{0,8}$"},
+    "coverage": {"enum": ["mapped", "partial_support", "restricted", "unmapped"]},
+    "paper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paper_id", "arxiv_id", "dois", "aliases", "title", "sources", "claims", "interfaces", "errata"],
+      "properties": {
+        "paper_id": {"$ref": "#/$defs/id"},
+        "arxiv_id": {"type": "string", "pattern": "^(?:[0-9]{4}\\.[0-9]{4,5}|[a-z][a-z0-9.-]*/[0-9]{7})$"},
+        "dois": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^10\\.[0-9]{4,}/[^\\s?#]+$"}},
+        "aliases": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "title": {"$ref": "#/$defs/text"},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+        "interfaces": {"type": "array", "items": {"$ref": "#/$defs/interface"}},
+        "errata": {"type": "array", "items": {"$ref": "#/$defs/erratum"}}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "url", "sha256"],
+      "properties": {
+        "version": {"$ref": "#/$defs/version"},
+        "url": {"$ref": "#/$defs/url"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "locators", "summary", "coverage", "interfaces"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "version": {"$ref": "#/$defs/version"},
+        "locators": {"$ref": "#/$defs/texts", "minItems": 1},
+        "summary": {"$ref": "#/$defs/text"},
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "interfaces": {"$ref": "#/$defs/texts"}
+      }
+    },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fqn", "module", "path", "line", "source_hash", "source_signature", "variable_context", "type", "coverage", "machine_scope", "assumptions", "proof_audit", "semantic_review", "concepts", "oracle", "resource_fields", "success_event", "probability", "consumers"],
+      "properties": {
+        "fqn": {"$ref": "#/$defs/text"},
+        "module": {"$ref": "#/$defs/text"},
+        "path": {"type": "string", "pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.lean$"},
+        "line": {"type": "integer", "minimum": 1},
+        "source_hash": {"$ref": "#/$defs/digest"},
+        "source_signature": {"$ref": "#/$defs/text"},
+        "variable_context": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+        "type": {"$ref": "#/$defs/nullableText"},
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "machine_scope": {"$ref": "#/$defs/text"},
+        "assumptions": {"$ref": "#/$defs/texts"},
+        "proof_audit": {"const": "not_attested"},
+        "semantic_review": {"const": "not_attested"},
+        "concepts": {"$ref": "#/$defs/texts"},
+        "oracle": {"$ref": "#/$defs/texts"},
+        "resource_fields": {"$ref": "#/$defs/texts"},
+        "success_event": {"$ref": "#/$defs/nullableText"},
+        "probability": {"$ref": "#/$defs/nullableText"},
+        "consumers": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/url"}}
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "locators"],
+      "properties": {
+        "version": {"$ref": "#/$defs/version"},
+        "locators": {"$ref": "#/$defs/texts", "minItems": 1}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary", "url"],
+      "properties": {
+        "kind": {"enum": ["counterexample", "repair", "public_revision"]},
+        "summary": {"$ref": "#/$defs/text"},
+        "url": {"$ref": "#/$defs/url"}
+      }
+    },
+    "erratum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "affected", "fixed_in", "summary", "evidence", "correction_fqn", "checked_on", "supersedes"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"$ref": "#/$defs/text"},
+        "affected": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/location"}},
+        "fixed_in": {"type": "array", "items": {"$ref": "#/$defs/location"}},
+        "summary": {"$ref": "#/$defs/text"},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "correction_fqn": {"$ref": "#/$defs/nullableText"},
+        "checked_on": {"type": "string", "format": "date"},
+        "supersedes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    }
+  }
+}

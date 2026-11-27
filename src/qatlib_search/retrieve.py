@@ -506,6 +506,8 @@ def query(text: str, project=None, db=None, *, limit=10, cite=None, kind=None, r
 
 
 def main(argv=None) -> int:
+    from . import literature_cli
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--version"]:
         from importlib.metadata import version
@@ -521,7 +523,7 @@ def main(argv=None) -> int:
         elif value.startswith(('--project=', '--db=')) or value in {'-h', '--help'}:
             position += 1
         else:
-            if value not in {'index', 'query', 'find'}:
+            if value not in {'index', 'query', 'find'} | literature_cli.COMMANDS:
                 argv.insert(position, 'query')
             break
     p = argparse.ArgumentParser(prog='qatlib-retrieve', description=__doc__)
@@ -544,10 +546,13 @@ def main(argv=None) -> int:
                             ('repo', 'filter by repository'), ('map', 'load a qatlib-retrieve-map/v1 JSON file')):
         q.add_argument('--' + name, help=help_text)
     q.add_argument('--json', action='store_true', help='emit structured matches and coverage diagnostics')
+    literature_cli.add_parsers(sub)
     args = p.parse_args(argv)
     if not args.command:
         p.print_help()
         return 0
+    if args.command in literature_cli.COMMANDS:
+        return literature_cli.run(args)
     try:
         if args.command == 'index':
             result = build_index(getattr(args, 'project', None), getattr(args, 'db', None), changed=args.changed)
