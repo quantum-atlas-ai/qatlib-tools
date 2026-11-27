@@ -20,6 +20,34 @@ The default index path is `${QATLIB_HOME:-~/.qatlib}/retrieve/<corpus-key>.sqlit
 
 `query` and `find` open an existing index read-only. Rebuild when the format is old. Macro expansions, generated structure fields, and compiler-derived declarations may be absent. Lean compilation and a consumer check remain the authority.
 
+## Versioned literature snapshots
+
+From a Tools checkout, build a public example containing `index.jsonl`, `manifest.json` and an offline reverse index. Literature queries need only the first two files.
+
+```bash
+uv sync --locked --extra literature
+uv run qatlib-retrieve export-literature-index tests/fixtures/literature/public-curation.json --output dist/literature
+uv run qatlib-retrieve lookup-paper --snapshot dist/literature arXiv:1806.01838v1
+uv run qatlib-retrieve search-interface --snapshot dist/literature --resource-field adjointQueryCount
+uv run qatlib-retrieve check-errata --snapshot dist/literature 2511.10267v4 --locator 'Eq. (7)'
+uv run qatlib-retrieve export-literature-html --snapshot dist/literature --output dist/literature/index.html
+```
+
+Select a curation file approved for public distribution. The manifest pins the public source commit, Lean toolchain, dependency-lock hash, data schema and index SHA-256. Its source date is the commit's UTC date. Rebuilding uses no wall clock. To verify Lean declarations, build the cache with `qatlib-retrieve index --project CHECKOUT --db CACHE` at the pinned commit and add `--project CHECKOUT --db CACHE` to the literature export command. Run a full `index` if an existing cache reports a scanner change.
+
+| Status | Meaning |
+| --- | --- |
+| `MATCH` | The bibliographic identity, selected source version or version-specific finding is indexed. Findings distinguish `AFFECTED` versions from `FIXED_IN` revisions. |
+| `NO_MATCH` | The current snapshot has no matching record. |
+| `RELATED_ONLY` | Lexical Lean candidates. Check their types, premises and consumers before use. |
+| `SOURCE_VERSION_UNKNOWN` | The paper is indexed and the queried source version is unresolved. A publisher DOI identifies the work. Each source text requires separate verification. |
+
+Query JSON goes to stdout and errors go to stderr. `source_signature` and `variable_context` capture the written Lean header and enclosing variables. Elaborated types and audit or review attestations may be absent, as shown by `null` or `not_attested`.
+
+Configure a local MCP client to run `qatlib-retrieve literature-mcp --snapshot SNAPSHOT` in an environment with `qatlib-tools[literature]` installed. The stdio server exposes `qatlib_lookup_paper`, `qatlib_search_interface` and `qatlib_check_errata`. Each tool advertises its input schema and returns the same structured response as the corresponding CLI command.
+
+Use `.github/PULL_REQUEST_TEMPLATE/literature-finding.md` for external contributions, with one JSON file per finding. Run `qatlib-retrieve validate-literature-finding RECORD.json` and supply multiple files to check IDs for uniqueness. Admission to the public snapshot requires a Lean build and transitive axiom audit, review of the source alignment, and review of the scientific semantics.
+
 <a id="doc-gen"></a>
 
 ## Documentation comments and website links

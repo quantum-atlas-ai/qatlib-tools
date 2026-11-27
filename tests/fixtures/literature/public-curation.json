@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "source_commit": "571a16d3ad6c18a36dc46cd61b18e448999b1ef0",
+  "source_repository": "https://github.com/quantum-atlas-ai/qatlib",
+  "source_date": "2026-11-25",
+  "lean_toolchain": "leanprover/lean4:v4.35.0",
+  "dependency_lock_sha256": "01055934d057471e9a71c8d7cacd7e4ca377e2f7b3f0e103976f71ce74034824",
+  "scope": "Public demonstration covering QSVT arXiv v1 and ContourSim25 arXiv v3 and v4. Publisher texts and other versions are outside this snapshot. Source headers are recorded and independent proof-audit and scientific-review attestations are unavailable here.",
+  "papers": [
+    {
+      "paper_id": "ContourSim25",
+      "arxiv_id": "2511.10267",
+      "dois": ["10.1088/2058-9565/ae7b7e", "10.48550/arxiv.2511.10267"],
+      "aliases": ["CBMD"],
+      "title": "Quantum Simulation of Non-Hermitian Special Functions and Dynamics via Contour-based Matrix Decomposition",
+      "sources": [
+        {"version": "v4", "url": "https://arxiv.org/pdf/2511.10267v4", "sha256": "1a073f1bc937a525295877457b42b2553ba2aa0048074c48a6a4541b202eb8cf"},
+        {"version": "v3", "url": "https://arxiv.org/pdf/2511.10267v3", "sha256": "aee226e7ed6b8da95e3bb0aa02758e4faa9840da0b03c9d48819b1b13a5cdacf"}
+      ],
+      "claims": [
+        {
+          "id": "contour-inner-prepare-v3",
+          "version": "v3",
+          "locators": ["Eq. (6)", "Eq. (7)"],
+          "summary": "The inner construction uses a phase-bearing preparation and its own adjoint around the selector.",
+          "coverage": "unmapped",
+          "interfaces": []
+        },
+        {
+          "id": "contour-inner-prepare-v4",
+          "version": "v4",
+          "locators": ["Eq. (6)", "Eq. (7)"],
+          "summary": "The revised inner construction uses distinct left and right preparations to retain complex coefficient phases.",
+          "coverage": "partial_support",
+          "interfaces": ["Qatlib.Papers.ContourSim25.LcuCircuit.corrected_inner_encoding"]
+        }
+      ],
+      "interfaces": [
+        {
+          "fqn": "Qatlib.Papers.ContourSim25.LcuCircuit.corrected_inner_encoding",
+          "module": "Qatlib.Papers.ContourSim25.LcuCircuit.CorrectedLCU",
+          "path": "Qatlib/Papers/ContourSim25/LcuCircuit/CorrectedLCU.lean",
+          "line": 125,
+          "source_hash": "45a1de3645af954d921f74f5e114bc289b73fe58f684ca4ba021a4588622db6e",
+          "source_signature": "{I : Type} [Fintype I] [DecidableEq I] (s : ℝ) (U : Matrix I I ℂ) (hU : U ∈ Matrix.unitaryGroup I ℂ) : ProjectedUnitaryEncoding ((scale s : ℂ)⁻¹ • sourceCombination s U) (select (fun b : Bool => if b then Uᴴ else U)) (prepareLift (I:=I) leftAmplitude) (prepareLift (I:=I) (rightAmplitude s))",
+          "variable_context": [],
+          "type": null,
+          "coverage": "partial_support",
+          "machine_scope": "Exact projected-unitary encoding for the two-branch inner LCU.",
+          "assumptions": ["Finite index type with decidable equality and a unitary input matrix."],
+          "proof_audit": "not_attested",
+          "semantic_review": "not_attested",
+          "concepts": ["linear combination of unitaries", "phase preparation"],
+          "oracle": ["unitary and adjoint"],
+          "resource_fields": [],
+          "success_event": null,
+          "probability": null,
+          "consumers": []
+        }
+      ],
+      "errata": [
+        {
+          "id": "contour-inner-lcu-phase",
+          "kind": "phase cancellation",
+          "affected": [{"version": "v3", "locators": ["Eq. (6)", "Eq. (7)"]}],
+          "fixed_in": [{"version": "v4", "locators": ["Eq. (6)", "Eq. (7)"]}],
+          "summary": "The historical inner sandwich cancels the coefficient phase. The revised arXiv text uses separate left and right preparations.",
+          "evidence": [
+            {"kind": "counterexample", "summary": "The printed scalar sandwich at A = i and s = 1 returns zero for a target block of 1/sqrt(2).", "url": "https://github.com/quantum-atlas-ai/qatlib/blob/571a16d3ad6c18a36dc46cd61b18e448999b1ef0/Qatlib/Papers/ContourSim25/LcuCircuit/PhaseCounter.lean#L133"},
+            {"kind": "public_revision", "summary": "The revised inner sandwich appears in the versioned arXiv source.", "url": "https://arxiv.org/pdf/2511.10267v4#page=7"}
+          ],
+          "correction_fqn": "Qatlib.Papers.ContourSim25.LcuCircuit.corrected_inner_encoding",
+          "checked_on": "2026-11-27",
+          "supersedes": []
+        }
+      ]
+    },
+    {
+      "paper_id": "QSVT",
+      "arxiv_id": "1806.01838",
+      "dois": ["10.1145/3313276.3316366", "10.48550/arxiv.1806.01838"],
+      "aliases": ["GilyenSuLowWiebe2019"],
+      "title": "Quantum singular value transformation and beyond: exponential improvements for quantum matrix arithmetics",
+      "sources": [
+        {"version": "v1", "url": "https://arxiv.org/pdf/1806.01838v1", "sha256": "0326a3de56b10c9805074031a827b1ac4c5ee526c5ad362096adfbacc261c60d"}
+      ],
+      "claims": [
+        {
+          "id": "qsvt-theorem-73",
+          "version": "v1",
+          "locators": ["Theorem 73", "Eq. (68)", "Eq. (69)"],
+          "summary": "The finite-error query lower bound includes a difference of leakage square roots.",
+          "coverage": "restricted",
+          "interfaces": ["Qatlib.Concepts.QsvtCore.QueryLowerBound.scalar_signal_safe_leakage_query_lower_bound_corrected"]
+        }
+      ],
+      "interfaces": [
+        {
+          "fqn": "Qatlib.Concepts.QsvtCore.QueryLowerBound.scalar_signal_safe_leakage_query_lower_bound_corrected",
+          "module": "Qatlib.Concepts.QsvtCore.QueryLowerBound.ScalarSignalQueryBounds",
+          "path": "Qatlib/Concepts/QsvtCore/QueryLowerBound/ScalarSignalQueryBounds.lean",
+          "line": 249,
+          "source_hash": "26d32f8c8239a48f4f96044206976a7fc93fc7b9de09296f4fec4dde2cb5dc8b",
+          "source_signature": ": ∀ (W I : Type) [Fintype W] [DecidableEq W] [Fintype I] [DecidableEq I] [Nonempty I] (L R : Matrix (Bool×W) I ℂ) (word : List (AdjointStep (Bool×W))) (x y a b eps : ℝ), IsIsometry L → IsIsometry R → WellFormedAdjointCircuit word → x ∈ Set.Icc (-1) 1 → y ∈ Set.Icc (-1) 1 → x≠y → 0 ≤ eps → eps ≤ a → a ≤ 1 → 0 ≤ b → b+eps ≤ 1 → ‖(a:ℂ) • (1:Matrix I I ℂ)-compress L (evaluate (scalarSignalLift W x) word) R‖ ≤ eps → ‖(b:ℂ) • (1:Matrix I I ℂ)-compress L (evaluate (scalarSignalLift W y) word) R‖ ≤ eps → (adjointQueryCount word:ℝ) ≥ max (max 0 (|a-b|-2*eps)) (Real.sqrt (1-(b+eps)^2)-Real.sqrt (1-(a-eps)^2))/scalarSignalDistance x y",
+          "variable_context": [],
+          "type": null,
+          "coverage": "restricted",
+          "machine_scope": "Corrected leakage comparison for scalar responses and the specified adjoint-query circuit model.",
+          "assumptions": ["Two distinct scalar signals, isometric compression, a well-formed circuit and the response and approximation bounds in the header."],
+          "proof_audit": "not_attested",
+          "semantic_review": "not_attested",
+          "concepts": ["quantum singular value transformation", "leakage bound"],
+          "oracle": ["scalar signal and adjoint"],
+          "resource_fields": ["adjointQueryCount"],
+          "success_event": null,
+          "probability": null,
+          "consumers": []
+        }
+      ],
+      "errata": [
+        {
+          "id": "qsvt-finite-error-leakage",
+          "kind": "finite-error leakage term",
+          "affected": [{"version": "v1", "locators": ["Theorem 73", "Eq. (68)", "Eq. (69)", "Eq. (75)"]}],
+          "fixed_in": [],
+          "summary": "The printed finite-error leakage expression uses the wrong orientation for the error endpoints in the scalar example.",
+          "evidence": [
+            {"kind": "counterexample", "summary": "A zero-query constant-half circuit meets the error tolerance while the printed leakage numerator is positive.", "url": "https://github.com/quantum-atlas-ai/qatlib/blob/571a16d3ad6c18a36dc46cd61b18e448999b1ef0/Qatlib/Concepts/QsvtCore/QueryLowerBound/ScalarSignalConsumers.lean#L312"}
+          ],
+          "correction_fqn": "Qatlib.Concepts.QsvtCore.QueryLowerBound.scalar_signal_safe_leakage_query_lower_bound_corrected",
+          "checked_on": "2026-11-27",
+          "supersedes": []
+        }
+      ]
+    }
+  ]
+}

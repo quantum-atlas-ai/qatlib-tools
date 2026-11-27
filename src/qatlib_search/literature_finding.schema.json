@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate literature finding",
+  "description": "One independently appendable contribution record awaiting review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "status", "kind", "source", "evidence", "gates"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+    "status": {"const": "candidate"},
+    "kind": {"enum": ["counterexample", "repair", "mapping", "version_update"]},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identifier", "version", "url", "sha256", "locator"],
+      "properties": {
+        "identifier": {"$ref": "#/$defs/text"},
+        "version": {"$ref": "#/$defs/text"},
+        "url": {"$ref": "#/$defs/url"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "label"],
+          "properties": {
+            "kind": {"enum": ["equation", "theorem", "lemma", "proposition", "corollary", "definition"]},
+            "label": {"$ref": "#/$defs/text"}
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "summary", "url"],
+        "properties": {
+          "kind": {"enum": ["counterexample", "repair"]},
+          "summary": {"$ref": "#/$defs/text"},
+          "url": {"$ref": "#/$defs/url"}
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logic_kernel", "source_alignment", "scientific_semantics"],
+      "properties": {
+        "logic_kernel": {"$ref": "#/$defs/text"},
+        "source_alignment": {"$ref": "#/$defs/text"},
+        "scientific_semantics": {"$ref": "#/$defs/text"}
+      }
+    }
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "url": {"type": "string", "format": "uri", "pattern": "^https://[a-zA-Z0-9.-]+/"}
+  }
+}

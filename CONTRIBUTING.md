@@ -14,7 +14,7 @@
 uv run --no-project python scripts/check_human_contracts.py
 uv lock --check
 uv build
-uv run --with pytest --with hatchling --with jsonschema pytest -q -rs
+uv run --locked python -m pytest -q -rs
 uv venv --python 3.12 .wheel-venv-ci
 uv pip install --python .wheel-venv-ci/bin/python dist/*.whl
 .wheel-venv-ci/bin/qatlib-env --help
@@ -40,7 +40,7 @@ cmp README.md .wheel-venv-ci/manual.md
 
 ```bash
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -e . build pytest hatchling jsonschema
+.venv/bin/python -m pip install -e '.[literature]' build pytest hatchling
 .venv/bin/python -m build
 .venv/bin/python -m pytest -q -rs --ignore=tests/migrated_dev/test_migrated_dev_smoke_packages.py
 ```
